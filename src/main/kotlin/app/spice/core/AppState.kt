@@ -64,6 +64,7 @@ class AppState(
     }
 
     fun setVolume(value: Float) { scope.launch { playbackEngine.setVolume(value) } }
+    fun seekTo(positionMs: Long) { scope.launch { playbackEngine.seekTo(positionMs) } }
 
     fun next() { scope.launch { queue.next()?.let { playbackEngine.play(it) } } }
     fun previous() { scope.launch { queue.previous()?.let { playbackEngine.play(it) } } }

@@ -10,6 +10,8 @@ data class PlaybackState(
     val track: Track? = null,
     val errorMessage: String? = null,
     val volume: Float = .72f,
+    val positionMs: Long = 0,
+    val durationMs: Long = 0,
 ) {
     val isPlaying: Boolean get() = status == PlaybackStatus.PLAYING
 }
@@ -20,6 +22,6 @@ interface PlaybackEngine : AutoCloseable {
     suspend fun pause()
     suspend fun resume()
     suspend fun setVolume(value: Float)
+    suspend fun seekTo(positionMs: Long)
     suspend fun stop()
 }
-

@@ -62,12 +62,12 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
 @Composable
 private fun NavigationRail(selected: Destination, navigate: (Destination) -> Unit) {
     Column(
-        Modifier.width(210.dp).fillMaxHeight().background(Color(0xFF111014)).padding(18.dp),
+        Modifier.width(210.dp).fillMaxHeight().background(AmoledBlack).padding(18.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
                 Modifier.size(36.dp).clip(RoundedCornerShape(12.dp))
-                    .background(Brush.linearGradient(listOf(Color(0xFFFFA25F), Color(0xFFE14E32)))),
+                    .background(Brush.linearGradient(listOf(SpiceLavender, SpicePurpleStrong))),
                 contentAlignment = Alignment.Center,
             ) { Text("S", color = Color.White, fontWeight = FontWeight.Black, fontSize = 21.sp) }
             Spacer(Modifier.width(12.dp))
@@ -167,8 +167,8 @@ private fun TrackCard(track: Track, play: () -> Unit) {
                 Modifier.size(140.dp).clip(RoundedCornerShape(14.dp)).background(
                     Brush.linearGradient(
                         if (track.provider == ProviderType.YOUTUBE_MUSIC)
-                            listOf(Color(0xFF5D252B), Color(0xFFE86649))
-                        else listOf(Color(0xFF4A2815), Color(0xFFFF982F)),
+                            listOf(Color(0xFF21003D), Color(0xFF6D28D9))
+                        else listOf(Color(0xFF120026), Color(0xFFA855F7)),
                     ),
                 ),
             ) {
@@ -246,36 +246,90 @@ private fun ProviderBadge(provider: ProviderType) {
 @Composable
 private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppState) {
     val current = queue.current
-    Surface(shadowElevation = 15.dp, color = Color(0xFF19171C), modifier = Modifier.fillMaxWidth().height(92.dp)) {
-        Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(58.dp).clip(RoundedCornerShape(11.dp)).background(MaterialTheme.colorScheme.primaryContainer), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.MusicNote, null)
-            }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.width(200.dp)) {
-                Text(current?.title ?: "Nothing playing", maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                Text(
-                    playback.errorMessage ?: current?.artistLine ?: "Choose something from Spice",
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = if (playback.errorMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
+    Surface(shadowElevation = 18.dp, color = SpicePanel, modifier = Modifier.fillMaxWidth().height(132.dp)) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val compact = maxWidth < 760.dp
+            Column {
+                HorizontalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = .35f))
+                PlaybackProgressBar(
+                    playback = playback,
+                    onSeek = state::seekTo,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = if (compact) 10.dp else 18.dp),
                 )
-            }
-            Spacer(Modifier.weight(1f))
-            IconButton(state::previous) { Icon(Icons.Default.SkipPrevious, "Previous") }
-            FilledIconButton(state::togglePlayback, Modifier.size(45.dp), enabled = playback.status != PlaybackStatus.RESOLVING) {
-                if (playback.status == PlaybackStatus.RESOLVING) {
-                    CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, if (playback.isPlaying) "Pause" else "Play")
+                Row(
+                    Modifier.fillMaxWidth().weight(1f).padding(horizontal = if (compact) 10.dp else 18.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                        if (!compact) {
+                            Box(
+                                Modifier.size(58.dp).clip(RoundedCornerShape(12.dp)).background(MaterialTheme.colorScheme.primaryContainer),
+                                contentAlignment = Alignment.Center,
+                            ) { Icon(Icons.Default.MusicNote, null) }
+                            Spacer(Modifier.width(12.dp))
+                        }
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                current?.title ?: "Nothing playing",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                playback.errorMessage ?: current?.artistLine ?: "Choose a track to start",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = if (playback.errorMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 12.sp,
+                            )
+                        }
+                    }
+
+                    Row(
+                        Modifier.width(if (compact) 174.dp else 210.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        FilledTonalIconButton(state::previous, Modifier.size(42.dp)) {
+                            Icon(Icons.Default.SkipPrevious, "Previous track")
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        FilledIconButton(
+                            state::togglePlayback,
+                            Modifier.size(54.dp),
+                            enabled = playback.status != PlaybackStatus.RESOLVING && current != null,
+                        ) {
+                            if (playback.status == PlaybackStatus.RESOLVING) {
+                                CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(
+                                    if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    if (playback.isPlaying) "Pause" else "Play",
+                                    Modifier.size(30.dp),
+                                )
+                            }
+                        }
+                        Spacer(Modifier.width(8.dp))
+                        FilledTonalIconButton(state::next, Modifier.size(42.dp)) {
+                            Icon(Icons.Default.SkipNext, "Next track")
+                        }
+                    }
+
+                    Row(
+                        Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.End,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (!compact) {
+                            Icon(Icons.AutoMirrored.Filled.VolumeUp, "Volume", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Slider(playback.volume, state::setVolume, Modifier.width(100.dp))
+                        }
+                        IconButton({ state.navigate(Destination.NOW_PLAYING) }) {
+                            Icon(Icons.AutoMirrored.Filled.QueueMusic, "Open now playing")
+                        }
+                    }
                 }
             }
-            IconButton(state::next) { Icon(Icons.Default.SkipNext, "Next") }
-            Spacer(Modifier.weight(1f))
-            Icon(Icons.AutoMirrored.Filled.VolumeUp, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-            Slider(playback.volume, state::setVolume, Modifier.width(110.dp))
-            IconButton({ state.navigate(Destination.NOW_PLAYING) }) { Icon(Icons.AutoMirrored.Filled.QueueMusic, "Now playing") }
         }
     }
 }
@@ -285,7 +339,7 @@ private fun NowPlayingScreen(queue: QueueState, playback: PlaybackState, state: 
     val current = queue.current
     Column(Modifier.fillMaxSize().padding(36.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Box(
-            Modifier.size(300.dp).clip(RoundedCornerShape(28.dp)).background(Brush.linearGradient(listOf(Color(0xFF562B37), Color(0xFFFF8053)))),
+            Modifier.size(300.dp).clip(RoundedCornerShape(28.dp)).background(Brush.linearGradient(listOf(Color(0xFF1D0038), SpicePurpleStrong))),
             contentAlignment = Alignment.Center,
         ) { Icon(Icons.Default.GraphicEq, null, Modifier.size(100.dp), tint = Color.White.copy(alpha = .8f)) }
         Spacer(Modifier.height(25.dp))
@@ -293,13 +347,65 @@ private fun NowPlayingScreen(queue: QueueState, playback: PlaybackState, state: 
         Text(current?.artistLine ?: "Pick a track to begin", color = MaterialTheme.colorScheme.onSurfaceVariant)
         current?.let { Spacer(Modifier.height(10.dp)); ProviderBadge(it.provider) }
         Spacer(Modifier.height(22.dp))
-        Slider(0f, {}, Modifier.width(430.dp))
+        PlaybackProgressBar(playback, state::seekTo, Modifier.width(480.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             IconButton(state::previous) { Icon(Icons.Default.SkipPrevious, "Previous", Modifier.size(30.dp)) }
             FilledIconButton(state::togglePlayback, Modifier.size(58.dp)) { Icon(if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, Modifier.size(32.dp)) }
             IconButton(state::next) { Icon(Icons.Default.SkipNext, "Next", Modifier.size(30.dp)) }
         }
     }
+}
+
+@Composable
+private fun PlaybackProgressBar(
+    playback: PlaybackState,
+    onSeek: (Long) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val durationMs = playback.durationMs.coerceAtLeast(0)
+    val canSeek = playback.track != null && durationMs > 0 && playback.status != PlaybackStatus.RESOLVING
+    var dragging by remember { mutableStateOf(false) }
+    var draggedPosition by remember { mutableFloatStateOf(0f) }
+    val displayedPosition = if (dragging) draggedPosition else playback.positionMs.toFloat()
+    val maximum = durationMs.coerceAtLeast(1).toFloat()
+
+    Row(modifier.height(38.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            formatPlaybackTime(displayedPosition.toLong()),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            modifier = Modifier.width(44.dp),
+        )
+        Slider(
+            value = displayedPosition.coerceIn(0f, maximum),
+            onValueChange = {
+                dragging = true
+                draggedPosition = it
+            },
+            onValueChangeFinished = {
+                val target = draggedPosition.toLong()
+                dragging = false
+                onSeek(target)
+            },
+            enabled = canSeek,
+            valueRange = 0f..maximum,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            formatPlaybackTime(durationMs),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 11.sp,
+            modifier = Modifier.width(48.dp),
+        )
+    }
+}
+
+private fun formatPlaybackTime(milliseconds: Long): String {
+    val totalSeconds = milliseconds.coerceAtLeast(0) / 1_000
+    val hours = totalSeconds / 3_600
+    val minutes = (totalSeconds % 3_600) / 60
+    val seconds = totalSeconds % 60
+    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
 }
 
 @Composable
