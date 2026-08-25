@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.automirrored.filled.VolumeOff
 import androidx.compose.material.icons.filled.*
@@ -26,6 +27,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -38,6 +40,7 @@ import app.spice.playback.QueueState
 import app.spice.playback.PlaybackState
 import app.spice.playback.PlaybackStatus
 import app.spice.playback.RepeatMode
+import app.spice.settings.*
 import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
@@ -63,7 +66,7 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
                             Destination.LIBRARY -> EmptyScreen("Your library", "Music saved across every service lives here.")
                             Destination.NOW_PLAYING -> NowPlayingScreen(queue, playback, appState)
                             Destination.QUEUE -> QueueScreen(queue, appState)
-                            Destination.SETTINGS -> SettingsScreen()
+                            Destination.SETTINGS -> SettingsScreen(appState)
                         }
                     }
                     PlayerBar(queue, playback, appState)
@@ -1158,26 +1161,411 @@ private fun PlaybackError(message: String) {
     }
 }
 
+private enum class SettingsPage { PROFILE, YOUTUBE, SOUNDCLOUD, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS }
+
 @Composable
-private fun SettingsScreen() {
-    LazyColumn(Modifier.fillMaxSize().padding(30.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Text("Settings", fontSize = 34.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.height(8.dp)) }
-        item { SettingsCard("YouTube Music", "Not connected", Icons.Default.PlayCircle) }
-        item { SettingsCard("SoundCloud", "Not connected", Icons.Default.Cloud) }
-        item { SettingsCard("Scrobbling", "Last.fm and ListenBrainz", Icons.Default.History) }
-        item { SettingsCard("Lyrics providers", "LRCLIB, Genius, Musixmatch, Happi and 4 more", Icons.Default.Lyrics) }
-        item { SettingsCard("Discord Rich Presence", "Disabled", Icons.Default.SportsEsports) }
-        item { SettingsCard("Diagnostics", "Check yt-dlp, mpv, FFmpeg and storage", Icons.Default.MonitorHeart) }
+private fun SettingsScreen(state: AppState) {
+    val settings by state.settings.collectAsState()
+    var page by remember { mutableStateOf<SettingsPage?>(null) }
+    if (page != null) {
+        SettingsDetailHeader(pageTitle(page!!), { page = null }) {
+            when (page) {
+                SettingsPage.PROFILE -> ProfileSettingsPanel(settings.preferences, state)
+                SettingsPage.YOUTUBE -> AccountConnectionPanel(ProviderType.YOUTUBE_MUSIC, settings.preferences.youtubeBrowser, state)
+                SettingsPage.SOUNDCLOUD -> AccountConnectionPanel(ProviderType.SOUNDCLOUD, settings.preferences.soundCloudBrowser, state)
+                SettingsPage.SCROBBLING -> ScrobblingSettingsPanel(settings, state)
+                SettingsPage.LYRICS -> LyricsSettingsPanel()
+                SettingsPage.DISCORD -> DiscordSettingsPanel(settings.preferences, state)
+                SettingsPage.DIAGNOSTICS -> DiagnosticsPanel(settings, state)
+                null -> Unit
+            }
+        }
+        return
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize().padding(horizontal = 30.dp),
+        contentPadding = PaddingValues(top = 26.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(11.dp),
+    ) {
+        item {
+            Text("Settings", fontSize = 34.sp, fontWeight = FontWeight.Bold)
+            Text("Accounts, services and how Spice behaves.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Spacer(Modifier.height(12.dp))
+        }
+        settings.message?.let { message ->
+            item {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f), shape = RoundedCornerShape(11.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.CheckCircle, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(9.dp)); Text(message, Modifier.weight(1f), fontSize = 12.sp)
+                        IconButton(state::clearSettingsMessage, Modifier.size(28.dp)) { Icon(Icons.Default.Close, "Dismiss", Modifier.size(16.dp)) }
+                    }
+                }
+            }
+        }
+        item {
+            SettingsCard(
+                settings.preferences.profileName,
+                "Your local Spice profile",
+                Icons.Default.AccountCircle,
+                { page = SettingsPage.PROFILE },
+            )
+        }
+        item {
+            SettingsCard(
+                "YouTube Music",
+                settings.preferences.youtubeBrowser?.let { "Using ${it.displayName} session" } ?: "Public mode — connect a browser session",
+                Icons.Default.PlayCircle,
+                { page = SettingsPage.YOUTUBE },
+                settings.preferences.youtubeBrowser != null,
+            )
+        }
+        item {
+            SettingsCard(
+                "SoundCloud",
+                settings.preferences.soundCloudBrowser?.let { "Using ${it.displayName} session" } ?: "Public mode — connect a browser session",
+                Icons.Default.Cloud,
+                { page = SettingsPage.SOUNDCLOUD },
+                settings.preferences.soundCloudBrowser != null,
+            )
+        }
+        item {
+            val connected = listOf(settings.scrobbling.lastFm, settings.scrobbling.listenBrainz)
+                .filter { it.status == ScrobbleConnectionStatus.CONNECTED }
+                .mapNotNull { it.username }
+            SettingsCard(
+                "Scrobbling",
+                if (connected.isEmpty()) "Connect Last.fm or ListenBrainz" else "Connected: ${connected.joinToString()}",
+                Icons.Default.History,
+                { page = SettingsPage.SCROBBLING },
+                connected.isNotEmpty(),
+            )
+        }
+        item { SettingsCard("Lyrics providers", "LRCLIB, Better Lyrics, Genius and 5 more", Icons.Default.Lyrics, { page = SettingsPage.LYRICS }) }
+        item {
+            SettingsCard(
+                "Discord Rich Presence",
+                if (settings.preferences.discordPresenceEnabled) "Enabled" else "Disabled",
+                Icons.Default.SportsEsports,
+                { page = SettingsPage.DISCORD },
+                settings.preferences.discordPresenceEnabled,
+            )
+        }
+        item { SettingsCard("Diagnostics", "Check yt-dlp, mpv, FFmpeg and storage", Icons.Default.MonitorHeart, { page = SettingsPage.DIAGNOSTICS }) }
+    }
+}
+
+private fun pageTitle(page: SettingsPage) = when (page) {
+    SettingsPage.PROFILE -> "Your Spice profile"
+    SettingsPage.YOUTUBE -> "YouTube Music account"
+    SettingsPage.SOUNDCLOUD -> "SoundCloud account"
+    SettingsPage.SCROBBLING -> "Scrobbling"
+    SettingsPage.LYRICS -> "Lyrics providers"
+    SettingsPage.DISCORD -> "Discord Rich Presence"
+    SettingsPage.DIAGNOSTICS -> "Diagnostics"
+}
+
+@Composable
+private fun SettingsDetailHeader(title: String, back: () -> Unit, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 30.dp, vertical = 24.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            IconButton(back) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to settings") }
+            Spacer(Modifier.width(6.dp)); Text(title, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(Modifier.height(18.dp))
+        Box(Modifier.fillMaxSize()) { content() }
     }
 }
 
 @Composable
-private fun SettingsCard(title: String, subtitle: String, icon: androidx.compose.ui.graphics.vector.ImageVector) {
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f), shape = RoundedCornerShape(15.dp)) {
+private fun ProfileSettingsPanel(preferences: SpicePreferences, state: AppState) {
+    var name by remember(preferences.profileName) { mutableStateOf(preferences.profileName) }
+    SettingsPanelCard {
+        Icon(Icons.Default.AccountCircle, null, Modifier.size(54.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(14.dp))
+        Text("Local profile", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("This name stays on this computer and identifies your Spice setup.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+        Spacer(Modifier.height(18.dp))
+        OutlinedTextField(name, { name = it.take(40) }, label = { Text("Display name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.height(14.dp))
+        Button({ state.setProfileName(name) }) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(7.dp)); Text("Save profile") }
+    }
+}
+
+@Composable
+private fun AccountConnectionPanel(provider: ProviderType, connectedBrowser: BrowserSession?, state: AppState) {
+    var selected by remember(connectedBrowser) { mutableStateOf(connectedBrowser ?: BrowserSession.CHROME) }
+    var expanded by remember { mutableStateOf(false) }
+    SettingsPanelCard {
+        Icon(if (provider == ProviderType.SOUNDCLOUD) Icons.Default.Cloud else Icons.Default.PlayCircle, null, Modifier.size(46.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.height(12.dp))
+        Text(if (connectedBrowser == null) "Connect your browser session" else "Connected through ${connectedBrowser.displayName}", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            "Spice asks yt-dlp to use an account already signed into your browser. Your password and cookies are never copied into Spice settings.",
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(18.dp))
+        Box {
+            OutlinedButton({ expanded = true }, Modifier.widthIn(min = 250.dp)) {
+                Icon(Icons.Default.Language, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text(selected.displayName); Spacer(Modifier.weight(1f)); Icon(Icons.Default.ArrowDropDown, null)
+            }
+            DropdownMenu(expanded, { expanded = false }) {
+                BrowserSession.entries.forEach { browser ->
+                    DropdownMenuItem(
+                        text = { Text(browser.displayName) },
+                        leadingIcon = { if (browser == selected) Icon(Icons.Default.Check, null) },
+                        onClick = { selected = browser; expanded = false },
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(14.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button({ state.connectAccount(provider, selected) }) { Icon(Icons.Default.Link, null); Spacer(Modifier.width(7.dp)); Text(if (connectedBrowser == null) "Connect" else "Change browser") }
+            if (connectedBrowser != null) OutlinedButton({ state.disconnectAccount(provider) }) { Text("Disconnect") }
+        }
+        Spacer(Modifier.height(16.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.Security, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(7.dp)); Text("No password storage • Disconnect anytime", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+private fun ScrobblingSettingsPanel(settings: SettingsState, state: AppState) {
+    var listenBrainzToken by remember { mutableStateOf("") }
+    var lastFmApiKey by remember { mutableStateOf("") }
+    var lastFmSharedSecret by remember { mutableStateOf("") }
+    val scrobbling = settings.scrobbling
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp), contentPadding = PaddingValues(bottom = 24.dp)) {
+        if (scrobbling.lastEvent != null || scrobbling.scrobblesThisSession > 0) {
+            item {
+                Surface(color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = .5f), shape = RoundedCornerShape(12.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Default.GraphicEq, null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(10.dp)); Column {
+                            Text(
+                                buildString {
+                                    append("${scrobbling.scrobblesThisSession} scrobbled this session")
+                                    if (scrobbling.pendingScrobbles > 0) append(" • ${scrobbling.pendingScrobbles} queued")
+                                },
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            scrobbling.lastEvent?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            SettingsPanelCard {
+                ScrobbleServiceHeader("Last.fm", scrobbling.lastFm)
+                Spacer(Modifier.height(8.dp))
+                Text("Spice opens Last.fm in your browser for approval. Your Last.fm password is never entered into Spice.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Spacer(Modifier.height(15.dp))
+                when (scrobbling.lastFm.status) {
+                    ScrobbleConnectionStatus.CONNECTED -> OutlinedButton(state::disconnectLastFm) { Icon(Icons.Default.LinkOff, null); Spacer(Modifier.width(7.dp)); Text("Disconnect") }
+                    ScrobbleConnectionStatus.AWAITING_APPROVAL -> Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Button(state::finishLastFmLogin) { Icon(Icons.Default.Check, null); Spacer(Modifier.width(7.dp)); Text("I approved Spice") }
+                        OutlinedButton(state::beginLastFmLogin) { Text("Start again") }
+                    }
+                    ScrobbleConnectionStatus.CONNECTING -> Button({}, enabled = false) { CircularProgressIndicator(Modifier.size(17.dp), strokeWidth = 2.dp); Spacer(Modifier.width(8.dp)); Text("Connecting…") }
+                    else -> {
+                        if (scrobbling.lastFmConfigured) {
+                            Button(state::beginLastFmLogin) { Icon(Icons.Default.OpenInBrowser, null); Spacer(Modifier.width(7.dp)); Text("Connect Last.fm") }
+                        } else {
+                            OutlinedTextField(
+                                lastFmApiKey,
+                                { lastFmApiKey = it.trim().take(32) },
+                                label = { Text("Last.fm API key") },
+                                singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(9.dp))
+                            OutlinedTextField(
+                                lastFmSharedSecret,
+                                { lastFmSharedSecret = it.trim().take(32) },
+                                label = { Text("Last.fm shared secret") },
+                                singleLine = true,
+                                visualTransformation = PasswordVisualTransformation(),
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                            Spacer(Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                Button(
+                                    onClick = {
+                                        val apiKey = lastFmApiKey
+                                        val secret = lastFmSharedSecret
+                                        lastFmApiKey = ""
+                                        lastFmSharedSecret = ""
+                                        state.configureLastFmApplication(apiKey, secret)
+                                    },
+                                    enabled = lastFmApiKey.length == 32 && lastFmSharedSecret.length == 32,
+                                ) { Icon(Icons.Default.Lock, null); Spacer(Modifier.width(7.dp)); Text("Save securely") }
+                                TextButton({ state.openExternalUrl("https://www.last.fm/api/account/create") }) { Text("Create credentials") }
+                            }
+                            Spacer(Modifier.height(8.dp))
+                            Text("These identify this Spice installation to Last.fm; account approval happens in your browser afterward.", color = MaterialTheme.colorScheme.tertiary, fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+        }
+        item {
+            SettingsPanelCard {
+                ScrobbleServiceHeader("ListenBrainz", scrobbling.listenBrainz)
+                Spacer(Modifier.height(8.dp))
+                Text("Paste the user token from your ListenBrainz settings. It is encrypted for your Windows account before being saved.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Spacer(Modifier.height(14.dp))
+                if (scrobbling.listenBrainz.status == ScrobbleConnectionStatus.CONNECTED) {
+                    OutlinedButton(state::disconnectListenBrainz) { Icon(Icons.Default.LinkOff, null); Spacer(Modifier.width(7.dp)); Text("Disconnect") }
+                } else {
+                    OutlinedTextField(
+                        listenBrainzToken,
+                        { listenBrainzToken = it.take(200) },
+                        label = { Text("ListenBrainz user token") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(11.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                        Button(
+                            onClick = { val token = listenBrainzToken; listenBrainzToken = ""; state.connectListenBrainz(token) },
+                            enabled = listenBrainzToken.isNotBlank() && scrobbling.listenBrainz.status != ScrobbleConnectionStatus.CONNECTING,
+                        ) { Icon(Icons.Default.Link, null); Spacer(Modifier.width(7.dp)); Text("Validate and connect") }
+                        TextButton({ state.openExternalUrl("https://listenbrainz.org/settings/") }) { Text("Get token") }
+                    }
+                }
+            }
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Info, null, Modifier.size(17.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp)); Text("Tracks count after half their duration or 4 minutes, whichever comes first. Tracks 30 seconds or shorter are ignored.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScrobbleServiceHeader(name: String, service: ScrobbleServiceState) {
+    val color = when (service.status) {
+        ScrobbleConnectionStatus.CONNECTED -> MaterialTheme.colorScheme.primary
+        ScrobbleConnectionStatus.ERROR -> MaterialTheme.colorScheme.error
+        ScrobbleConnectionStatus.AWAITING_APPROVAL -> MaterialTheme.colorScheme.tertiary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            when (service.status) {
+                ScrobbleConnectionStatus.CONNECTED -> Icons.Default.CheckCircle
+                ScrobbleConnectionStatus.ERROR -> Icons.Default.ErrorOutline
+                ScrobbleConnectionStatus.AWAITING_APPROVAL -> Icons.Default.OpenInBrowser
+                else -> Icons.Default.Radio
+            },
+            null,
+            tint = color,
+        )
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(name, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text(
+                service.username ?: service.message ?: service.status.name.lowercase().replace('_', ' ').replaceFirstChar(Char::uppercase),
+                color = color,
+                fontSize = 11.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LyricsSettingsPanel() {
+    val providers = listOf(
+        "LRCLIB" to true,
+        "Better Lyrics" to true,
+        "Karalyr" to true,
+        "SyncLRC" to true,
+        "lyrics.ovh" to true,
+        "Musixmatch" to !System.getenv("SPICE_MUSIXMATCH_API_KEY").isNullOrBlank(),
+        "Happi" to !System.getenv("SPICE_HAPPI_API_KEY").isNullOrBlank(),
+        "Genius" to true,
+    )
+    LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        item { Text("Core providers work without an account. Optional commercial sources show whether their API key is available.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp); Spacer(Modifier.height(8.dp)) }
+        items(providers, key = { it.first }) { (name, ready) ->
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .42f), shape = RoundedCornerShape(11.dp)) {
+                Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(if (ready) Icons.Default.CheckCircle else Icons.Default.Key, null, tint = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary)
+                    Spacer(Modifier.width(11.dp)); Text(name, Modifier.weight(1f), fontWeight = FontWeight.Medium)
+                    Text(if (ready) "Ready" else "API key needed", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiscordSettingsPanel(preferences: SpicePreferences, state: AppState) {
+    SettingsPanelCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Default.SportsEsports, null, Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text("Show listening activity", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Share the current track when Discord integration is available.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
+            Switch(preferences.discordPresenceEnabled, state::setDiscordPresence)
+        }
+        Spacer(Modifier.height(15.dp))
+        Text("The preference is saved now. The Discord IPC client still needs to be added before activity is published.", color = MaterialTheme.colorScheme.tertiary, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun DiagnosticsPanel(settings: SettingsState, state: AppState) {
+    Column {
+        Button(state::runDiagnostics, enabled = !settings.diagnosticsRunning) {
+            if (settings.diagnosticsRunning) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.MonitorHeart, null, Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp)); Text(if (settings.diagnosticsRunning) "Checking…" else "Run diagnostics")
+        }
+        Spacer(Modifier.height(16.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(settings.diagnostics, key = { it.name }) { result ->
+                val color = when (result.level) { DiagnosticLevel.PASS -> MaterialTheme.colorScheme.primary; DiagnosticLevel.WARNING -> MaterialTheme.colorScheme.tertiary; DiagnosticLevel.FAIL -> MaterialTheme.colorScheme.error }
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .42f), shape = RoundedCornerShape(11.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (result.level == DiagnosticLevel.PASS) Icons.Default.CheckCircle else Icons.Default.ErrorOutline, null, tint = color)
+                        Spacer(Modifier.width(11.dp)); Column { Text(result.name, fontWeight = FontWeight.SemiBold); Text(result.detail, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsPanelCard(content: @Composable ColumnScope.() -> Unit) {
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .42f), shape = RoundedCornerShape(16.dp), modifier = Modifier.widthIn(max = 720.dp)) {
+        Column(Modifier.fillMaxWidth().padding(22.dp), content = content)
+    }
+}
+
+@Composable
+private fun SettingsCard(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    action: () -> Unit,
+    active: Boolean = false,
+) {
+    Surface(onClick = action, color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .5f), shape = RoundedCornerShape(15.dp)) {
         Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(15.dp))
             Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.SemiBold); Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
+            if (active) { Icon(Icons.Default.CheckCircle, "Active", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary); Spacer(Modifier.width(9.dp)) }
             Icon(Icons.Default.ChevronRight, null)
         }
     }

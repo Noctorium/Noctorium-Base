@@ -9,6 +9,7 @@ object BackendLocator {
 
     fun ytDlp(): Path? = locate("SPICE_YTDLP_PATH", if (isWindows) "yt-dlp.exe" else "yt-dlp")
     fun mpv(): Path? = locate("SPICE_MPV_PATH", if (isWindows) "mpv.exe" else "mpv")
+    fun ffmpeg(): Path? = locate("SPICE_FFMPEG_PATH", if (isWindows) "ffmpeg.exe" else "ffmpeg")
 
     private fun locate(environmentName: String, executable: String): Path? {
         System.getenv(environmentName)?.takeIf(String::isNotBlank)?.let { configured ->
@@ -29,4 +30,3 @@ object BackendLocator {
             .firstOrNull { Files.isRegularFile(it) }
     }
 }
-

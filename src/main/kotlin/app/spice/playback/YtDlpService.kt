@@ -12,6 +12,7 @@ import java.net.URLEncoder
 import java.nio.file.Path
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class BackendException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -20,6 +21,11 @@ class YtDlpService(
     private val executable: () -> Path? = BackendLocator::ytDlp,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+    private val cookieBrowsers = ConcurrentHashMap<ProviderType, String>()
+
+    fun setCookieBrowser(provider: ProviderType, browser: String?) {
+        if (browser.isNullOrBlank()) cookieBrowsers.remove(provider) else cookieBrowsers[provider] = browser
+    }
 
     suspend fun search(provider: ProviderType, query: String, limit: Int = 8): List<Track> = withContext(Dispatchers.IO) {
         require(query.isNotBlank()) { "Search query cannot be blank" }
@@ -35,6 +41,7 @@ class YtDlpService(
         val arguments = mutableListOf(
             "--flat-playlist", "--dump-single-json", "--no-warnings", "--no-playlist",
         )
+        arguments += accountArguments(provider)
         if (provider == ProviderType.YOUTUBE_MUSIC) arguments += listOf("--playlist-end", limit.toString())
         arguments += target
         val output = run(*arguments.toTypedArray())
@@ -46,11 +53,18 @@ class YtDlpService(
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
         }
+        val provider = when {
+            "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
+            "youtube.com" in sourceUrl || "youtu.be" in sourceUrl -> ProviderType.YOUTUBE_VIDEO
+            "soundcloud.com" in sourceUrl -> ProviderType.SOUNDCLOUD
+            else -> null
+        }
         run(
             "--format", "bestaudio/best",
             "--get-url",
             "--no-playlist",
             "--no-warnings",
+            *provider?.let(::accountArguments).orEmpty().toTypedArray(),
             "--",
             sourceUrl,
         ).lineSequence().firstOrNull { it.startsWith("http") }
@@ -64,6 +78,7 @@ class YtDlpService(
             "--skip-download",
             "--no-warnings",
             "--no-playlist",
+            *accountArguments(track.provider).toTypedArray(),
             "--",
             track.sourceUrl,
         )
@@ -71,6 +86,12 @@ class YtDlpService(
     }
 
     suspend fun version(): String = withContext(Dispatchers.IO) { run("--version").trim() }
+
+    internal fun accountArguments(provider: ProviderType): List<String> {
+        val browser = cookieBrowsers[provider]
+            ?: if (provider == ProviderType.YOUTUBE_VIDEO) cookieBrowsers[ProviderType.YOUTUBE_MUSIC] else null
+        return browser?.let { listOf("--cookies-from-browser", it) }.orEmpty()
+    }
 
     private fun mapTrack(provider: ProviderType, item: JsonObject): Track? {
         val id = item.string("id") ?: return null
