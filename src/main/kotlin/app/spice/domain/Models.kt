@@ -5,6 +5,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 enum class ProviderType(val displayName: String) {
     YOUTUBE_MUSIC("YouTube Music"),
+    YOUTUBE_VIDEO("YouTube"),
     SOUNDCLOUD("SoundCloud"),
     LOCAL("Local"),
 }
@@ -77,4 +78,3 @@ data class SearchResults(
     val albums: List<Album> = emptyList(),
     val playlists: List<Playlist> = emptyList(),
 )
-

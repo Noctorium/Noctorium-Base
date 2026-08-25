@@ -2,6 +2,7 @@ package app.spice.playback
 
 import app.spice.domain.*
 import kotlin.test.*
+import kotlin.random.Random
 
 class QueueManagerTest {
     private fun track(id: String, provider: ProviderType = ProviderType.YOUTUBE_MUSIC) = Track(
@@ -46,5 +47,76 @@ class QueueManagerTest {
         assertEquals("b", queue.state.value.current?.id)
         assertEquals(0, queue.state.value.currentIndex)
     }
-}
 
+    @Test
+    fun `playing a collection creates a queue at the selected track`() {
+        val queue = QueueManager()
+        val tracks = listOf(track("a"), track("b"), track("c"))
+
+        queue.playQueue(tracks, 1, PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.PLAYLIST))
+
+        assertEquals(listOf("a", "b", "c"), queue.state.value.tracks.map { it.id })
+        assertEquals("b", queue.state.value.current?.id)
+    }
+
+    @Test
+    fun `shuffle keeps current track and disabling restores original order`() {
+        val queue = QueueManager(Random(7))
+        val tracks = listOf(track("a"), track("b"), track("c"), track("d"))
+        queue.playQueue(tracks, 1, PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.HOME))
+
+        queue.toggleShuffle()
+        assertTrue(queue.state.value.shuffleEnabled)
+        assertEquals("b", queue.state.value.current?.id)
+        assertEquals(tracks.map { it.id }.toSet(), queue.state.value.tracks.map { it.id }.toSet())
+
+        queue.toggleShuffle()
+        assertFalse(queue.state.value.shuffleEnabled)
+        assertEquals(listOf("a", "b", "c", "d"), queue.state.value.tracks.map { it.id })
+        assertEquals("b", queue.state.value.current?.id)
+    }
+
+    @Test
+    fun `repeat one returns current track on automatic advance`() {
+        val queue = QueueManager()
+        queue.playQueue(
+            listOf(track("a"), track("b")),
+            0,
+            PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.HOME),
+        )
+        queue.cycleRepeat() // all
+        queue.cycleRepeat() // one
+
+        assertEquals("a", queue.next(respectRepeatOne = true)?.id)
+        assertEquals(RepeatMode.ONE, queue.state.value.repeatMode)
+    }
+
+    @Test
+    fun `repeat all wraps at the end`() {
+        val queue = QueueManager()
+        queue.playQueue(
+            listOf(track("a"), track("b")),
+            1,
+            PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.HOME),
+        )
+        queue.cycleRepeat()
+
+        assertEquals("a", queue.next(respectRepeatOne = true)?.id)
+    }
+
+    @Test
+    fun `moving current track preserves current selection`() {
+        val queue = QueueManager()
+        queue.playQueue(
+            listOf(track("a"), track("b"), track("c")),
+            1,
+            PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.QUEUE),
+        )
+
+        queue.move(1, 2)
+
+        assertEquals(listOf("a", "c", "b"), queue.state.value.tracks.map { it.id })
+        assertEquals("b", queue.state.value.current?.id)
+        assertEquals(2, queue.state.value.currentIndex)
+    }
+}

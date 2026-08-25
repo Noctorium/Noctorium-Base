@@ -22,6 +22,7 @@ class MockMusicProvider(override val type: ProviderType) : MusicProvider {
             durationMs = (178L + index * 17L) * 1_000L,
             sourceUrl = when (type) {
                 ProviderType.YOUTUBE_MUSIC -> "https://music.youtube.com/watch?v=mock$index"
+                ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/watch?v=mock$index"
                 ProviderType.SOUNDCLOUD -> "https://soundcloud.com/mock/track-$index"
                 ProviderType.LOCAL -> "file:///mock/track-$index"
             },
@@ -63,4 +64,3 @@ class MockMusicProvider(override val type: ProviderType) : MusicProvider {
     override suspend fun getRecommendations(context: PlaybackContext): List<Track> =
         if (context.provider == type) catalog.shuffled() else emptyList()
 }
-
