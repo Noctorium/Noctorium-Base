@@ -1,5 +1,6 @@
 package app.spice.settings
 
+import app.spice.discord.DiscordPresenceSettings
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -13,9 +14,19 @@ class SettingsRepositoryTest {
             val repository = SettingsRepository(directory.resolve("settings.json"))
             val expected = SpicePreferences(
                 profileName = "Yabosen",
+                progressBarStyle = ProgressBarStyle.MATERIAL,
+                playerBarStyle = PlayerBarStyle.STACKED,
+                accent = AccentPreset.ARTWORK,
+                backgroundDepth = BackgroundDepth.DARK,
+                cardSize = CardSize.LARGE,
+                badgePolicy = BadgePolicy.NEVER,
+                hoverControls = HoverControls.ALWAYS,
+                timeDisplay = TimeDisplay.REMAINING,
+                ambientBackdrop = false,
+                startPage = StartPage.LIBRARY,
                 youtubeCookies = CookieSource.ofBrowser(BrowserSession.EDGE, profile = "Profile 2"),
                 soundCloudCookies = CookieSource.ofFile("C:/cookies/soundcloud.txt"),
-                discordPresenceEnabled = true,
+                discord = DiscordPresenceSettings(enabled = true, applicationId = "1234567890", detailsTemplate = "{artist} — {title}"),
                 lastFmUsername = "listener",
             )
 
@@ -53,6 +64,36 @@ class SettingsRepositoryTest {
         val directory = Files.createTempDirectory("spice-settings-default-test")
         try {
             assertEquals(SpicePreferences(), SettingsRepository(directory.resolve("missing.json")).load())
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+}
+
+class DiscordMigrationTest {
+    @Test
+    fun `an older build's discord switch carries over to the new settings`() {
+        val directory = Files.createTempDirectory("spice-discord-migration")
+        try {
+            val path = directory.resolve("settings.json")
+            Files.writeString(path, """{"profileName":"Yabosen","discordPresenceEnabled":true}""")
+
+            val loaded = SettingsRepository(path).load()
+
+            assertEquals(true, loaded.discord.enabled)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a build with no discord settings at all starts disabled`() {
+        val directory = Files.createTempDirectory("spice-discord-default")
+        try {
+            val path = directory.resolve("settings.json")
+            Files.writeString(path, """{"profileName":"Yabosen"}""")
+
+            assertEquals(false, SettingsRepository(path).load().discord.enabled)
         } finally {
             directory.toFile().deleteRecursively()
         }

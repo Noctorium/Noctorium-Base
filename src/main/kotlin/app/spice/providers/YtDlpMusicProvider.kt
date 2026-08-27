@@ -9,17 +9,26 @@ class YtDlpMusicProvider(
     private val ytDlp: YtDlpService,
 ) : MusicProvider {
     override suspend fun getHome(): List<HomeSection> {
+        // Each row states what it actually is. The subtitle names the service so the heading does not have to,
+        // and the headings no longer repeat the service name back at the listener.
         val searches = when (type) {
-            ProviderType.YOUTUBE_MUSIC -> listOf("indie electronic music" to "YouTube Music picks", "ambient focus music" to "Focus flow")
-            ProviderType.SOUNDCLOUD -> listOf("new electronic music" to "SoundCloud discovery", "lofi remix" to "Fresh remixes")
+            ProviderType.YOUTUBE_MUSIC -> listOf(
+                "indie electronic music" to ("Indie electronic" to "Fresh on YouTube Music"),
+                "ambient focus music" to ("Ambient and focus" to "Long players, no vocals"),
+            )
+            ProviderType.SOUNDCLOUD -> listOf(
+                "new electronic music" to ("New electronic" to "Rising on SoundCloud"),
+                "lofi remix" to ("Lo-fi and remixes" to "Uploads and edits"),
+            )
             ProviderType.YOUTUBE_VIDEO -> return emptyList()
             ProviderType.LOCAL -> return emptyList()
         }
-        return searches.mapIndexed { index, (query, title) ->
+        return searches.mapIndexed { index, (query, labels) ->
+            val (title, subtitle) = labels
             HomeSection(
                 id = "${type.name}:$index",
                 title = title,
-                subtitle = type.displayName,
+                subtitle = subtitle,
                 provider = type,
                 tracks = ytDlp.search(type, query, 8),
             )

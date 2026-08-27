@@ -1,5 +1,6 @@
 package app.spice.settings
 
+import app.spice.discord.DiscordPresenceSettings
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -84,13 +85,102 @@ data class AccountConnectionState(
     val hint: String? = null,
 )
 
+/** Accent the whole interface is built from. ARTWORK has no fixed colour — it follows the cover art. */
+@Serializable
+enum class AccentPreset(val displayName: String, val argb: Long?) {
+    VIOLET("Violet", 0xFFB47CFF),
+    MAGENTA("Magenta", 0xFFFF6EC7),
+    EMBER("Ember", 0xFFFF9757),
+    AZURE("Azure", 0xFF5AB2FF),
+    MINT("Mint", 0xFF5FE3B0),
+    ARTWORK("Match the artwork", null),
+}
+
+@Serializable
+enum class BackgroundDepth(val displayName: String, val description: String) {
+    AMOLED("Pure black", "True black, which saves power on OLED panels."),
+    DARK("Soft dark", "Lifted slightly off black, gentler in a lit room."),
+}
+
+@Serializable
+enum class CardSize(val displayName: String, val widthDp: Int) {
+    COMPACT("Compact", 140),
+    COMFORTABLE("Comfortable", 172),
+    LARGE("Large", 208),
+}
+
+@Serializable
+enum class BadgePolicy(val displayName: String, val description: String) {
+    AUTO("Only when mixed", "Shown when a row holds more than one service."),
+    ALWAYS("Always", "Every card names its service."),
+    NEVER("Never", "No service badges anywhere."),
+}
+
+@Serializable
+enum class HoverControls(val displayName: String, val description: String) {
+    ON_HOVER("On hover", "Play and menu buttons appear when you point at something."),
+    ALWAYS("Always visible", "Buttons stay put, easier to find and to hit."),
+}
+
+@Serializable
+enum class TimeDisplay(val displayName: String) {
+    TOTAL("Total length"),
+    REMAINING("Time remaining"),
+}
+
+@Serializable
+enum class StartPage(val displayName: String) {
+    HOME("Home"),
+    SEARCH("Search"),
+    LIBRARY("Library"),
+    NOW_PLAYING("Now playing"),
+}
+
+/** Layout of the bar along the bottom of the window. */
+@Serializable
+enum class PlayerBarStyle(val displayName: String, val description: String) {
+    INLINE(
+        "Inline",
+        "One row: transport on the left, then the track, the seek bar and the tools.",
+    ),
+    STACKED(
+        "Stacked",
+        "Seek bar across the top, with the track on the left and controls centred beneath.",
+    ),
+}
+
+/** How the seek bar is drawn. Both are fully functional; the difference is how much furniture they carry. */
+@Serializable
+enum class ProgressBarStyle(val displayName: String, val description: String) {
+    MINIMAL(
+        "Minimal",
+        "A hairline track with a small dot, and the times sitting quietly at each end.",
+    ),
+    MATERIAL(
+        "Material",
+        "The standard slider, with a larger handle and a thicker track.",
+    ),
+}
+
 @Serializable
 data class SpicePreferences(
     val profileName: String = "Spice Listener",
+    val progressBarStyle: ProgressBarStyle = ProgressBarStyle.MINIMAL,
+    val playerBarStyle: PlayerBarStyle = PlayerBarStyle.INLINE,
+    val accent: AccentPreset = AccentPreset.VIOLET,
+    val backgroundDepth: BackgroundDepth = BackgroundDepth.AMOLED,
+    val cardSize: CardSize = CardSize.COMFORTABLE,
+    val badgePolicy: BadgePolicy = BadgePolicy.AUTO,
+    val hoverControls: HoverControls = HoverControls.ON_HOVER,
+    val timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
+    val ambientBackdrop: Boolean = true,
+    val startPage: StartPage = StartPage.HOME,
     val youtubeCookies: CookieSource = CookieSource(),
     val soundCloudCookies: CookieSource = CookieSource(),
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
+    val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
+    /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
     val lastFmUsername: String = "",
     val listenBrainzUsername: String = "",
@@ -100,6 +190,7 @@ data class SpicePreferences(
     val soundCloudBrowser: BrowserSession? = null,
 ) {
     internal fun migrated(): SpicePreferences = copy(
+        discord = if (!discord.enabled && discordPresenceEnabled) discord.copy(enabled = true) else discord,
         youtubeCookies = youtubeCookies.takeIf { it.isConfigured }
             ?: youtubeBrowser?.let { CookieSource.ofBrowser(it) }
             ?: youtubeCookies,

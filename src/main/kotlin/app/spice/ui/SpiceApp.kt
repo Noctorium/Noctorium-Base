@@ -1,7 +1,14 @@
 package app.spice.ui
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.*
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsHoveredAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -24,6 +31,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -36,6 +47,13 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spice.core.*
+import app.spice.discord.DiscordPreview
+import app.spice.discord.DiscordPresenceSettings
+import app.spice.discord.PausedBehaviour
+import app.spice.discord.PresenceActivityKind
+import app.spice.discord.PresenceArtwork
+import app.spice.discord.PresenceButton
+import app.spice.discord.PresenceTimestamps
 import app.spice.domain.*
 import app.spice.lyrics.LyricLine
 import app.spice.lyrics.LyricsProviderOutcome
@@ -59,12 +77,23 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
     val ui by appState.ui.collectAsState()
     val queue by appState.queue.state.collectAsState()
     val playback by appState.playback.collectAsState()
+    val preferences = appState.settings.collectAsState().value.preferences
 
     DisposableEffect(appState) {
         onDispose { appState.close() }
     }
 
-    MaterialTheme(colorScheme = SpiceColors) {
+    // "Match the artwork" reuses the palette already sampled for the now playing backdrop, so the whole
+    // interface drifts with whatever is on.
+    val artworkPalette = rememberArtworkPalette(queue.current?.artworkUrl, queue.current?.provider ?: ProviderType.LOCAL)
+    val accentTarget = preferences.accent.argb?.let { Color(it) } ?: artworkPalette.primary
+    val accent by animateColorAsState(accentTarget, tween(600), label = "accent")
+    val background = when (preferences.backgroundDepth) {
+        BackgroundDepth.AMOLED -> AmoledBlack
+        BackgroundDepth.DARK -> SpiceDarkBackground
+    }
+
+    MaterialTheme(colorScheme = spiceColorScheme(accent, background)) {
         Surface(Modifier.fillMaxSize()) {
             Row {
                 NavigationRail(ui.destination, appState::navigate)
@@ -89,7 +118,7 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
 @Composable
 private fun NavigationRail(selected: Destination, navigate: (Destination) -> Unit) {
     Column(
-        Modifier.width(192.dp).fillMaxHeight().background(AmoledBlack).padding(horizontal = 16.dp, vertical = 18.dp),
+        Modifier.width(176.dp).fillMaxHeight().background(MaterialTheme.colorScheme.background).padding(horizontal = 16.dp, vertical = 18.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Box(
@@ -100,14 +129,24 @@ private fun NavigationRail(selected: Destination, navigate: (Destination) -> Uni
             Spacer(Modifier.width(10.dp))
             Text("Spice", fontSize = 22.sp, fontWeight = FontWeight.Bold)
         }
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(26.dp))
         NavItem("Home", Icons.Default.Home, selected == Destination.HOME) { navigate(Destination.HOME) }
         NavItem("Search", Icons.Default.Search, selected == Destination.SEARCH) { navigate(Destination.SEARCH) }
         NavItem("Library", Icons.Default.LibraryMusic, selected == Destination.LIBRARY) { navigate(Destination.LIBRARY) }
+        Spacer(Modifier.height(18.dp))
+        Text(
+            "PLAYING",
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .6f),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(start = 12.dp, bottom = 6.dp),
+        )
+        // Now Playing and Queue were reachable only by clicking the player bar; they are destinations, so they
+        // belong in the rail alongside everything else.
+        NavItem("Now playing", Icons.Default.GraphicEq, selected == Destination.NOW_PLAYING) { navigate(Destination.NOW_PLAYING) }
+        NavItem("Queue", Icons.AutoMirrored.Filled.QueueMusic, selected == Destination.QUEUE) { navigate(Destination.QUEUE) }
         Spacer(Modifier.weight(1f))
         NavItem("Settings", Icons.Default.Settings, selected == Destination.SETTINGS) { navigate(Destination.SETTINGS) }
-        Spacer(Modifier.height(8.dp))
-        Text("YouTube  •  YT Music  •  SoundCloud", color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .72f), fontSize = 10.sp)
     }
 }
 
@@ -133,26 +172,42 @@ private fun HomeScreen(ui: AppUiState, state: AppState) {
     val filtered = ui.homeSections.filter { section ->
         ui.providerFilter == ProviderFilter.ALL || section.provider.name == ui.providerFilter.name
     }
+    val recent = ui.recentTracks.filter { track ->
+        ui.providerFilter == ProviderFilter.ALL || track.provider.name == ui.providerFilter.name
+    }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 32.dp), contentPadding = PaddingValues(bottom = 36.dp)) {
         item {
             Spacer(Modifier.height(28.dp))
-            Text("Good evening", fontSize = 32.sp, fontWeight = FontWeight.Bold)
-            Text("Everything you love, together.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(verticalAlignment = Alignment.Bottom) {
+                Text(greeting(), fontSize = 32.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                FilterChips(ui.providerFilter, state::setFilter)
+            }
             Spacer(Modifier.height(20.dp))
-            FilterChips(ui.providerFilter, state::setFilter)
-            Spacer(Modifier.height(18.dp))
         }
         ui.errorMessage?.let { message ->
             item { PlaybackError(message) }
+        }
+        if (recent.isNotEmpty()) {
+            item {
+                TrackRowSection("Jump back in", "Where you left off", recent, state)
+            }
         }
         if (ui.homeLoading) {
             items(2) { LoadingSection() }
         } else {
             items(filtered, key = { it.id }) { section ->
-                HomeSectionView(section, state)
+                TrackRowSection(section.title, section.subtitle, section.tracks, state)
             }
         }
     }
+}
+
+/** Greeting keyed to the actual clock rather than a fixed string. */
+private fun greeting(): String = when (java.time.LocalTime.now().hour) {
+    in 5..11 -> "Good morning"
+    in 12..17 -> "Good afternoon"
+    in 18..22 -> "Good evening"
+    else -> "Still up"
 }
 
 @Composable
@@ -183,49 +238,94 @@ private fun FilterChips(selected: ProviderFilter, select: (ProviderFilter) -> Un
 }
 
 @Composable
-private fun HomeSectionView(section: HomeSection, state: AppState) {
-    Column(Modifier.padding(vertical = 16.dp)) {
-        Row(verticalAlignment = Alignment.Bottom) {
-            Column {
-                Text(section.title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                section.subtitle?.let { Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f), fontSize = 12.sp) }
-            }
+private fun TrackRowSection(title: String, subtitle: String?, tracks: List<Track>, state: AppState) {
+    // A section already names its service, so a per-card badge would be the same word a third time. The badge
+    // only earns its place when a row actually mixes services.
+    val preferences = state.settings.collectAsState().value.preferences
+    val mixedProviders = when (preferences.badgePolicy) {
+        BadgePolicy.ALWAYS -> true
+        BadgePolicy.NEVER -> false
+        BadgePolicy.AUTO -> tracks.map { it.provider }.distinct().size > 1
+    }
+    Column(Modifier.padding(vertical = 14.dp)) {
+        Text(title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+        subtitle?.takeIf { it.isNotBlank() }?.let {
+            Text(it, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .8f), fontSize = 12.sp)
         }
         Spacer(Modifier.height(14.dp))
         LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            items(section.tracks, key = { it.queueKey }) { track -> TrackCard(track, section.tracks, state) }
+            items(tracks, key = { it.queueKey }) { track ->
+                TrackCard(track, tracks, state, showBadge = mixedProviders)
+            }
         }
     }
 }
 
 @Composable
-private fun TrackCard(track: Track, sourceQueue: List<Track>, state: AppState) {
+private fun TrackCard(track: Track, sourceQueue: List<Track>, state: AppState, showBadge: Boolean = false) {
+    val preferences = state.settings.collectAsState().value.preferences
+    val interaction = remember { MutableInteractionSource() }
+    val isHovered by interaction.collectIsHoveredAsState()
+    // Whether controls hide until pointed at is a preference; some people would rather always see them.
+    val hovered = isHovered || preferences.hoverControls == HoverControls.ALWAYS
+    val cardWidth = preferences.cardSize.widthDp.dp
     Surface(
         onClick = { state.play(track, PlaybackOrigin.HOME, sourceQueue) },
         color = Color.Transparent,
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.width(160.dp),
+        shape = RoundedCornerShape(14.dp),
+        interactionSource = interaction,
+        modifier = Modifier.width(cardWidth).hoverable(interaction),
     ) {
         Column {
-            Box(
-                Modifier.size(160.dp).clip(RoundedCornerShape(16.dp)),
-            ) {
+            Box(Modifier.size(cardWidth).clip(RoundedCornerShape(14.dp))) {
                 RemoteArtwork(track.artworkUrl, track.provider, Modifier.fillMaxSize())
-                Box(Modifier.align(Alignment.TopStart).padding(9.dp)) { ProviderBadge(track.provider, compact = true) }
-                Box(Modifier.align(Alignment.TopEnd).padding(3.dp)) { TrackMenu(track, state) }
-                Box(
-                    Modifier.align(Alignment.BottomEnd).padding(10.dp).size(36.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Default.PlayArrow, "Play", tint = MaterialTheme.colorScheme.onPrimary)
+                if (showBadge) {
+                    Box(Modifier.align(Alignment.TopStart).padding(8.dp)) { ProviderBadge(track.provider, compact = true) }
+                }
+                if (hovered) {
+                    if (isHovered) Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .28f)))
+                    Box(Modifier.align(Alignment.TopEnd).padding(2.dp)) { TrackMenu(track, state) }
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).padding(10.dp).size(38.dp).clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                        contentAlignment = Alignment.Center,
+                    ) { Icon(Icons.Default.PlayArrow, "Play", tint = MaterialTheme.colorScheme.onPrimary) }
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-            Text(track.artistLine, maxLines = 1, overflow = TextOverflow.Ellipsis, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .78f), fontSize = 12.sp)
+            Spacer(Modifier.height(9.dp))
+            // Two lines, because one-line titles were cutting off mid-word.
+            Text(
+                track.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                lineHeight = 17.sp,
+            )
+            // yt-dlp leaves the uploader blank in flat listings, which used to render as the service name under
+            // every single card. Better to show nothing than to repeat the row heading.
+            track.displayArtist()?.let { artist ->
+                Text(
+                    artist,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .78f),
+                    fontSize = 12.sp,
+                )
+            }
         }
     }
 }
+
+/** The artist worth showing, or null when all we have is a stand-in for the service. */
+private fun Track.displayArtist(): String? = artistLine
+    .takeIf { line ->
+        line.isNotBlank() &&
+            !line.equals(provider.displayName, ignoreCase = true) &&
+            !line.equals("YouTube", ignoreCase = true) &&
+            !line.equals("YouTube Music", ignoreCase = true) &&
+            !line.equals("SoundCloud", ignoreCase = true)
+    }
 
 @Composable
 private fun LibraryScreen(state: AppState) {
@@ -876,13 +976,200 @@ private fun ProviderBadge(provider: ProviderType, compact: Boolean = false) {
     )
 }
 
+/** Volume, boost and mute in one popover, so the bar carries a single icon instead of four controls. */
+@Composable
+private fun VolumeControl(playback: PlaybackState, state: AppState) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        IconButton({ open = true }, Modifier.size(36.dp)) {
+            Icon(
+                if (playback.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
+                "Volume",
+                tint = when {
+                    playback.isMuted -> MaterialTheme.colorScheme.primary
+                    playback.volume > 1f -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        DropdownMenu(open, { open = false }) {
+            Column(Modifier.width(248.dp).padding(horizontal = 14.dp, vertical = 10.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Volume", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text(
+                        "${(playback.volume * 100).roundToInt()}%",
+                        color = if (playback.volume > 1f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                Slider(
+                    value = volumeToSliderPosition(playback.volume, playback.volumeBoostEnabled),
+                    onValueChange = { state.setVolume(sliderPositionToVolume(it, playback.volumeBoostEnabled)) },
+                    valueRange = 0f..1f,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    FilterChip(
+                        selected = playback.isMuted,
+                        onClick = state::toggleMute,
+                        label = { Text(if (playback.isMuted) "Muted" else "Mute", fontSize = 11.sp) },
+                        modifier = Modifier.height(30.dp),
+                    )
+                    FilterChip(
+                        selected = playback.volumeBoostEnabled,
+                        onClick = state::toggleVolumeBoost,
+                        label = { Text("Boost ×10", fontSize = 11.sp) },
+                        leadingIcon = { Icon(Icons.Default.Bolt, null, Modifier.size(14.dp)) },
+                        modifier = Modifier.height(30.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * One row, left to right: transport, the track, the seek bar, then the tools. Denser than the stacked layout
+ * and it gives the rest of the window back about thirty pixels.
+ */
+@Composable
+private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: AppState) {
+    val preferences = state.settings.collectAsState().value.preferences
+    val current = queue.current
+    var addToPlaylist by remember { mutableStateOf(false) }
+    val library by state.library.collectAsState()
+
+    if (addToPlaylist && current != null) {
+        AddToPlaylistDialog(current, library.localPlaylists, state) { addToPlaylist = false }
+    }
+
+    Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth().height(74.dp)) {
+        Column {
+            HorizontalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = .22f))
+            Row(
+                Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(state::toggleShuffle, Modifier.size(34.dp)) {
+                    Icon(
+                        Icons.Default.Shuffle,
+                        "Shuffle",
+                        Modifier.size(18.dp),
+                        tint = if (queue.shuffleEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                IconButton(state::previous, Modifier.size(34.dp)) {
+                    Icon(Icons.Default.SkipPrevious, "Previous track", Modifier.size(20.dp))
+                }
+                // The one filled control in the bar, so the eye lands on it first.
+                FilledIconButton(
+                    state::togglePlayback,
+                    Modifier.size(42.dp),
+                    enabled = playback.status != PlaybackStatus.RESOLVING && current != null,
+                ) {
+                    if (playback.status == PlaybackStatus.RESOLVING) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    } else {
+                        Icon(
+                            if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                            if (playback.isPlaying) "Pause" else "Play",
+                            Modifier.size(24.dp),
+                        )
+                    }
+                }
+                IconButton(state::next, Modifier.size(34.dp)) {
+                    Icon(Icons.Default.SkipNext, "Next track", Modifier.size(20.dp))
+                }
+                IconButton(state::cycleRepeat, Modifier.size(34.dp)) {
+                    Icon(
+                        if (queue.repeatMode == RepeatMode.ONE) Icons.Default.RepeatOne else Icons.Default.Repeat,
+                        "Repeat",
+                        Modifier.size(18.dp),
+                        tint = if (queue.repeatMode != RepeatMode.OFF) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                current?.let { track ->
+                    LikeButton(track, state, size = 34.dp)
+                    IconButton({ addToPlaylist = true }, Modifier.size(34.dp)) {
+                        Icon(
+                            Icons.Default.BookmarkBorder,
+                            "Add to playlist",
+                            Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(14.dp))
+                Row(
+                    Modifier.width(230.dp).clickable(enabled = current != null) { state.navigate(Destination.NOW_PLAYING) },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    if (current != null) {
+                        RemoteArtwork(current.artworkUrl, current.provider, Modifier.size(40.dp).clip(RoundedCornerShape(7.dp)))
+                    } else {
+                        Box(
+                            Modifier.size(40.dp).clip(RoundedCornerShape(7.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
+                            contentAlignment = Alignment.Center,
+                        ) { Icon(Icons.Default.MusicNote, null, Modifier.size(18.dp)) }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            current?.title ?: "Nothing playing",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp,
+                        )
+                        Text(
+                            playback.errorMessage ?: current?.artistLine ?: "Choose a track to start",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            color = if (playback.errorMessage != null) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(16.dp))
+                PlaybackProgressBar(
+                    playback = playback,
+                    onSeek = state::seekTo,
+                    modifier = Modifier.weight(1f),
+                    style = preferences.progressBarStyle,
+                    timeDisplay = preferences.timeDisplay,
+                )
+                Spacer(Modifier.width(12.dp))
+
+                BadgedBox(badge = { if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) } }) {
+                    IconButton({ state.navigate(Destination.QUEUE) }, Modifier.size(34.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue", Modifier.size(19.dp))
+                    }
+                }
+                IconButton({ state.navigate(Destination.NOW_PLAYING) }, Modifier.size(34.dp)) {
+                    Icon(Icons.Default.Lyrics, "Lyrics", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                VolumeControl(playback, state)
+            }
+        }
+    }
+}
+
 @Composable
 private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppState) {
+    if (state.settings.collectAsState().value.preferences.playerBarStyle == PlayerBarStyle.INLINE) {
+        InlinePlayerBar(queue, playback, state)
+        return
+    }
     val current = queue.current
+    val playerPreferences = state.settings.collectAsState().value.preferences
+    val progressStyle = playerPreferences.progressBarStyle
+    val timeDisplay = playerPreferences.timeDisplay
     Surface(
         shadowElevation = 0.dp,
         color = SpicePanel,
-        modifier = Modifier.fillMaxWidth().height(122.dp).clickable(
+        modifier = Modifier.fillMaxWidth().height(100.dp).clickable(
             enabled = current != null,
             onClickLabel = "Open now playing",
             onClick = { state.navigate(Destination.NOW_PLAYING) },
@@ -896,6 +1183,8 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                     playback = playback,
                     onSeek = state::seekTo,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = if (compact) 10.dp else 18.dp),
+                    style = progressStyle,
+                    timeDisplay = timeDisplay,
                 )
                 Row(
                     Modifier.fillMaxWidth().weight(1f).padding(horizontal = if (compact) 10.dp else 18.dp),
@@ -984,35 +1273,11 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // Volume, its readout and the boost toggle used to sit permanently in the bar. They now
+                        // live behind the speaker icon, which is the only one of the four you reach for often.
                         if (!compact) {
-                            IconButton(state::toggleMute, Modifier.size(36.dp)) {
-                                Icon(
-                                    if (playback.isMuted) Icons.AutoMirrored.Filled.VolumeOff else Icons.AutoMirrored.Filled.VolumeUp,
-                                    if (playback.isMuted) "Unmute" else "Mute",
-                                    tint = if (playback.isMuted) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Slider(
-                                value = volumeToSliderPosition(playback.volume, playback.volumeBoostEnabled),
-                                onValueChange = { state.setVolume(sliderPositionToVolume(it, playback.volumeBoostEnabled)) },
-                                modifier = Modifier.width(92.dp),
-                                valueRange = 0f..1f,
-                            )
-                            Text(
-                                "${(playback.volume * 100).roundToInt()}%",
-                                color = if (playback.volume > 1f) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                modifier = Modifier.width(34.dp),
-                            )
-                            FilterChip(
-                                selected = playback.volumeBoostEnabled,
-                                onClick = state::toggleVolumeBoost,
-                                label = { Text("BOOST ×10", fontSize = 9.sp, fontWeight = FontWeight.Bold) },
-                                leadingIcon = { Icon(Icons.Default.Bolt, null, Modifier.size(14.dp)) },
-                                modifier = Modifier.height(30.dp),
-                            )
-                            Spacer(Modifier.width(8.dp))
+                            VolumeControl(playback, state)
+                            Spacer(Modifier.width(4.dp))
                         }
                         BadgedBox(
                             badge = {
@@ -1066,83 +1331,185 @@ private fun NowPlayingScreen(queue: QueueState, playback: PlaybackState, state: 
         return
     }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        if (maxWidth >= 840.dp) {
-            Row(Modifier.fillMaxSize()) {
-                NowPlayingHero(current, playback, Modifier.weight(1f).fillMaxHeight())
-                VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .25f))
-                NowPlayingPanel(
-                    queue = queue,
-                    selectedTab = selectedTab,
-                    selectTab = { selectedTab = it },
-                    state = state,
-                    modifier = Modifier.width(410.dp).fillMaxHeight(),
-                )
-            }
-        } else {
-            Column(Modifier.fillMaxSize()) {
-                NowPlayingHero(current, playback, Modifier.fillMaxWidth().height(330.dp))
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .25f))
-                NowPlayingPanel(
-                    queue = queue,
-                    selectedTab = selectedTab,
-                    selectTab = { selectedTab = it },
-                    state = state,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                )
+    // The backdrop takes its colour from the cover, so the room changes with the record.
+    val ambientEnabled = state.settings.collectAsState().value.preferences.ambientBackdrop
+    val palette = rememberArtworkPalette(current.artworkUrl, current.provider)
+    val ambient by animateColorAsState(
+        if (ambientEnabled) palette.primary else MaterialTheme.colorScheme.background,
+        tween(700),
+        label = "ambient",
+    )
+    val ambientDeep by animateColorAsState(
+        if (ambientEnabled) palette.secondary else MaterialTheme.colorScheme.background,
+        tween(700),
+        label = "ambientDeep",
+    )
+
+    Box(
+        Modifier.fillMaxSize().background(
+            Brush.linearGradient(
+                listOf(
+                    ambient.copy(alpha = .42f),
+                    ambientDeep.copy(alpha = .30f),
+                    AmoledBlack,
+                ),
+            ),
+        ),
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            if (maxWidth >= 840.dp) {
+                Row(Modifier.fillMaxSize().padding(20.dp), horizontalArrangement = Arrangement.spacedBy(20.dp)) {
+                    NowPlayingHero(current, playback, state, Modifier.weight(1f).fillMaxHeight())
+                    GlassPanel(Modifier.width(430.dp).fillMaxHeight()) {
+                        NowPlayingPanel(
+                            queue = queue,
+                            selectedTab = selectedTab,
+                            selectTab = { selectedTab = it },
+                            state = state,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
+            } else {
+                Column(Modifier.fillMaxSize().padding(14.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    NowPlayingHero(current, playback, state, Modifier.fillMaxWidth().height(360.dp))
+                    GlassPanel(Modifier.fillMaxWidth().weight(1f)) {
+                        NowPlayingPanel(
+                            queue = queue,
+                            selectedTab = selectedTab,
+                            selectTab = { selectedTab = it },
+                            state = state,
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                }
             }
         }
     }
 }
 
+/** Translucent rounded container that lets the ambient backdrop show through. */
 @Composable
-private fun NowPlayingHero(track: Track, playback: PlaybackState, modifier: Modifier = Modifier) {
-    BoxWithConstraints(
-        modifier.background(
-            Brush.radialGradient(
-                listOf(MaterialTheme.colorScheme.primary.copy(alpha = .14f), AmoledBlack),
-            ),
-        ),
-    ) {
-        val artworkSize = minOf(370.dp, maxWidth * .72f, maxHeight * .62f)
-        Column(
-            Modifier.fillMaxSize().padding(horizontal = 36.dp, vertical = 24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Row(Modifier.widthIn(max = 460.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Text("NOW PLAYING", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                Spacer(Modifier.weight(1f))
-                ProviderBadge(track.provider)
-            }
-            Spacer(Modifier.height(16.dp))
-            Surface(
-                shape = RoundedCornerShape(24.dp),
-                shadowElevation = 18.dp,
-                color = MaterialTheme.colorScheme.surfaceVariant,
-            ) {
-                RemoteArtwork(track.artworkUrl, track.provider, Modifier.size(artworkSize))
-            }
-            Spacer(Modifier.height(20.dp))
+private fun GlassPanel(modifier: Modifier = Modifier, content: @Composable BoxScope.() -> Unit) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(22.dp),
+        color = Color.White.copy(alpha = .055f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = .08f)),
+        content = { Box(Modifier.fillMaxSize(), content = content) },
+    )
+}
+
+@Composable
+private fun NowPlayingHero(
+    track: Track,
+    playback: PlaybackState,
+    state: AppState,
+    modifier: Modifier = Modifier,
+) {
+    val playerPreferences = state.settings.collectAsState().value.preferences
+    val progressStyle = playerPreferences.progressBarStyle
+    val timeDisplay = playerPreferences.timeDisplay
+    BoxWithConstraints(modifier) {
+        val artworkSize = minOf(430.dp, maxWidth * .82f, maxHeight * .58f)
+        Column(Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 18.dp)) {
+            // Title and artist lead, above the cover, the way a record sleeve is captioned.
             Text(
                 track.title,
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                fontSize = 24.sp,
+                fontSize = 26.sp,
                 fontWeight = FontWeight.Bold,
+                lineHeight = 31.sp,
             )
-            Spacer(Modifier.height(4.dp))
+            Spacer(Modifier.height(3.dp))
             Text(
                 track.artistLine,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = Color.White.copy(alpha = .62f),
+                fontSize = 14.sp,
             )
+            Spacer(Modifier.height(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TransportControls(playback, state)
+                Spacer(Modifier.width(20.dp))
+                PlaybackProgressBar(playback, state::seekTo, Modifier.weight(1f), progressStyle, timeDisplay)
+            }
+            Spacer(Modifier.height(18.dp))
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                Surface(shape = RoundedCornerShape(18.dp), shadowElevation = 22.dp, color = Color.Transparent) {
+                    RemoteArtwork(
+                        track.artworkUrl,
+                        track.provider,
+                        Modifier.size(artworkSize).clip(RoundedCornerShape(18.dp)),
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            HeroFooter(track, playback, state)
+        }
+    }
+}
+
+/** Large borderless transport, weighted so play is unmistakably the primary action. */
+@Composable
+private fun TransportControls(playback: PlaybackState, state: AppState) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        IconButton(state::previous, Modifier.size(44.dp)) {
+            Icon(Icons.Default.SkipPrevious, "Previous track", Modifier.size(28.dp), tint = Color.White.copy(alpha = .82f))
+        }
+        IconButton(
+            state::togglePlayback,
+            Modifier.size(56.dp),
+            enabled = playback.status != PlaybackStatus.RESOLVING,
+        ) {
             if (playback.status == PlaybackStatus.RESOLVING) {
-                Spacer(Modifier.height(12.dp))
-                LinearProgressIndicator(Modifier.widthIn(max = 280.dp).fillMaxWidth())
+                CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp, color = Color.White)
+            } else {
+                Icon(
+                    if (playback.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                    if (playback.isPlaying) "Pause" else "Play",
+                    Modifier.size(42.dp),
+                    tint = Color.White,
+                )
             }
         }
+        IconButton(state::next, Modifier.size(44.dp)) {
+            Icon(Icons.Default.SkipNext, "Next track", Modifier.size(28.dp), tint = Color.White.copy(alpha = .82f))
+        }
+    }
+}
+
+/** The line being sung right now, flanked by the actions that belong to this track. */
+@Composable
+private fun HeroFooter(track: Track, playback: PlaybackState, state: AppState) {
+    val lyrics by state.lyrics.collectAsState()
+    val activeLine = lyrics.outcomes
+        .firstOrNull { it.provider == lyrics.selectedProvider }
+        ?.result
+        ?.takeIf { it.synced }
+        ?.lines
+        ?.lastOrNull { line -> (line.startTimeMs ?: Long.MAX_VALUE) <= playback.positionMs }
+        ?.text
+        ?.takeIf { it.isNotBlank() }
+
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        LikeButton(track, state, size = 34.dp)
+        IconButton({ state.copyTrackLink(track) }, Modifier.size(34.dp)) {
+            Icon(Icons.Default.Link, "Copy link", Modifier.size(17.dp), tint = Color.White.copy(alpha = .6f))
+        }
+        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            Text(
+                activeLine ?: track.album?.title ?: "",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                color = Color.White.copy(alpha = if (activeLine != null) .92f else .45f),
+                fontSize = 14.sp,
+                fontWeight = if (activeLine != null) FontWeight.Medium else FontWeight.Normal,
+            )
+        }
+        ProviderBadge(track.provider, compact = true)
     }
 }
 
@@ -1154,30 +1521,30 @@ private fun NowPlayingPanel(
     state: AppState,
     modifier: Modifier = Modifier,
 ) {
-    Surface(modifier, color = SpicePanel.copy(alpha = .72f)) {
-        Column(Modifier.fillMaxSize().padding(top = 22.dp)) {
-            Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    // Transparent so the ambient backdrop reads through the glass panel behind this.
+    Surface(modifier, color = Color.Transparent) {
+        Column(Modifier.fillMaxSize().padding(top = 14.dp)) {
+            // Rounded chips rather than a segmented bar, matching the pill language of the rest of the panel.
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
                 NowPlayingTab.entries.forEach { tab ->
                     val selected = selectedTab == tab
                     Surface(
                         onClick = { selectTab(tab) },
-                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                        shape = RoundedCornerShape(9.dp),
-                        modifier = Modifier.weight(1f),
+                        color = if (selected) Color.White.copy(alpha = .16f) else Color.Transparent,
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = if (selected) .18f else .09f)),
+                        shape = RoundedCornerShape(20.dp),
                     ) {
                         Text(
                             tab.label,
-                            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            color = if (selected) Color.White else Color.White.copy(alpha = .6f),
                             fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            modifier = Modifier.padding(vertical = 10.dp),
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            modifier = Modifier.padding(horizontal = 15.dp, vertical = 8.dp),
                         )
                     }
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .22f))
+            Spacer(Modifier.height(12.dp))
             when (selectedTab) {
                 NowPlayingTab.UP_NEXT -> UpNextPanel(queue, state)
                 NowPlayingTab.LYRICS -> queue.current?.let { LyricsPanel(it, state) }
@@ -1471,59 +1838,135 @@ private fun LyricsNotFound(outcomes: List<LyricsProviderOutcome>, errorMessage: 
 @Composable
 private fun UpNextPanel(queue: QueueState, state: AppState) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 15.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
             Column(Modifier.weight(1f)) {
-                Text("Playing from", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
                 Text(
                     queue.context?.originType?.name?.lowercase()?.replaceFirstChar(Char::uppercase) ?: "Queue",
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                )
+                Text(
+                    "${queue.currentIndex + 1} of ${queue.tracks.size}",
+                    color = Color.White.copy(alpha = .5f),
+                    fontSize = 11.sp,
                 )
             }
-            Text("${queue.currentIndex + 1} / ${queue.tracks.size}", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            // Pills rather than icon buttons, so the two destructive-ish actions read clearly.
+            QueueActionPill("Shuffle", Icons.Default.Shuffle, queue.shuffleEnabled, state::toggleShuffle)
+            QueueActionPill("Clear", Icons.Default.Close, false, state::clearQueue)
         }
+        HorizontalDivider(color = Color.White.copy(alpha = .07f))
         LazyColumn(
             Modifier.fillMaxSize().padding(horizontal = 10.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
             contentPadding = PaddingValues(bottom = 18.dp),
         ) {
             itemsIndexed(queue.tracks, key = { index, track -> "expanded:${track.queueKey}:$index" }) { index, track ->
-                val playing = index == queue.currentIndex
-                Surface(
-                    onClick = { state.jumpToQueueItem(index) },
-                    color = if (playing) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f) else Color.Transparent,
-                    shape = RoundedCornerShape(10.dp),
-                ) {
-                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(34.dp), contentAlignment = Alignment.Center) {
-                            if (playing) {
-                                Icon(Icons.Default.GraphicEq, "Playing", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
-                            } else {
-                                RemoteArtwork(track.artworkUrl, track.provider, Modifier.fillMaxSize().clip(RoundedCornerShape(6.dp)))
-                            }
-                        }
-                        Spacer(Modifier.width(10.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(
-                                track.title,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                fontSize = 13.sp,
-                                fontWeight = if (playing) FontWeight.Bold else FontWeight.Medium,
-                            )
-                            Text(
-                                track.artistLine,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                fontSize = 11.sp,
-                            )
-                        }
-                        track.durationMs?.let {
-                            Text(formatPlaybackTime(it), color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
-                        }
+                QueueRow(track, index, index == queue.currentIndex, state)
+            }
+        }
+    }
+}
+
+/** Small pill action for the queue header. */
+@Composable
+private fun QueueActionPill(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    active: Boolean,
+    action: () -> Unit,
+) {
+    Surface(
+        onClick = action,
+        shape = RoundedCornerShape(20.dp),
+        color = if (active) MaterialTheme.colorScheme.primary.copy(alpha = .28f) else Color.White.copy(alpha = .08f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = if (active) .22f else .1f)),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                icon,
+                null,
+                Modifier.size(14.dp),
+                tint = if (active) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .75f),
+            )
+            Spacer(Modifier.width(6.dp))
+            Text(
+                label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (active) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .82f),
+            )
+        }
+    }
+}
+
+/**
+ * One line of the queue. Play and remove sit on the row itself, appearing on hover the way the reference does,
+ * so the list stays quiet until you reach for it.
+ */
+@Composable
+private fun QueueRow(track: Track, index: Int, playing: Boolean, state: AppState) {
+    val interaction = remember { MutableInteractionSource() }
+    val isHovered by interaction.collectIsHoveredAsState()
+    val hovered = isHovered ||
+        state.settings.collectAsState().value.preferences.hoverControls == HoverControls.ALWAYS
+    Surface(
+        onClick = { state.jumpToQueueItem(index) },
+        color = when {
+            playing -> Color.White.copy(alpha = .11f)
+            hovered -> Color.White.copy(alpha = .06f)
+            else -> Color.Transparent
+        },
+        shape = RoundedCornerShape(12.dp),
+        interactionSource = interaction,
+        modifier = Modifier.hoverable(interaction),
+    ) {
+        Row(Modifier.fillMaxWidth().padding(7.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(42.dp).clip(RoundedCornerShape(8.dp)), contentAlignment = Alignment.Center) {
+                RemoteArtwork(track.artworkUrl, track.provider, Modifier.fillMaxSize())
+                if (playing) {
+                    Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = .45f)), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Default.GraphicEq, "Playing", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                     }
+                }
+            }
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    track.title,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontSize = 13.sp,
+                    fontWeight = if (playing) FontWeight.Bold else FontWeight.Medium,
+                    color = if (playing) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .92f),
+                )
+                Text(
+                    track.artistLine,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = Color.White.copy(alpha = .5f),
+                    fontSize = 11.sp,
+                )
+            }
+            if (hovered) {
+                IconButton({ state.jumpToQueueItem(index) }, Modifier.size(30.dp)) {
+                    Icon(Icons.Default.PlayArrow, "Play now", Modifier.size(18.dp), tint = Color.White.copy(alpha = .85f))
+                }
+                IconButton({ state.removeQueueItem(index) }, Modifier.size(30.dp)) {
+                    Icon(Icons.Default.Close, "Remove from queue", Modifier.size(16.dp), tint = Color.White.copy(alpha = .6f))
+                }
+            } else {
+                track.durationMs?.let {
+                    Text(formatPlaybackTime(it), color = Color.White.copy(alpha = .45f), fontSize = 11.sp)
                 }
             }
         }
@@ -1646,6 +2089,8 @@ private fun PlaybackProgressBar(
     playback: PlaybackState,
     onSeek: (Long) -> Unit,
     modifier: Modifier = Modifier,
+    style: ProgressBarStyle = ProgressBarStyle.MINIMAL,
+    timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
 ) {
     val durationMs = playback.durationMs.coerceAtLeast(0)
     val canSeek = playback.track != null && durationMs > 0 && playback.status != PlaybackStatus.RESOLVING
@@ -1653,6 +2098,31 @@ private fun PlaybackProgressBar(
     var draggedPosition by remember { mutableFloatStateOf(0f) }
     val displayedPosition = if (dragging) draggedPosition else playback.positionMs.toFloat()
     val maximum = durationMs.coerceAtLeast(1).toFloat()
+    // The right-hand figure is either the length of the track or what is left of it.
+    val trailing = when (timeDisplay) {
+        TimeDisplay.TOTAL -> formatPlaybackTime(durationMs)
+        TimeDisplay.REMAINING -> "-" + formatPlaybackTime((maximum - displayedPosition).toLong().coerceAtLeast(0))
+    }
+
+    if (style == ProgressBarStyle.MINIMAL) {
+        MinimalProgressBar(
+            positionMs = displayedPosition,
+            maximumMs = maximum,
+            trailingLabel = trailing,
+            canSeek = canSeek,
+            onScrub = { fraction ->
+                dragging = true
+                draggedPosition = (fraction * maximum).coerceIn(0f, maximum)
+            },
+            onScrubFinished = {
+                val target = draggedPosition.toLong()
+                dragging = false
+                onSeek(target)
+            },
+            modifier = modifier,
+        )
+        return
+    }
 
     Row(modifier.height(34.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(
@@ -1677,10 +2147,95 @@ private fun PlaybackProgressBar(
             modifier = Modifier.weight(1f),
         )
         Text(
-            formatPlaybackTime(durationMs),
+            trailing,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.sp,
             modifier = Modifier.width(48.dp),
+        )
+    }
+}
+
+/**
+ * A hairline seek bar: times at each end, a thin track, and a small dot for the handle. Drawn directly rather
+ * than built from a Material slider, because the point of it is the absence of furniture.
+ */
+@Composable
+private fun MinimalProgressBar(
+    positionMs: Float,
+    maximumMs: Float,
+    trailingLabel: String,
+    canSeek: Boolean,
+    onScrub: (Float) -> Unit,
+    onScrubFinished: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var widthPx by remember { mutableIntStateOf(1) }
+    val fraction = (positionMs / maximumMs).coerceIn(0f, 1f)
+    val trackColour = Color.White.copy(alpha = .22f)
+    val filledColour = MaterialTheme.colorScheme.primary
+
+    Row(modifier.height(30.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            formatPlaybackTime(positionMs.toLong()),
+            color = Color.White.copy(alpha = .68f),
+            fontSize = 11.sp,
+            modifier = Modifier.width(42.dp),
+        )
+        Box(
+            Modifier
+                .weight(1f)
+                .height(24.dp)
+                .onSizeChanged { widthPx = it.width.coerceAtLeast(1) }
+                .pointerInput(canSeek, widthPx) {
+                    if (!canSeek) return@pointerInput
+                    detectTapGestures { offset ->
+                        onScrub(offset.x / widthPx)
+                        onScrubFinished()
+                    }
+                }
+                .pointerInput(canSeek, widthPx) {
+                    if (!canSeek) return@pointerInput
+                    detectHorizontalDragGestures(
+                        onDragStart = { offset -> onScrub(offset.x / widthPx) },
+                        onDragEnd = { onScrubFinished() },
+                        onDragCancel = { onScrubFinished() },
+                        onHorizontalDrag = { change, _ ->
+                            onScrub(change.position.x / widthPx)
+                            change.consume()
+                        },
+                    )
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.fillMaxWidth().height(24.dp)) {
+                val centreY = size.height / 2f
+                val thickness = 3.dp.toPx()
+                drawLine(
+                    color = trackColour,
+                    start = Offset(0f, centreY),
+                    end = Offset(size.width, centreY),
+                    strokeWidth = thickness,
+                    cap = StrokeCap.Round,
+                )
+                val head = size.width * fraction
+                if (head > 0f) {
+                    drawLine(
+                        color = filledColour,
+                        start = Offset(0f, centreY),
+                        end = Offset(head, centreY),
+                        strokeWidth = thickness,
+                        cap = StrokeCap.Round,
+                    )
+                }
+                if (canSeek) drawCircle(color = filledColour, radius = 6.dp.toPx(), center = Offset(head, centreY))
+            }
+        }
+        Text(
+            trailingLabel,
+            color = Color.White.copy(alpha = .68f),
+            fontSize = 11.sp,
+            textAlign = androidx.compose.ui.text.style.TextAlign.End,
+            modifier = Modifier.width(42.dp),
         )
     }
 }
@@ -1704,7 +2259,7 @@ private fun PlaybackError(message: String) {
     }
 }
 
-private enum class SettingsPage { PROFILE, YOUTUBE, SOUNDCLOUD, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS }
+private enum class SettingsPage { PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS }
 
 @Composable
 private fun SettingsScreen(state: AppState) {
@@ -1714,6 +2269,7 @@ private fun SettingsScreen(state: AppState) {
         SettingsDetailHeader(pageTitle(page!!), { page = null }) {
             when (page) {
                 SettingsPage.PROFILE -> ProfileSettingsPanel(settings.preferences, state)
+                SettingsPage.CUSTOMIZATION -> CustomizationPanel(settings.preferences, state)
                 SettingsPage.YOUTUBE -> GoogleAccountPanel(settings, state)
                 SettingsPage.SOUNDCLOUD -> AccountConnectionPanel(
                     ProviderType.SOUNDCLOUD,
@@ -1763,6 +2319,14 @@ private fun SettingsScreen(state: AppState) {
         }
         item {
             SettingsCard(
+                "Customization",
+                "Seek bar style and how the player looks",
+                Icons.Default.Tune,
+                { page = SettingsPage.CUSTOMIZATION },
+            )
+        }
+        item {
+            SettingsCard(
                 "YouTube Music",
                 accountSummary(settings.preferences.youtubeCookies, settings.youtubeAccount),
                 Icons.Default.PlayCircle,
@@ -1807,6 +2371,7 @@ private fun SettingsScreen(state: AppState) {
 
 private fun pageTitle(page: SettingsPage) = when (page) {
     SettingsPage.PROFILE -> "Your Spice profile"
+    SettingsPage.CUSTOMIZATION -> "Customization"
     SettingsPage.YOUTUBE -> "YouTube Music account"
     SettingsPage.SOUNDCLOUD -> "SoundCloud account"
     SettingsPage.SCROBBLING -> "Scrobbling"
@@ -1824,6 +2389,259 @@ private fun SettingsDetailHeader(title: String, back: () -> Unit, content: @Comp
         }
         Spacer(Modifier.height(18.dp))
         Box(Modifier.fillMaxSize()) { content() }
+    }
+}
+
+/**
+ * Choices about how Spice looks. Each option previews itself with a real, working control rather than a
+ * screenshot, so the choice is made by looking at the thing itself.
+ */
+@Composable
+private fun CustomizationPanel(preferences: SpicePreferences, state: AppState) {
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsPanelCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Tune, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(9.dp))
+                Text("Seek bar", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Used in the player bar and on the now playing screen. Both can be dragged and clicked to seek.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(15.dp))
+            ChoiceRow(
+                "Player bar layout",
+                PlayerBarStyle.entries,
+                preferences.playerBarStyle,
+                { it.displayName },
+                state::setPlayerBarStyle,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                preferences.playerBarStyle.description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(18.dp))
+            Text("Seek bar style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(9.dp))
+            ProgressBarStyle.entries.forEach { option ->
+                ProgressStyleOption(
+                    option = option,
+                    selected = preferences.progressBarStyle == option,
+                    choose = { state.setProgressBarStyle(option) },
+                )
+                Spacer(Modifier.height(10.dp))
+            }
+            ChoiceRow("Right-hand figure", TimeDisplay.entries, preferences.timeDisplay, { it.displayName }, state::setTimeDisplay)
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.Palette, "Colour")
+            Spacer(Modifier.height(12.dp))
+            Text("Accent", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(9.dp))
+            // Swatches rather than names: the colour is the label.
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AccentPreset.entries.forEach { option ->
+                    AccentSwatch(option, preferences.accent == option) { state.setAccent(option) }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                preferences.accent.let {
+                    if (it == AccentPreset.ARTWORK) "The interface follows the cover of whatever is playing."
+                    else it.displayName
+                },
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(16.dp))
+            ChoiceRow(
+                "Background",
+                BackgroundDepth.entries,
+                preferences.backgroundDepth,
+                { it.displayName },
+                state::setBackgroundDepth,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                preferences.backgroundDepth.description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(16.dp))
+            ToggleRow(
+                "Ambient backdrop on now playing",
+                "Tints the screen with colours sampled from the cover.",
+                preferences.ambientBackdrop,
+                state::setAmbientBackdrop,
+            )
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.GridView, "Browsing")
+            Spacer(Modifier.height(12.dp))
+            ChoiceRow("Card size", CardSize.entries, preferences.cardSize, { it.displayName }, state::setCardSize)
+            Spacer(Modifier.height(16.dp))
+            ChoiceRow(
+                "Service badges",
+                BadgePolicy.entries,
+                preferences.badgePolicy,
+                { it.displayName },
+                state::setBadgePolicy,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(preferences.badgePolicy.description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            Spacer(Modifier.height(16.dp))
+            ChoiceRow(
+                "Play and menu buttons",
+                HoverControls.entries,
+                preferences.hoverControls,
+                { it.displayName },
+                state::setHoverControls,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(preferences.hoverControls.description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.Start, "Startup")
+            Spacer(Modifier.height(12.dp))
+            ChoiceRow("Open Spice on", StartPage.entries, preferences.startPage, { it.displayName }, state::setStartPage)
+        }
+    }
+}
+
+@Composable
+private fun CardHeading(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
+        Spacer(Modifier.width(9.dp))
+        Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+    }
+}
+
+/** A labelled row of pills. Generic so every choice in this panel looks and behaves identically. */
+@Composable
+private fun <T> ChoiceRow(
+    label: String,
+    options: List<T>,
+    selected: T,
+    name: (T) -> String,
+    choose: (T) -> Unit,
+) {
+    Column {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            options.forEach { option ->
+                val active = option == selected
+                Surface(
+                    onClick = { choose(option) },
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (active) MaterialTheme.colorScheme.primaryContainer else Color.White.copy(alpha = .05f),
+                    border = BorderStroke(
+                        1.dp,
+                        if (active) MaterialTheme.colorScheme.primary.copy(alpha = .55f) else Color.White.copy(alpha = .1f),
+                    ),
+                ) {
+                    Text(
+                        name(option),
+                        color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(title: String, description: String, checked: Boolean, change: (Boolean) -> Unit) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+            Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }
+        Switch(checked, change)
+    }
+}
+
+@Composable
+private fun AccentSwatch(option: AccentPreset, selected: Boolean, choose: () -> Unit) {
+    val colour = option.argb?.let { Color(it) }
+    Surface(
+        onClick = choose,
+        shape = CircleShape,
+        color = Color.Transparent,
+        border = BorderStroke(
+            2.dp,
+            if (selected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = .16f),
+        ),
+        modifier = Modifier.size(40.dp),
+    ) {
+        Box(Modifier.padding(5.dp), contentAlignment = Alignment.Center) {
+            if (colour != null) {
+                Box(Modifier.fillMaxSize().clip(CircleShape).background(colour))
+            } else {
+                // The artwork option shows a spectrum rather than a single colour, since it has none of its own.
+                Box(
+                    Modifier.fillMaxSize().clip(CircleShape).background(
+                        Brush.sweepGradient(
+                            listOf(
+                                Color(0xFFFF6EC7), Color(0xFFFF9757), Color(0xFF5FE3B0),
+                                Color(0xFF5AB2FF), Color(0xFFB47CFF), Color(0xFFFF6EC7),
+                            ),
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ProgressStyleOption(option: ProgressBarStyle, selected: Boolean, choose: () -> Unit) {
+    // The preview is a live bar frozen at a plausible position, so each option shows exactly what it will be.
+    val preview = remember {
+        PlaybackState(
+            track = null,
+            status = PlaybackStatus.PAUSED,
+            positionMs = 156_000,
+            durationMs = 258_000,
+        )
+    }
+    Surface(
+        onClick = choose,
+        shape = RoundedCornerShape(14.dp),
+        color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .4f) else Color.White.copy(alpha = .04f),
+        border = BorderStroke(
+            1.dp,
+            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .5f) else Color.White.copy(alpha = .08f),
+        ),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                RadioButton(selected = selected, onClick = choose)
+                Spacer(Modifier.width(6.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(option.displayName, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                    Text(option.description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Surface(color = AmoledBlack.copy(alpha = .55f), shape = RoundedCornerShape(10.dp)) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+                    PlaybackProgressBar(preview, {}, Modifier.fillMaxWidth(), option)
+                }
+            }
+        }
     }
 }
 
@@ -2616,14 +3434,287 @@ private fun LyricsSettingsPanel() {
 
 @Composable
 private fun DiscordSettingsPanel(preferences: SpicePreferences, state: AppState) {
-    SettingsPanelCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.SportsEsports, null, Modifier.size(42.dp), tint = MaterialTheme.colorScheme.primary)
-            Spacer(Modifier.width(14.dp)); Column(Modifier.weight(1f)) { Text("Show listening activity", fontSize = 18.sp, fontWeight = FontWeight.Bold); Text("Share the current track when Discord integration is available.", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp) }
-            Switch(preferences.discordPresenceEnabled, state::setDiscordPresence)
+    val discord = preferences.discord
+    val status by state.discordStatus.collectAsState()
+    var applicationId by remember(discord.applicationId) { mutableStateOf(discord.applicationId) }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsPanelCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.SportsEsports, null, Modifier.size(38.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(13.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Show listening activity", fontSize = 18.sp, fontWeight = FontWeight.Bold)
+                    Text(
+                        "Publishes the current track to your Discord profile over the local client. Nothing leaves this computer except what you see below.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+                Switch(discord.enabled, state::setDiscordPresence)
+            }
+            Spacer(Modifier.height(14.dp))
+            DiscordCardPreview(status.preview, discord)
+            status.lastMessage?.let { message ->
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (status.connected) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
+                        null,
+                        Modifier.size(15.dp),
+                        tint = if (status.connected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(message, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
         }
-        Spacer(Modifier.height(15.dp))
-        Text("The preference is saved now. The Discord IPC client still needs to be added before activity is published.", color = MaterialTheme.colorScheme.tertiary, fontSize = 11.sp)
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.Badge, "Discord application")
+            Spacer(Modifier.height(7.dp))
+            Text(
+                "Discord shows your application's name above the card, so Spice needs an id from your own Discord " +
+                    "application. Create one at discord.com/developers, then paste its Application ID here. Any " +
+                    "images you want to use by name are uploaded there under Rich Presence assets.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                applicationId,
+                { applicationId = it.filter(Char::isDigit).take(25) },
+                label = { Text("Application ID") },
+                placeholder = { Text("1234567890123456789") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(11.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                Button(
+                    { state.updateDiscord { it.copy(applicationId = applicationId) } },
+                    enabled = applicationId != discord.applicationId,
+                ) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(7.dp)); Text("Save id") }
+                OutlinedButton(state::testDiscordConnection, enabled = discord.applicationId.isNotBlank()) {
+                    Text("Test connection")
+                }
+                TextButton({ state.openExternalUrl("https://discord.com/developers/applications") }) {
+                    Text("Open developer portal")
+                }
+            }
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.TextFields, "What the card says")
+            Spacer(Modifier.height(7.dp))
+            Text(
+                "Each line is a template. Use {title}, {artist}, {album}, {provider}, {duration} and {position}; " +
+                    "anything with no value disappears cleanly.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(13.dp))
+            TemplateField("First line", discord.detailsTemplate) { value ->
+                state.updateDiscord { it.copy(detailsTemplate = value) }
+            }
+            Spacer(Modifier.height(9.dp))
+            TemplateField("Second line", discord.stateTemplate) { value ->
+                state.updateDiscord { it.copy(stateTemplate = value) }
+            }
+            Spacer(Modifier.height(9.dp))
+            TemplateField("Cover tooltip", discord.largeTextTemplate) { value ->
+                state.updateDiscord { it.copy(largeTextTemplate = value) }
+            }
+            Spacer(Modifier.height(9.dp))
+            TemplateField("Small icon tooltip", discord.smallTextTemplate) { value ->
+                state.updateDiscord { it.copy(smallTextTemplate = value) }
+            }
+            Spacer(Modifier.height(16.dp))
+            ChoiceRow(
+                "Verb",
+                PresenceActivityKind.entries,
+                discord.activityKind,
+                { it.displayName },
+                { kind -> state.updateDiscord { it.copy(activityKind = kind) } },
+            )
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.Image, "Images and clock")
+            Spacer(Modifier.height(12.dp))
+            ChoiceRow(
+                "Large image",
+                PresenceArtwork.entries,
+                discord.artwork,
+                { it.displayName },
+                { artwork -> state.updateDiscord { it.copy(artwork = artwork) } },
+            )
+            if (discord.artwork == PresenceArtwork.ASSET) {
+                Spacer(Modifier.height(10.dp))
+                TemplateField("Asset name", discord.artworkAssetKey) { value ->
+                    state.updateDiscord { it.copy(artworkAssetKey = value) }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            TemplateField("Small icon asset (optional)", discord.smallImageAssetKey) { value ->
+                state.updateDiscord { it.copy(smallImageAssetKey = value) }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Leave the small icon empty to use the service name — youtube_music, youtube or soundcloud — as the asset name.",
+                color = MaterialTheme.colorScheme.tertiary,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(16.dp))
+            ChoiceRow(
+                "Clock",
+                PresenceTimestamps.entries,
+                discord.timestamps,
+                { it.displayName },
+                { stamps -> state.updateDiscord { it.copy(timestamps = stamps) } },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(discord.timestamps.description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.SmartButton, "Buttons")
+            Spacer(Modifier.height(7.dp))
+            Text(
+                "Discord allows two. A button needs both a label and a link, and {url} is the track's page.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(13.dp))
+            PresenceButtonFields("First button", discord.firstButton) { button ->
+                state.updateDiscord { it.copy(firstButton = button) }
+            }
+            Spacer(Modifier.height(14.dp))
+            PresenceButtonFields("Second button", discord.secondButton) { button ->
+                state.updateDiscord { it.copy(secondButton = button) }
+            }
+        }
+
+        SettingsPanelCard {
+            CardHeading(Icons.Default.Security, "While paused, and privacy")
+            Spacer(Modifier.height(12.dp))
+            ChoiceRow(
+                "When playback pauses",
+                PausedBehaviour.entries,
+                discord.paused,
+                { it.displayName },
+                { behaviour -> state.updateDiscord { it.copy(paused = behaviour) } },
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(discord.paused.description, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+            if (discord.paused == PausedBehaviour.SHOW_PAUSED) {
+                Spacer(Modifier.height(10.dp))
+                TemplateField("Paused suffix", discord.pausedSuffix) { value ->
+                    state.updateDiscord { it.copy(pausedSuffix = value) }
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+            ToggleRow(
+                "Hide what I am listening to",
+                "Replaces every line with one fixed message and drops the cover and buttons.",
+                discord.hideTrackDetails,
+            ) { hidden -> state.updateDiscord { it.copy(hideTrackDetails = hidden) } }
+            if (discord.hideTrackDetails) {
+                Spacer(Modifier.height(10.dp))
+                TemplateField("Shown instead", discord.privateDetails) { value ->
+                    state.updateDiscord { it.copy(privateDetails = value) }
+                }
+            }
+        }
+    }
+}
+
+/** Mirrors Discord's card so the templates can be judged without alt-tabbing. */
+@Composable
+private fun DiscordCardPreview(preview: DiscordPreview?, settings: DiscordPresenceSettings) {
+    Surface(color = Color(0xFF1E1F22), shape = RoundedCornerShape(10.dp)) {
+        Column(Modifier.fillMaxWidth().padding(14.dp)) {
+            Text(
+                settings.activityKind.displayName.uppercase(),
+                color = Color.White.copy(alpha = .55f),
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(9.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(54.dp).clip(RoundedCornerShape(8.dp)).background(Color.White.copy(alpha = .08f)),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Default.MusicNote, null, Modifier.size(22.dp), tint = Color.White.copy(alpha = .5f)) }
+                Spacer(Modifier.width(11.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        preview?.details?.takeIf { it.isNotBlank() } ?: "Nothing playing yet",
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    preview?.state?.takeIf { it.isNotBlank() }?.let {
+                        Text(it, color = Color.White.copy(alpha = .75f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                    if (settings.timestamps != PresenceTimestamps.NONE) {
+                        Text(
+                            if (settings.timestamps == PresenceTimestamps.ELAPSED) "0:42 elapsed" else "2:31 left",
+                            color = Color.White.copy(alpha = .55f),
+                            fontSize = 11.sp,
+                        )
+                    }
+                }
+            }
+            preview?.buttons?.takeIf { it.isNotEmpty() }?.let { buttons ->
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                    buttons.forEach { label ->
+                        Surface(color = Color.White.copy(alpha = .1f), shape = RoundedCornerShape(6.dp)) {
+                            Text(
+                                label,
+                                color = Color.White.copy(alpha = .9f),
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TemplateField(label: String, value: String, change: (String) -> Unit) {
+    var text by remember(value) { mutableStateOf(value) }
+    OutlinedTextField(
+        text,
+        {
+            text = it.take(128)
+            change(text)
+        },
+        label = { Text(label) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+}
+
+@Composable
+private fun PresenceButtonFields(label: String, button: PresenceButton, change: (PresenceButton) -> Unit) {
+    Column {
+        Text(label, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+            Box(Modifier.weight(1f)) {
+                TemplateField("Label", button.label) { change(button.copy(label = it)) }
+            }
+            Box(Modifier.weight(1.4f)) {
+                TemplateField("Link", button.url) { change(button.copy(url = it)) }
+            }
+        }
     }
 }
 

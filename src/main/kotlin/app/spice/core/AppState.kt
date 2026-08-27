@@ -4,6 +4,9 @@ import app.spice.auth.GoogleAuthResult
 import app.spice.auth.GoogleOAuthClient
 import app.spice.auth.GoogleOAuthConfig
 import app.spice.auth.GoogleTokens
+import app.spice.discord.DiscordPresenceManager
+import app.spice.discord.DiscordPresenceSettings
+import app.spice.discord.DiscordPresenceStatus
 import app.spice.domain.*
 import app.spice.lyrics.LyricsProviderId
 import app.spice.lyrics.LyricsProviderOutcome
@@ -23,6 +26,8 @@ import app.spice.playback.YtDlpService
 import app.spice.playlists.LocalPlaylist
 import app.spice.playlists.LocalPlaylistRepository
 import app.spice.playlists.PlaylistShareLink
+import app.spice.playlists.RecentTracksRepository
+import app.spice.playlists.recentWith
 import app.spice.playlists.shareableText
 import app.spice.providers.MusicProvider
 import app.spice.providers.YtDlpMusicProvider
@@ -143,6 +148,7 @@ internal fun likeKey(track: Track): String = when (track.provider) {
 
 data class AppUiState(
     val destination: Destination = Destination.HOME,
+    val recentTracks: List<Track> = emptyList(),
     val providerFilter: ProviderFilter = ProviderFilter.ALL,
     val homeSections: List<HomeSection> = emptyList(),
     val homeLoading: Boolean = true,
@@ -166,21 +172,29 @@ class AppState(
     private val scrobbleManager: ScrobbleManager = ScrobbleManager(),
     private val accountProbe: AccountProbe = AccountProbe(),
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
+    private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
     private val clipboard: (String) -> Unit = ::copyToSystemClipboard,
     private val likeClient: SoundCloudLikeClient = SoundCloudLikeClient(),
     private val credentials: SecureCredentialStore = SecureCredentialStore(),
     private val youTubeApi: YouTubeApiClient = YouTubeApiClient(),
     private val googleOAuth: GoogleOAuthClient = GoogleOAuthClient(openBrowser = ::browseGoogleSignIn),
+    private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
 ) : AutoCloseable {
     @Volatile private var googleTokens: GoogleTokens? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val mutableUi = MutableStateFlow(AppUiState())
+    private val storedPreferences = settingsRepository.load()
+    private val mutableUi = MutableStateFlow(
+        AppUiState(
+            destination = storedPreferences.startPage.destination(),
+            recentTracks = recentRepository.load(),
+        ),
+    )
     val ui: StateFlow<AppUiState> = mutableUi.asStateFlow()
     val queue = QueueManager()
     val playback: StateFlow<PlaybackState> = playbackEngine.state
     private val mutableLyrics = MutableStateFlow(LyricsUiState())
     val lyrics: StateFlow<LyricsUiState> = mutableLyrics.asStateFlow()
-    private val mutableSettings = MutableStateFlow(SettingsState(settingsRepository.load()))
+    private val mutableSettings = MutableStateFlow(SettingsState(storedPreferences))
     val settings: StateFlow<SettingsState> = mutableSettings.asStateFlow()
     private val mutableLibrary = MutableStateFlow(LibraryState(localPlaylists = playlistRepository.load()))
     val library: StateFlow<LibraryState> = mutableLibrary.asStateFlow()
@@ -206,6 +220,7 @@ class AppState(
         }
         refreshHome()
         observeTrackCompletion()
+        observeDiscordPresence()
         scope.launch(Dispatchers.IO) {
             val soundCloudReady = runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull()?.isNotBlank() == true
             val googleConfigured = googleConfig()?.isUsable == true
@@ -263,6 +278,17 @@ class AppState(
     fun setProfileName(name: String) {
         updatePreferences { copy(profileName = name.trim().take(40).ifBlank { "Spice Listener" }) }
     }
+
+    fun setProgressBarStyle(style: ProgressBarStyle) = updatePreferences { copy(progressBarStyle = style) }
+    fun setPlayerBarStyle(style: PlayerBarStyle) = updatePreferences { copy(playerBarStyle = style) }
+    fun setAccent(accent: AccentPreset) = updatePreferences { copy(accent = accent) }
+    fun setBackgroundDepth(depth: BackgroundDepth) = updatePreferences { copy(backgroundDepth = depth) }
+    fun setCardSize(size: CardSize) = updatePreferences { copy(cardSize = size) }
+    fun setBadgePolicy(policy: BadgePolicy) = updatePreferences { copy(badgePolicy = policy) }
+    fun setHoverControls(controls: HoverControls) = updatePreferences { copy(hoverControls = controls) }
+    fun setTimeDisplay(display: TimeDisplay) = updatePreferences { copy(timeDisplay = display) }
+    fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
+    fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
 
     fun setSoundCloudUsername(username: String) {
         val cleaned = username.trim().trim('/').substringAfterLast('/').take(80)
@@ -941,8 +967,20 @@ class AppState(
         mutableSettings.update { it.copy(message = "Last.fm disconnected.") }
     }
 
-    fun setDiscordPresence(enabled: Boolean) {
-        updatePreferences { copy(discordPresenceEnabled = enabled) }
+    /** Every Discord option funnels through here, so one path keeps the live card in step with the settings. */
+    fun updateDiscord(transform: (DiscordPresenceSettings) -> DiscordPresenceSettings) {
+        updatePreferences { copy(discord = transform(discord)) }
+        discordPresence.apply(mutableSettings.value.preferences.discord, playback.value, scope)
+    }
+
+    fun setDiscordPresence(enabled: Boolean) = updateDiscord { it.copy(enabled = enabled) }
+
+    fun testDiscordConnection() {
+        scope.launch {
+            val message = discordPresence.testConnection(mutableSettings.value.preferences.discord.applicationId)
+            mutableSettings.update { it.copy(message = message) }
+            discordPresence.apply(mutableSettings.value.preferences.discord, playback.value, scope)
+        }
     }
 
     fun clearSettingsMessage() = mutableSettings.update { it.copy(message = null) }
@@ -1164,7 +1202,16 @@ class AppState(
     private suspend fun playEnriched(track: Track) {
         val enriched = runCatching { ytDlp.enrichMetadata(track) }.getOrDefault(track)
         if (enriched != track) queue.replace(track.queueKey, enriched)
+        rememberRecent(enriched)
         playbackEngine.play(enriched)
+    }
+
+    /** Records what was played so Home can open with it next time. */
+    private fun rememberRecent(track: Track) {
+        val updated = recentWith(mutableUi.value.recentTracks, track)
+        if (updated == mutableUi.value.recentTracks) return
+        mutableUi.update { it.copy(recentTracks = updated) }
+        scope.launch(Dispatchers.IO) { runCatching { recentRepository.save(updated) } }
     }
 
     private fun Track.lyricsLookupKey(): String = "$queueKey|$title|$artistLine|${durationMs ?: 0}"
@@ -1181,8 +1228,19 @@ class AppState(
         }
     }
 
+    val discordStatus: StateFlow<DiscordPresenceStatus> get() = discordPresence.status
+
+    /** Publishes to Discord as playback moves; the manager itself decides what is worth sending. */
+    private fun observeDiscordPresence() {
+        scope.launch {
+            discordPresence.apply(mutableSettings.value.preferences.discord, playback.value, scope)
+            playback.collect { current -> discordPresence.publish(current, scope) }
+        }
+    }
+
     override fun close() {
         playbackEngine.close()
+        discordPresence.close()
         scope.cancel()
     }
 }
@@ -1272,4 +1330,12 @@ private fun browseGoogleSignIn(url: String) {
     require(url.startsWith("https://")) { "Only secure links can be opened" }
     check(Desktop.isDesktopSupported()) { "Opening links is not supported on this system" }
     Desktop.getDesktop().browse(URI(url))
+}
+
+/** Where Spice opens, chosen in Customization. */
+private fun StartPage.destination(): Destination = when (this) {
+    StartPage.HOME -> Destination.HOME
+    StartPage.SEARCH -> Destination.SEARCH
+    StartPage.LIBRARY -> Destination.LIBRARY
+    StartPage.NOW_PLAYING -> Destination.NOW_PLAYING
 }
