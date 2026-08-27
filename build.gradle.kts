@@ -14,15 +14,49 @@ kotlin {
     jvmToolchain(21)
 }
 
+/**
+ * Chromium build that ships inside Spice. jcefmaven downloads this payload at first use unless the matching
+ * natives artifact is on the classpath, so bundling it is what removes the wait before the first sign-in.
+ * The version string is jcefmaven's own, and has to match the `jcefmaven` dependency exactly.
+ */
+val jcefNativesVersion = "jcef-d3de827+cef-146.0.10+g8219561+chromium-146.0.7680.179"
+
+/**
+ * Only the host platform's Chromium is bundled by default — each one is a few hundred megabytes, and a build
+ * that carried all of them would be unusable. Pass -PbundleAllPlatforms to assemble installers for others.
+ */
+fun jcefNativesArtifacts(): List<String> {
+    val all = listOf(
+        "jcef-natives-windows-amd64",
+        "jcef-natives-windows-arm64",
+        "jcef-natives-linux-amd64",
+        "jcef-natives-linux-arm64",
+        "jcef-natives-macosx-amd64",
+        "jcef-natives-macosx-arm64",
+    )
+    if (project.hasProperty("bundleAllPlatforms")) return all
+    val os = System.getProperty("os.name").lowercase()
+    val arm = System.getProperty("os.arch").lowercase().let { it == "aarch64" || it.startsWith("arm") }
+    val platform = when {
+        os.startsWith("windows") -> if (arm) "windows-arm64" else "windows-amd64"
+        os.startsWith("mac") || os.startsWith("darwin") -> if (arm) "macosx-arm64" else "macosx-amd64"
+        os.startsWith("linux") -> if (arm) "linux-arm64" else "linux-amd64"
+        else -> null
+    }
+    return platform?.let { listOf("jcef-natives-$it") } ?: emptyList()
+}
+
 dependencies {
     implementation(compose.desktop.currentOs)
     implementation(compose.material3)
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spice. The native Chromium
-    // payload is fetched on first use rather than bundled, so this jar stays small.
+    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spice.
     implementation("me.friwi:jcefmaven:146.0.10")
+    jcefNativesArtifacts().forEach { artifact ->
+        implementation("me.friwi:$artifact:$jcefNativesVersion")
+    }
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

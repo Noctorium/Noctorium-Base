@@ -1928,11 +1928,11 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
                 SwingPanel(background = Color.Black, factory = { ui }, modifier = Modifier.fillMaxSize())
             } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.widthIn(max = 520.dp)) {
-                    Text("Getting Chromium ready", fontWeight = FontWeight.Bold)
+                    Text("Getting the browser ready", fontWeight = FontWeight.Bold)
                     Spacer(Modifier.height(8.dp))
                     Text(
-                        "The first sign-in downloads the embedded browser, which is a large one-time download. " +
-                            "Later sign-ins open straight away.",
+                        "Chromium ships with Spice, so nothing is being downloaded — it is unpacked once on this " +
+                            "computer and every sign-in after this opens straight away.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 12.sp,
                     )
@@ -2189,7 +2189,8 @@ private fun AccountConnectionPanel(
                 }
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "The first sign-in downloads embedded Chromium once. Your password goes to SoundCloud's page, never to Spice.",
+                    "Chromium is bundled with Spice, so the first sign-in unpacks it rather than downloading it. " +
+                        "Your password goes to SoundCloud's page, never to Spice.",
                     color = MaterialTheme.colorScheme.tertiary,
                     fontSize = 11.sp,
                 )

@@ -35,7 +35,8 @@ data class HarvestedCookie(
  * exported once as a cookie file for yt-dlp. Google is deliberately not offered here — it rejects sign-in from
  * embedded webviews outright — so this exists for SoundCloud.
  *
- * The Chromium payload is downloaded on first use, which is why [start] reports progress and can take a while.
+ * Chromium ships inside Spice rather than being fetched on demand, so [start] only has to unpack it the first
+ * time and needs no network at all. Progress is still reported because unpacking is not instant.
  */
 class EmbeddedBrowserSession(private val installDir: Path) {
     private var app: CefApp? = null
@@ -58,10 +59,10 @@ class EmbeddedBrowserSession(private val installDir: Path) {
         builder.cefSettings.windowless_rendering_enabled = false
         builder.cefSettings.cache_path = installDir.resolve("cache").toString()
         builder.setProgressHandler { state, percent ->
-            onProgress(
-                if (percent >= 0f) "${state.name.lowercase().replace('_', ' ')} ${percent.toInt()}%"
-                else state.name.lowercase().replace('_', ' '),
-            )
+            // States read like INSTALL / EXTRACTING / INITIALIZING; DOWNLOADING should never appear now that the
+            // natives are bundled, and if it does it means the platform artifact is missing from the build.
+            val stage = state.name.lowercase().replace('_', ' ')
+            onProgress(if (percent >= 0f) "$stage ${percent.toInt()}%" else stage)
         }
         val cefApp = builder.build()
         app = cefApp
