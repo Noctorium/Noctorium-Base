@@ -49,7 +49,12 @@ data class Playlist(
     val ownerName: String? = null,
     val artworkUrl: String? = null,
     val tracks: List<Track> = emptyList(),
-)
+    /** Page the playlist's tracks are loaded from; null for playlists Spice assembled itself. */
+    val sourceUrl: String? = null,
+    val trackCount: Int? = null,
+) {
+    val playlistKey: String get() = "${provider.name}:$id"
+}
 
 @Serializable
 enum class PlaybackOrigin { HOME, SEARCH, ALBUM, ARTIST, PLAYLIST, LIBRARY, QUEUE }

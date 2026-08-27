@@ -140,10 +140,25 @@ internal class ListenBrainzClient(
 
 internal data class LastFmSession(val username: String, val key: String)
 
+/**
+ * Application identifiers for this Spice build. They identify the installation to Last.fm, never a listener —
+ * account approval always happens in the browser. Set SPICE_LASTFM_API_KEY and SPICE_LASTFM_SHARED_SECRET to
+ * run against a different Last.fm application.
+ */
+internal object LastFmApplication {
+    private const val BUILT_IN_API_KEY = "f7765ba2282c58fa77a26b39443e50f5"
+    private const val BUILT_IN_SHARED_SECRET = "4a69efbfd3090841a5deaf3ae3ec5860"
+
+    val apiKey: String get() = env("SPICE_LASTFM_API_KEY") ?: BUILT_IN_API_KEY
+    val sharedSecret: String get() = env("SPICE_LASTFM_SHARED_SECRET") ?: BUILT_IN_SHARED_SECRET
+
+    private fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf(String::isNotBlank)
+}
+
 internal class LastFmClient(
     private val http: ScrobbleHttpClient = DefaultScrobbleHttpClient(),
-    apiKey: String? = System.getenv("SPICE_LASTFM_API_KEY")?.takeIf(String::isNotBlank),
-    sharedSecret: String? = System.getenv("SPICE_LASTFM_SHARED_SECRET")?.takeIf(String::isNotBlank),
+    apiKey: String? = LastFmApplication.apiKey,
+    sharedSecret: String? = LastFmApplication.sharedSecret,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     @Volatile private var activeApiKey: String? = apiKey

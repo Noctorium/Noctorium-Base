@@ -1,6 +1,9 @@
 package app.spice.scrobble
 
 import app.spice.domain.ProviderType
+import app.spice.settings.ScrobbleConnectionStatus
+import app.spice.settings.SecureCredentialStore
+import java.nio.file.Files
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
@@ -44,6 +47,40 @@ class ScrobbleClientsTest {
     }
 
     @Test
+    fun `Lastfm ships with application credentials so sign-in needs no manual keys`() {
+        assertTrue(LastFmClient(RecordingHttpClient()).configured)
+    }
+
+    @Test
+    fun `Lastfm approval polling finishes sign-in once the listener allows Spice`() {
+        if (!System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) return
+        val directory = Files.createTempDirectory("spice-lastfm-approval")
+        try {
+            val http = ScriptedHttpClient(
+                ScrobbleHttpResponse(200, """{"token":"request-token"}"""),
+                ScrobbleHttpResponse(200, """{"error":14,"message":"Unauthorized Token"}"""),
+                ScrobbleHttpResponse(200, """{"session":{"name":"listener","key":"session-key"}}"""),
+            )
+            val manager = ScrobbleManager(
+                credentials = SecureCredentialStore(directory.resolve("credentials.json")),
+                lastFm = LastFmClient(http, apiKey = "key", sharedSecret = "secret"),
+                pendingRepository = PendingScrobbleRepository(directory.resolve("pending.json")),
+            )
+
+            runBlocking {
+                val authorization = manager.beginLastFmAuthorization()
+                assertTrue(authorization.url.startsWith("https://www.last.fm/api/auth/"))
+                assertEquals("listener", manager.awaitLastFmApproval(authorization.token, attempts = 3, pollDelayMillis = 1))
+            }
+
+            assertEquals(ScrobbleConnectionStatus.CONNECTED, manager.state.value.lastFm.status)
+            assertEquals("listener", manager.state.value.lastFm.username)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
     fun `official scrobble threshold excludes short tracks and uses earlier limit`() {
         assertNull(ScrobbleManager.scrobbleThresholdMs(30_000))
         assertEquals(90_000, ScrobbleManager.scrobbleThresholdMs(180_000))
@@ -68,4 +105,15 @@ private class RecordingHttpClient(
         posts += body
         return postResponse
     }
+}
+
+/** Replays one scripted response per request so multi-step flows can be exercised in order. */
+private class ScriptedHttpClient(vararg responses: ScrobbleHttpResponse) : ScrobbleHttpClient {
+    private val queue = ArrayDeque(responses.toList())
+
+    override suspend fun get(url: String, headers: Map<String, String>) = next()
+
+    override suspend fun post(url: String, body: String, contentType: String, headers: Map<String, String>) = next()
+
+    private fun next() = queue.removeFirstOrNull() ?: error("No scripted response left")
 }

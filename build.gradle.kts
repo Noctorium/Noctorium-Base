@@ -20,6 +20,9 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spice. The native Chromium
+    // payload is fetched on first use rather than bundled, so this jar stays small.
+    implementation("me.friwi:jcefmaven:146.0.10")
 
     testImplementation(kotlin("test"))
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.10.2")

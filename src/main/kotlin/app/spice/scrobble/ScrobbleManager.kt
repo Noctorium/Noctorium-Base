@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.collect
 import java.time.Instant
 import kotlin.math.min
 
+data class LastFmAuthorization(val token: String, val url: String)
+
 class ScrobbleManager internal constructor(
     private val credentials: SecureCredentialStore = SecureCredentialStore(),
     private val listenBrainz: ListenBrainzClient = ListenBrainzClient(),
@@ -91,8 +93,8 @@ class ScrobbleManager internal constructor(
         ScrobbleLog.event("listenbrainz_disconnected")
     }
 
-    suspend fun beginLastFmAuthorization(): String {
-        check(lastFm.configured) { "Add SPICE_LASTFM_API_KEY and SPICE_LASTFM_SHARED_SECRET before connecting Last.fm" }
+    suspend fun beginLastFmAuthorization(): LastFmAuthorization {
+        check(lastFm.configured) { "Last.fm application credentials are missing from this build" }
         mutableState.value = mutableState.value.copy(
             lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTING, message = "Starting Last.fm authorization…"),
         )
@@ -103,10 +105,10 @@ class ScrobbleManager internal constructor(
             mutableState.value = mutableState.value.copy(
                 lastFm = ScrobbleServiceState(
                     ScrobbleConnectionStatus.AWAITING_APPROVAL,
-                    message = "Approve Spice in your browser, then finish sign-in.",
+                    message = "Approve Spice in the browser window that just opened.",
                 ),
             )
-            lastFm.authorizationUrl(token)
+            LastFmAuthorization(token, lastFm.authorizationUrl(token))
         }.getOrElse { error ->
             mutableState.value = mutableState.value.copy(
                 lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = safeMessage(error)),
@@ -115,28 +117,55 @@ class ScrobbleManager internal constructor(
         }
     }
 
-    suspend fun completeLastFmAuthorization(): String {
-        val token = pendingLastFmToken ?: credentials.get(LASTFM_PENDING)
-            ?: error("Start Last.fm sign-in first")
-        return runCatching {
-            val session = lastFm.completeAuthorization(token)
-            withContext(Dispatchers.IO) {
-                credentials.put(LASTFM_SESSION, session.key)
-                credentials.remove(LASTFM_PENDING)
-            }
-            lastFmSessionKey = session.key
-            pendingLastFmToken = null
-            mutableState.value = mutableState.value.copy(
-                lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, session.username, "Ready to scrobble"),
-            )
-            ScrobbleLog.event("lastfm_connected", mapOf("username" to session.username))
-            session.username
-        }.getOrElse { error ->
+    suspend fun completeLastFmAuthorization(): String = runCatching { exchangePendingLastFmToken() }
+        .getOrElse { error ->
             mutableState.value = mutableState.value.copy(
                 lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = safeMessage(error)),
             )
             throw error
         }
+
+    /**
+     * Waits for the listener to approve Spice in the browser and finishes sign-in on its own. Returns the
+     * connected username, or null when the approval never arrived or another authorization replaced this one.
+     */
+    suspend fun awaitLastFmApproval(
+        token: String,
+        attempts: Int = APPROVAL_POLL_ATTEMPTS,
+        pollDelayMillis: Long = APPROVAL_POLL_DELAY_MS,
+    ): String? {
+        repeat(attempts) {
+            delay(pollDelayMillis)
+            if (pendingLastFmToken != token) return null
+            val username = runCatching { exchangePendingLastFmToken() }.getOrNull()
+            if (username != null) return username
+        }
+        if (pendingLastFmToken == token) {
+            mutableState.value = mutableState.value.copy(
+                lastFm = ScrobbleServiceState(
+                    ScrobbleConnectionStatus.AWAITING_APPROVAL,
+                    message = "Still waiting for approval — finish sign-in once you have allowed Spice.",
+                ),
+            )
+        }
+        return null
+    }
+
+    private suspend fun exchangePendingLastFmToken(): String {
+        val token = pendingLastFmToken ?: credentials.get(LASTFM_PENDING)
+            ?: error("Start Last.fm sign-in first")
+        val session = lastFm.completeAuthorization(token)
+        withContext(Dispatchers.IO) {
+            credentials.put(LASTFM_SESSION, session.key)
+            credentials.remove(LASTFM_PENDING)
+        }
+        lastFmSessionKey = session.key
+        pendingLastFmToken = null
+        mutableState.value = mutableState.value.copy(
+            lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, session.username, "Ready to scrobble"),
+        )
+        ScrobbleLog.event("lastfm_connected", mapOf("username" to session.username))
+        return session.username
     }
 
     fun disconnectLastFm() {
@@ -258,6 +287,8 @@ class ScrobbleManager internal constructor(
         const val LASTFM_PENDING = "lastfm.pending"
         const val LASTFM_API_KEY = "lastfm.api_key"
         const val LASTFM_SHARED_SECRET = "lastfm.shared_secret"
+        const val APPROVAL_POLL_ATTEMPTS = 60
+        const val APPROVAL_POLL_DELAY_MS = 2_000L
 
         fun scrobbleThresholdMs(durationMs: Long): Long? {
             if (durationMs <= 30_000) return null
