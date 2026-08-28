@@ -85,6 +85,10 @@ class EmbeddedBrowserSession(private val installDir: Path) {
 
     fun currentUrl(): String? = browser?.url
 
+    fun navigate(url: String) {
+        browser?.loadURL(url)
+    }
+
     /** Reads the cookie store for one site. Returns an empty list if Chromium does not answer in time. */
     fun harvestCookies(url: String, timeoutMillis: Long = 8_000): List<HarvestedCookie> {
         val manager = CefCookieManager.getGlobalManager() ?: return emptyList()
@@ -155,3 +159,22 @@ fun writeCookieFile(cookies: List<HarvestedCookie>, destination: Path): Path {
 /** True once the browser has left the sign-in pages, which is how a completed SoundCloud login is detected. */
 fun isSoundCloudSignedIn(cookies: List<HarvestedCookie>): Boolean =
     cookies.any { it.name == "oauth_token" && it.value.isNotBlank() }
+
+/** The page SoundCloud sends a signed-in listener to, which lands on their own profile. */
+const val SOUNDCLOUD_OWN_LIKES = "https://soundcloud.com/you/likes"
+
+/**
+ * Reads the profile name out of a URL the signed-in browser settled on.
+ *
+ * Once signed in, SoundCloud answers its own `/you/...` routes by moving to `/<profile>/...`, so the address bar
+ * of the embedded browser names the account without any request of our own.
+ */
+fun permalinkFromBrowserUrl(url: String?): String? {
+    val path = url?.substringAfter("soundcloud.com/", missingDelimiterValue = "").orEmpty()
+    if (path.isBlank()) return null
+    val first = path.substringBefore('/').substringBefore('?').trim()
+    return first.takeIf {
+        it.isNotBlank() &&
+            it !in setOf("you", "signin", "discover", "feed", "search", "upload", "settings", "pages", "stream")
+    }
+}

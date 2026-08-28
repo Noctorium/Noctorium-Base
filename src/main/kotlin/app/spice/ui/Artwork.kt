@@ -1,8 +1,11 @@
 package app.spice.ui
 
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.GraphicEq
@@ -18,6 +21,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import app.spice.domain.ProviderType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,34 +29,20 @@ import org.jetbrains.skia.Image as SkiaImage
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
 
-private object ArtworkCache {
-    val images = ConcurrentHashMap<String, ImageBitmap>()
-}
-
+/**
+ * A cover, loaded only when it is on screen and decoded to the size it will actually be drawn at.
+ *
+ * The box measures itself first, so a row thumbnail and the now playing hero ask the loader for very different
+ * sizes from the same address. Anything already decoded appears on the first frame; anything new fades in, so a
+ * list fills rather than flickering.
+ */
 @Composable
 fun RemoteArtwork(
     url: String?,
     provider: ProviderType,
     modifier: Modifier = Modifier,
 ) {
-    val artwork by produceState<ImageBitmap?>(initialValue = url?.let(ArtworkCache.images::get), key1 = url) {
-        if (value == null && !url.isNullOrBlank()) {
-            value = withContext(Dispatchers.IO) {
-                runCatching {
-                    val connection = URI(url).toURL().openConnection().apply {
-                        connectTimeout = 5_000
-                        readTimeout = 8_000
-                        setRequestProperty("User-Agent", "Spice/0.1")
-                    }
-                    connection.getInputStream().use { stream ->
-                        SkiaImage.makeFromEncoded(stream.readBytes()).toComposeImageBitmap()
-                    }.also { ArtworkCache.images[url] = it }
-                }.getOrNull()
-            }
-        }
-    }
-
-    Box(
+    BoxWithConstraints(
         modifier.background(
             Brush.linearGradient(
                 if (provider == ProviderType.YOUTUBE_MUSIC || provider == ProviderType.YOUTUBE_VIDEO) {
@@ -64,14 +54,39 @@ fun RemoteArtwork(
         ),
         contentAlignment = Alignment.Center,
     ) {
-        artwork?.let {
-            Image(it, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-        } ?: Icon(
-            Icons.Default.GraphicEq,
-            contentDescription = null,
-            tint = Color.White.copy(alpha = .72f),
-            modifier = Modifier.fillMaxSize(.32f),
+        val density = LocalDensity.current
+        val targetPx = artworkSizeBucket(
+            with(density) {
+                val widest = if (constraints.hasBoundedWidth) constraints.maxWidth else 0
+                val tallest = if (constraints.hasBoundedHeight) constraints.maxHeight else 0
+                maxOf(widest, tallest)
+            },
         )
+        val artwork by produceState<ImageBitmap?>(ArtworkLoader.cached(url), url, targetPx) {
+            val address = url?.takeIf(String::isNotBlank) ?: return@produceState
+            ArtworkLoader.cached(address)?.let { value = it }
+            value = ArtworkLoader.load(address, targetPx) ?: value
+        }
+
+        Crossfade(artwork, animationSpec = tween(220), label = "artwork") { image ->
+            if (image != null) {
+                Image(
+                    image,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Icon(
+                        Icons.Default.GraphicEq,
+                        contentDescription = null,
+                        tint = Color.White.copy(alpha = .72f),
+                        modifier = Modifier.fillMaxSize(.32f),
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -97,7 +112,9 @@ fun rememberArtworkPalette(url: String?, provider: ProviderType): ArtworkPalette
     ) {
         val key = url ?: return@produceState
         PaletteCache.palettes[key]?.let { value = it; return@produceState }
-        val image = ArtworkCache.images[key] ?: return@produceState
+        // Hue sampling needs no detail, so a small decode is both enough and quick — and it means the backdrop
+        // no longer waits for the full-size cover to arrive.
+        val image = ArtworkLoader.cached(key) ?: ArtworkLoader.load(key, 128) ?: return@produceState
         value = withContext(Dispatchers.Default) {
             runCatching { extractPalette(image) }.getOrDefault(DefaultPalette)
         }.also { PaletteCache.palettes[key] = it }

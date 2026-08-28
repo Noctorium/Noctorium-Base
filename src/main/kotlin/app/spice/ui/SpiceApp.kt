@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.PlaylistAdd
 import androidx.compose.material.icons.automirrored.filled.PlaylistPlay
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -63,7 +64,9 @@ import app.spice.playback.PlaybackState
 import app.spice.playback.PlaybackStatus
 import app.spice.playback.RepeatMode
 import app.spice.auth.EmbeddedBrowserSession
+import app.spice.auth.SOUNDCLOUD_OWN_LIKES
 import app.spice.auth.isSoundCloudSignedIn
+import app.spice.auth.permalinkFromBrowserUrl
 import app.spice.auth.writeCookieFile
 import app.spice.playlists.LocalPlaylist
 import app.spice.playlists.PlaylistShareLink
@@ -892,7 +895,7 @@ private fun TrackMenu(track: Track, state: AppState) {
             )
             DropdownMenuItem(
                 text = { Text("Add to playlist") },
-                leadingIcon = { Icon(Icons.Default.Add, null) },
+                leadingIcon = { Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null) },
                 trailingIcon = { Icon(Icons.Default.ChevronRight, null, Modifier.size(17.dp)) },
                 onClick = { expanded = false; addToPlaylistOpen = true },
             )
@@ -1092,7 +1095,7 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                     LikeButton(track, state, size = 34.dp)
                     IconButton({ addToPlaylist = true }, Modifier.size(34.dp)) {
                         Icon(
-                            Icons.Default.BookmarkBorder,
+                            Icons.AutoMirrored.Filled.PlaylistAdd,
                             "Add to playlist",
                             Modifier.size(18.dp),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -2704,6 +2707,16 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
             val cookies = runCatching { live.harvestCookies("https://soundcloud.com") }.getOrDefault(emptyList())
             if (isSoundCloudSignedIn(cookies)) {
                 finishing = true
+                status = "Signed in — finding your profile…"
+                // SoundCloud answers its own /you/ routes by moving to the real profile, so a short detour
+                // through the signed-in browser names the account with no request of Spice's own.
+                live.navigate(SOUNDCLOUD_OWN_LIKES)
+                var permalink: String? = null
+                repeat(8) {
+                    delay(1_000)
+                    permalink = permalinkFromBrowserUrl(live.currentUrl())
+                    if (permalink != null) return@repeat
+                }
                 status = "Signed in — saving the session…"
                 val destination = state.dataDirectory()?.resolve("soundcloud.cookies") ?: return@LaunchedEffect
                 val saved = runCatching { writeCookieFile(cookies, destination) }.getOrNull()
@@ -2714,6 +2727,7 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
                     state.completeSoundCloudSignIn(
                         saved.toString(),
                         cookies.firstOrNull { it.name == "oauth_token" }?.value,
+                        permalink,
                     )
                     close()
                 }
@@ -3079,10 +3093,17 @@ private fun AccountConnectionPanel(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Spacer(Modifier.height(11.dp))
-                Button(
-                    { state.setSoundCloudUsername(soundCloudUsername) },
-                    enabled = soundCloudUsername.isNotBlank(),
-                ) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(7.dp)); Text("Save profile name") }
+                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                    Button(
+                        { state.setSoundCloudUsername(soundCloudUsername) },
+                        enabled = soundCloudUsername.isNotBlank(),
+                    ) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(7.dp)); Text("Save profile name") }
+                    OutlinedButton({ state.detectSoundCloudProfile() }) {
+                        Icon(Icons.Default.Search, null, Modifier.size(17.dp))
+                        Spacer(Modifier.width(7.dp))
+                        Text("Detect from my session")
+                    }
+                }
             }
         }
 
@@ -3473,10 +3494,24 @@ private fun DiscordSettingsPanel(preferences: SpicePreferences, state: AppState)
         SettingsPanelCard {
             CardHeading(Icons.Default.Badge, "Discord application")
             Spacer(Modifier.height(7.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.CheckCircle, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(7.dp))
+                Text(
+                    if (discord.usesOwnApplication) {
+                        "Using your application · ${discord.applicationId}"
+                    } else {
+                        "Using the application Spice ships with · ${discord.resolvedApplicationId()}"
+                    },
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
-                "Discord shows your application's name above the card, so Spice needs an id from your own Discord " +
-                    "application. Create one at discord.com/developers, then paste its Application ID here. Any " +
-                    "images you want to use by name are uploaded there under Rich Presence assets.",
+                "Discord shows this application's name above the card. Spice already has one, so nothing is needed " +
+                    "here — set an id only to appear as a different application, or to upload your own named " +
+                    "images under its Rich Presence assets.",
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 12.sp,
             )
@@ -3484,8 +3519,8 @@ private fun DiscordSettingsPanel(preferences: SpicePreferences, state: AppState)
             OutlinedTextField(
                 applicationId,
                 { applicationId = it.filter(Char::isDigit).take(25) },
-                label = { Text("Application ID") },
-                placeholder = { Text("1234567890123456789") },
+                label = { Text("Application ID (optional)") },
+                placeholder = { Text("Leave empty to use Spice's own") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -3495,11 +3530,14 @@ private fun DiscordSettingsPanel(preferences: SpicePreferences, state: AppState)
                     { state.updateDiscord { it.copy(applicationId = applicationId) } },
                     enabled = applicationId != discord.applicationId,
                 ) { Icon(Icons.Default.Save, null); Spacer(Modifier.width(7.dp)); Text("Save id") }
-                OutlinedButton(state::testDiscordConnection, enabled = discord.applicationId.isNotBlank()) {
-                    Text("Test connection")
+                OutlinedButton(state::testDiscordConnection) { Text("Test connection") }
+                if (discord.usesOwnApplication) {
+                    TextButton({ applicationId = ""; state.updateDiscord { it.copy(applicationId = "") } }) {
+                        Text("Use Spice's")
+                    }
                 }
                 TextButton({ state.openExternalUrl("https://discord.com/developers/applications") }) {
-                    Text("Open developer portal")
+                    Text("Developer portal")
                 }
             }
         }

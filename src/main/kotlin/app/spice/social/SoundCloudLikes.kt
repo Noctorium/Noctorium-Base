@@ -126,6 +126,18 @@ class SoundCloudLikeClient internal constructor(
 object SoundCloudToken {
     private const val COOKIE_NAME = "oauth_token"
 
+    /**
+     * The numeric account id carried inside the session token.
+     *
+     * SoundCloud's tokens are dash-separated as `version-application-user-secret`, so the account id is already
+     * on this machine and needs no request to discover. Only the id is taken; the secret half is never touched.
+     */
+    fun userIdFrom(token: String): String? {
+        val segments = token.trim().split('-')
+        if (segments.size < 4) return null
+        return segments[2].takeIf { it.length in 5..20 && it.all(Char::isDigit) }
+    }
+
     fun fromCookieFile(path: Path): String? = runCatching {
         fromCookieJar(Files.readString(path))
     }.getOrNull()

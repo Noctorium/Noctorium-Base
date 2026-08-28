@@ -56,7 +56,7 @@ class DiscordPresenceManager internal constructor(
     }
 
     fun publish(playback: PlaybackState, scope: CoroutineScope) {
-        if (!settings.enabled || settings.applicationId.isBlank()) return
+        if (!settings.enabled) return
         val track = playback.track ?: return
         val playing = playback.status == PlaybackStatus.PLAYING
         val activity = buildPresenceActivity(
@@ -75,7 +75,7 @@ class DiscordPresenceManager internal constructor(
 
         updateJob?.cancel()
         updateJob = scope.launch {
-            if (!client.connected && !client.connect(settings.applicationId)) {
+            if (!client.connected && !client.connect(settings.resolvedApplicationId())) {
                 mutableStatus.value = DiscordPresenceStatus(
                     connected = false,
                     lastMessage = "Discord is not running, or the desktop client is not signed in.",
@@ -99,7 +99,6 @@ class DiscordPresenceManager internal constructor(
 
     /** Tries a connection right away so the settings screen can report whether Discord answered. */
     suspend fun testConnection(applicationId: String): String {
-        if (applicationId.isBlank()) return "Add your Discord application id first."
         client.disconnect()
         val connected = client.connect(applicationId)
         mutableStatus.value = mutableStatus.value.copy(connected = connected)

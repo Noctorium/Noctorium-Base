@@ -8,6 +8,20 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
+/**
+ * The Discord application Spice presents itself as. Its name is what appears above the card.
+ *
+ * A Rich Presence application id is public by design — every client that shows an activity sends it in the
+ * clear — so shipping one is the normal arrangement. Set SPICE_DISCORD_APPLICATION_ID, or paste an id in
+ * Settings, to appear as a different application.
+ */
+object DiscordApplication {
+    private const val BUILT_IN = "1464831676877111489"
+
+    val id: String
+        get() = System.getenv("SPICE_DISCORD_APPLICATION_ID")?.trim()?.takeIf(String::isNotBlank) ?: BUILT_IN
+}
+
 @Serializable
 enum class PresenceActivityKind(val displayName: String, val code: Int) {
     LISTENING("Listening to", 2),
@@ -65,7 +79,12 @@ data class DiscordPresenceSettings(
     /** Replaces every line with something generic, for when the track itself should stay private. */
     val hideTrackDetails: Boolean = false,
     val privateDetails: String = "Listening to music",
-)
+) {
+    /** The id actually used: the listener's own if they set one, otherwise the application Spice ships with. */
+    fun resolvedApplicationId(): String = applicationId.trim().ifBlank { DiscordApplication.id }
+
+    val usesOwnApplication: Boolean get() = applicationId.isNotBlank()
+}
 
 /** The values a template can refer to. */
 data class PresenceContext(

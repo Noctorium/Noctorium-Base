@@ -191,3 +191,26 @@ class DiscordPresenceTest {
         assertTrue(preview.buttons.contains("Listen on SoundCloud"))
     }
 }
+
+class DiscordApplicationTest {
+    @Test
+    fun `Spice ships with an application id so nothing needs configuring`() {
+        val untouched = DiscordPresenceSettings()
+
+        assertEquals("1464831676877111489", untouched.resolvedApplicationId())
+        assertEquals(false, untouched.usesOwnApplication)
+    }
+
+    @Test
+    fun `a listener's own id takes over when they set one`() {
+        val custom = DiscordPresenceSettings(applicationId = "9876543210987654321")
+
+        assertEquals("9876543210987654321", custom.resolvedApplicationId())
+        assertEquals(true, custom.usesOwnApplication)
+    }
+
+    @Test
+    fun `whitespace does not count as setting an id`() {
+        assertEquals("1464831676877111489", DiscordPresenceSettings(applicationId = "   ").resolvedApplicationId())
+    }
+}

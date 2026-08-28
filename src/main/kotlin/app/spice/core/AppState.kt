@@ -37,6 +37,7 @@ import app.spice.social.LikeOutcome
 import app.spice.social.SoundCloudLikeClient
 import app.spice.social.SoundCloudToken
 import app.spice.social.LikeResult
+import app.spice.social.SoundCloudAccountClient
 import app.spice.social.YouTubeApiClient
 import app.spice.settings.*
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +49,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.awt.Desktop
 import java.awt.Toolkit
@@ -179,6 +181,7 @@ class AppState(
     private val youTubeApi: YouTubeApiClient = YouTubeApiClient(),
     private val googleOAuth: GoogleOAuthClient = GoogleOAuthClient(openBrowser = ::browseGoogleSignIn),
     private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
+    private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
 ) : AutoCloseable {
     @Volatile private var googleTokens: GoogleTokens? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -642,7 +645,7 @@ class AppState(
      * Records a session captured by the in-app SoundCloud sign-in. The exported cookie file becomes the source
      * yt-dlp reads, and the session token is what authorises likes, so one sign-in covers both.
      */
-    fun completeSoundCloudSignIn(cookieFilePath: String, oauthToken: String?) {
+    fun completeSoundCloudSignIn(cookieFilePath: String, oauthToken: String?, permalink: String? = null) {
         val source = CookieSource.ofFile(cookieFilePath).copy(verifiedAtEpochSeconds = Instant.now().epochSecond)
         updatePreferences { copy(soundCloudCookies = source) }
         updateAccountState(
@@ -657,7 +660,52 @@ class AppState(
         }
         mutableLibrary.update { it.copy(loaded = false) }
         likeMessage("SoundCloud sign-in complete. Playback and liking both use this session now.")
+        // The browser may already have revealed the profile during sign-in; otherwise go and find it.
+        if (!permalink.isNullOrBlank()) adoptSoundCloudProfile(permalink, permalink) else detectSoundCloudProfile(announce = false)
         refreshLikes()
+    }
+
+    /**
+     * Asks SoundCloud which account the stored session belongs to and remembers the profile name, which is what
+     * lets the library and the personalised home rows load without any typing.
+     */
+    fun detectSoundCloudProfile(announce: Boolean = true) {
+        scope.launch {
+            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            if (token.isNullOrBlank()) {
+                if (announce) likeMessage("Sign in to SoundCloud first so Spice has a session to ask about.")
+                return@launch
+            }
+            // Three independent routes, cheapest and most direct first. Whichever answers, we only need one.
+            val viaApi = soundCloudAccount.profile(token)
+            val resolved = viaApi?.permalink
+                ?: SoundCloudToken.userIdFrom(token)?.let { id -> ytDlp.resolveSoundCloudPermalink(id) }
+
+            if (resolved == null) {
+                if (announce) {
+                    val id = SoundCloudToken.userIdFrom(token)
+                    likeMessage(
+                        if (id != null) {
+                            "SoundCloud would not name account $id. Enter your profile name — the last part of your profile link — below."
+                        } else {
+                            "Could not work out your profile from this session. Enter your profile name below."
+                        },
+                    )
+                }
+                return@launch
+            }
+            adoptSoundCloudProfile(resolved, viaApi?.displayName ?: resolved)
+        }
+    }
+
+    /** Records a discovered profile name and reloads everything that depends on it. */
+    private fun adoptSoundCloudProfile(permalink: String, displayName: String) {
+        if (mutableSettings.value.preferences.soundCloudUsername == permalink) return
+        updatePreferences { copy(soundCloudUsername = permalink) }
+        mutableLibrary.update { it.copy(loaded = false, needsSoundCloudUsername = false) }
+        likeMessage("Signed in as $displayName ($permalink). Your playlists and feed are loading.")
+        refreshLibrary(force = true)
+        refreshHome()
     }
 
     /** Directory Spice keeps its own files in, used for the embedded browser cache and exported session. */
@@ -977,7 +1025,7 @@ class AppState(
 
     fun testDiscordConnection() {
         scope.launch {
-            val message = discordPresence.testConnection(mutableSettings.value.preferences.discord.applicationId)
+            val message = discordPresence.testConnection(mutableSettings.value.preferences.discord.resolvedApplicationId())
             mutableSettings.update { it.copy(message = message) }
             discordPresence.apply(mutableSettings.value.preferences.discord, playback.value, scope)
         }
@@ -1133,10 +1181,54 @@ class AppState(
         scope.launch {
             mutableUi.update { it.copy(homeLoading = true) }
             val homeProviders = providers.filter { it.type != ProviderType.YOUTUBE_VIDEO }
+            // Personal rows first: what the account actually holds beats a canned search query.
+            val personal = async { runCatching { personalHomeSections() }.getOrDefault(emptyList()) }
             val results = homeProviders.map { provider -> async { runCatching { provider.getHome() } } }.awaitAll()
-            val sections = results.flatMap { it.getOrDefault(emptyList()) }
+            val discovery = results.flatMap { it.getOrDefault(emptyList()) }
+            val sections = personal.await() + discovery
             val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.message } else null
             mutableUi.update { it.copy(homeSections = sections, homeLoading = false, errorMessage = error) }
+        }
+    }
+
+    /** Rows built from the signed-in account rather than from a search. */
+    private suspend fun personalHomeSections(): List<HomeSection> = supervisorScope {
+        val username = mutableSettings.value.preferences.soundCloudUsername
+        if (username.isBlank()) return@supervisorScope emptyList()
+        val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+
+        val feed = token?.takeIf(String::isNotBlank)?.let { key ->
+            async { runCatching { soundCloudAccount.stream(key, limit = 20) }.getOrDefault(emptyList()) }
+        }
+        val likes = async {
+            runCatching {
+                ytDlp.listTracks(ProviderType.SOUNDCLOUD, "https://soundcloud.com/$username/likes", limit = 20)
+            }.getOrDefault(emptyList())
+        }
+
+        buildList {
+            feed?.await()?.takeIf { it.isNotEmpty() }?.let { tracks ->
+                add(
+                    HomeSection(
+                        id = "soundcloud:stream",
+                        title = "From the people you follow",
+                        subtitle = "Your SoundCloud stream",
+                        provider = ProviderType.SOUNDCLOUD,
+                        tracks = tracks,
+                    ),
+                )
+            }
+            likes.await().takeIf { it.isNotEmpty() }?.let { tracks ->
+                add(
+                    HomeSection(
+                        id = "soundcloud:likes",
+                        title = "Your likes",
+                        subtitle = "Tracks you liked on SoundCloud",
+                        provider = ProviderType.SOUNDCLOUD,
+                        tracks = tracks,
+                    ),
+                )
+            }
         }
     }
 

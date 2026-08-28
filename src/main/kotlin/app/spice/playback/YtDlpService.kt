@@ -178,6 +178,38 @@ class YtDlpService(
     suspend fun version(): String = withContext(Dispatchers.IO) { run("--version").trim() }
 
     /**
+     * Turns a numeric SoundCloud account id into its profile name.
+     *
+     * `api.soundcloud.com/users/<id>` is a page yt-dlp resolves without any credentials, and every item it
+     * lists lives under the account's own profile — so the first path segment of any item's link is the name
+     * that addresses their playlists. Returns null for an account with nothing public to list.
+     */
+    suspend fun resolveSoundCloudPermalink(userId: String): String? = withContext(Dispatchers.IO) {
+        if (userId.isBlank() || !userId.all(Char::isDigit)) return@withContext null
+        val output = runCatching {
+            run(
+                "--flat-playlist",
+                "--dump-single-json",
+                "--no-warnings",
+                "--playlist-end", "3",
+                "--",
+                "https://api.soundcloud.com/users/$userId",
+            )
+        }.getOrNull() ?: return@withContext null
+        val root = runCatching { json.parseToJsonElement(output).jsonObject }.getOrNull() ?: return@withContext null
+        root["entries"]?.jsonArray.orEmpty().firstNotNullOfOrNull { element ->
+            val url = element.jsonObject.string("webpage_url") ?: element.jsonObject.string("url")
+            url?.let(::permalinkFromTrackUrl)
+        }
+    }
+
+    internal fun permalinkFromTrackUrl(url: String): String? = url
+        .substringAfter("soundcloud.com/", missingDelimiterValue = "")
+        .substringBefore('/')
+        .substringBefore('?')
+        .takeIf { it.isNotBlank() && it != "you" && !it.startsWith("users") }
+
+    /**
      * Writes the provider's browser cookies to [destination] so the caller can lift the one session token it
      * needs. yt-dlp dumps the jar it loaded when `--cookies` accompanies `--cookies-from-browser`; the caller
      * is responsible for deleting the file straight after reading it.
