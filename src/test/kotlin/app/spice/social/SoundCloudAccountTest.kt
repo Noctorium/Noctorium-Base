@@ -89,7 +89,13 @@ class SoundCloudAccountTest {
 private class ScriptedAccountClient(private vararg val replies: LikeHttpResponse) : LikeHttpClient {
     val calls = mutableListOf<String>()
 
-    override suspend fun send(method: String, url: String, token: String): LikeHttpResponse {
+    override suspend fun send(
+        method: String,
+        url: String,
+        token: String,
+        cookies: String?,
+        body: String?,
+    ): LikeHttpResponse {
         val index = calls.size
         calls += "$method $url"
         return replies.getOrNull(index) ?: error("no scripted reply")

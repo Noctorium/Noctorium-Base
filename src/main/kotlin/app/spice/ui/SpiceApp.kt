@@ -340,9 +340,21 @@ private fun LibraryScreen(state: AppState) {
     var importOpen by remember { mutableStateOf(false) }
 
     if (newPlaylistOpen) {
-        PlaylistNameDialog("New playlist", "", "Create") { title ->
+        val likes by state.likes.collectAsState()
+        NewPlaylistDialog(
+            title = "New playlist",
+            confirmLabel = "Create",
+            soundCloudReady = likes.soundCloudReady,
+            youTubeReady = likes.youTubeReady,
+        ) { name, destination ->
             newPlaylistOpen = false
-            title?.let { state.createPlaylist(it) }
+            if (name != null) {
+                when (destination) {
+                    PlaylistDestination.SPICE -> state.createPlaylist(name)
+                    PlaylistDestination.SOUNDCLOUD -> state.createSoundCloudPlaylist(name)
+                    PlaylistDestination.YOUTUBE -> state.createPlaylist(name)
+                }
+            }
         }
     }
     if (importOpen) {
@@ -518,6 +530,13 @@ private fun LocalPlaylistDetail(playlist: LocalPlaylist, notice: String?, state:
             }
             OutlinedButton({ renameOpen = true }) { Text("Rename") }
             OutlinedButton({ confirmDelete = true }) { Text("Delete") }
+            if (playlist.tracks.any { it.provider == ProviderType.SOUNDCLOUD }) {
+                OutlinedButton({ state.publishPlaylistToSoundCloud(playlist) }) {
+                    Icon(Icons.Default.CloudUpload, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Save to SoundCloud")
+                }
+            }
         }
         Spacer(Modifier.height(10.dp))
         notice?.let { LibraryNotice(it, state::clearLibraryNotice) }
@@ -543,6 +562,100 @@ private fun LocalPlaylistDetail(playlist: LocalPlaylist, notice: String?, state:
             }
         }
     }
+}
+
+/** Where a new playlist should live. Spice always works; the services need a signed-in account. */
+private enum class PlaylistDestination(val label: String) {
+    SPICE("In Spice"),
+    SOUNDCLOUD("On SoundCloud"),
+    YOUTUBE("On YouTube Music"),
+}
+
+/**
+ * Names a new playlist and chooses where it is created.
+ *
+ * A playlist made here can live only in Spice or go straight onto a connected account, so the choice sits
+ * beside the name rather than being decided for the listener.
+ */
+@Composable
+private fun NewPlaylistDialog(
+    title: String,
+    confirmLabel: String,
+    soundCloudReady: Boolean,
+    youTubeReady: Boolean,
+    finish: (String?, PlaylistDestination) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var destination by remember { mutableStateOf(PlaylistDestination.SPICE) }
+
+    AlertDialog(
+        onDismissRequest = { finish(null, destination) },
+        title = { Text(title) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    name,
+                    { name = it.take(120) },
+                    label = { Text("Playlist name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(16.dp))
+                Text("Create it", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(8.dp))
+                Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    PlaylistDestination.entries.forEach { option ->
+                        val available = when (option) {
+                            PlaylistDestination.SPICE -> true
+                            PlaylistDestination.SOUNDCLOUD -> soundCloudReady
+                            PlaylistDestination.YOUTUBE -> youTubeReady
+                        }
+                        val selected = destination == option
+                        Surface(
+                            onClick = { destination = option },
+                            enabled = available,
+                            shape = RoundedCornerShape(11.dp),
+                            color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .5f)
+                            else Color.White.copy(alpha = .04f),
+                            border = BorderStroke(
+                                1.dp,
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .5f)
+                                else Color.White.copy(alpha = .08f),
+                            ),
+                        ) {
+                            Row(
+                                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                RadioButton(selected, { destination = option }, enabled = available)
+                                Spacer(Modifier.width(4.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        option.label,
+                                        fontSize = 13.sp,
+                                        color = if (available) MaterialTheme.colorScheme.onSurface
+                                        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .5f),
+                                    )
+                                    val note = when {
+                                        option == PlaylistDestination.SPICE -> "Stays on this computer, any service."
+                                        available && option == PlaylistDestination.SOUNDCLOUD ->
+                                            "Made on your account, private until you change it."
+                                        available -> "Made on your YouTube account."
+                                        else -> "Sign in under Settings to use this."
+                                    }
+                                    Text(note, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button({ finish(name, destination) }, enabled = name.isNotBlank()) { Text(confirmLabel) }
+        },
+        dismissButton = { OutlinedButton({ finish(null, destination) }) { Text("Cancel") } },
+    )
 }
 
 @Composable
@@ -673,6 +786,8 @@ private fun PlaylistRow(playlist: Playlist, open: () -> Unit) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            VisibilityBadge(playlist.isPublic, compact = true)
+            Spacer(Modifier.width(7.dp))
             ProviderBadge(playlist.provider, compact = true)
             Spacer(Modifier.width(8.dp))
             Icon(Icons.Default.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -689,21 +804,25 @@ private fun PlaylistDetail(playlist: Playlist, library: LibraryState, state: App
             Spacer(Modifier.width(6.dp))
             Column(Modifier.weight(1f)) {
                 Text(playlist.title, fontSize = 27.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                Text(
-                    listOfNotNull(
-                        playlist.provider.displayName,
-                        playlist.ownerName,
-                        playlist.tracks.size.takeIf { it > 0 }?.let { "$it tracks" },
-                    ).joinToString(" • "),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
-            }
-            if (library.openPlaylistEnriching) {
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(end = 12.dp)) {
-                    CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(7.dp))
-                    Text("Loading covers…", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        listOfNotNull(
+                            playlist.provider.displayName,
+                            playlist.ownerName,
+                            playlist.tracks.size.takeIf { it > 0 }?.let { count ->
+                                "$count ${if (count == 1) "track" else "tracks"}"
+                            },
+                        ).joinToString(" • "),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    // Artwork arrives in the background; a bare spinner says so without a running commentary.
+                    if (library.openPlaylistEnriching) {
+                        Spacer(Modifier.width(9.dp))
+                        CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.5.dp)
+                    }
                 }
             }
             if (playlist.tracks.isNotEmpty()) {
@@ -711,6 +830,11 @@ private fun PlaylistDetail(playlist: Playlist, library: LibraryState, state: App
                     Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(7.dp)); Text("Play all")
                 }
             }
+        }
+        // Account actions sit on their own line: in the title row they crowded out the name entirely.
+        if (playlist.provider == ProviderType.SOUNDCLOUD && playlist.id.all(Char::isDigit)) {
+            Spacer(Modifier.height(12.dp))
+            SoundCloudPlaylistActions(playlist, state)
         }
         Spacer(Modifier.height(16.dp))
         when {
@@ -726,6 +850,89 @@ private fun PlaylistDetail(playlist: Playlist, library: LibraryState, state: App
                 }
             }
         }
+    }
+}
+
+/** Says who can see a playlist. Absent when the service has not told us, rather than guessing "public". */
+@Composable
+private fun VisibilityBadge(isPublic: Boolean?, compact: Boolean = false) {
+    if (isPublic == null) return
+    val label = if (isPublic) "Public" else "Private"
+    Surface(
+        shape = RoundedCornerShape(20.dp),
+        color = if (isPublic) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .55f)
+        else Color.White.copy(alpha = .08f),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = .1f)),
+    ) {
+        Row(
+            Modifier.padding(horizontal = if (compact) 8.dp else 11.dp, vertical = if (compact) 3.dp else 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                if (isPublic) Icons.Default.Public else Icons.Default.Lock,
+                null,
+                Modifier.size(if (compact) 11.dp else 14.dp),
+                tint = if (isPublic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.width(5.dp))
+            Text(
+                label,
+                fontSize = if (compact) 10.sp else 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = if (isPublic) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Rename and delete for a playlist that lives on the SoundCloud account, not only in Spice. */
+@Composable
+private fun SoundCloudPlaylistActions(playlist: Playlist, state: AppState) {
+    var renaming by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf(false) }
+
+    if (renaming) {
+        PlaylistNameDialog("Rename on SoundCloud", playlist.title, "Rename") { title ->
+            renaming = false
+            title?.let { state.renameSoundCloudPlaylist(playlist.id, it) }
+        }
+    }
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete \"${playlist.title}\" from SoundCloud?") },
+            text = {
+                Text(
+                    "This removes the playlist from your SoundCloud account, not just from Spice. The tracks " +
+                        "themselves are untouched.",
+                )
+            },
+            confirmButton = {
+                Button({ confirmDelete = false; state.deleteSoundCloudPlaylist(playlist.id) }) { Text("Delete") }
+            },
+            dismissButton = { OutlinedButton({ confirmDelete = false }) { Text("Keep") } },
+        )
+    }
+
+    Row(horizontalArrangement = Arrangement.spacedBy(9.dp), verticalAlignment = Alignment.CenterVertically) {
+        VisibilityBadge(playlist.isPublic)
+        // Only offered when SoundCloud has actually told us the current state, so the button cannot claim to
+        // flip something whose value is unknown.
+        playlist.isPublic?.let { isPublic ->
+            OutlinedButton({ state.setSoundCloudPlaylistVisibility(playlist.id, !isPublic) }) {
+                Icon(
+                    if (isPublic) Icons.Default.Lock else Icons.Default.Public,
+                    null,
+                    Modifier.size(16.dp),
+                )
+                Spacer(Modifier.width(7.dp))
+                Text(if (isPublic) "Make private" else "Make public")
+            }
+        }
+        OutlinedButton({ renaming = true }) {
+            Icon(Icons.Default.Edit, null, Modifier.size(16.dp)); Spacer(Modifier.width(7.dp)); Text("Rename")
+        }
+        OutlinedButton({ confirmDelete = true }) { Text("Delete") }
     }
 }
 
@@ -915,17 +1122,76 @@ private fun AddToPlaylistDialog(
 ) {
     var creating by remember { mutableStateOf(playlists.isEmpty()) }
     if (creating) {
-        PlaylistNameDialog("New playlist for ${track.title}", "", "Create and add") { title ->
+        val likes by state.likes.collectAsState()
+        NewPlaylistDialog(
+            title = "New playlist for ${track.title}",
+            confirmLabel = "Create and add",
+            // A SoundCloud playlist can only hold SoundCloud tracks, so the option is offered only when the
+            // track being added could actually go in one.
+            soundCloudReady = likes.soundCloudReady && track.provider == ProviderType.SOUNDCLOUD,
+            youTubeReady = false,
+        ) { name, destination ->
             dismiss()
-            title?.let { state.createPlaylist(it, firstTrack = track) }
+            if (name != null) {
+                when (destination) {
+                    PlaylistDestination.SOUNDCLOUD -> state.createSoundCloudPlaylist(name, listOf(track))
+                    else -> state.createPlaylist(name, firstTrack = track)
+                }
+            }
         }
         return
     }
+    val library by state.library.collectAsState()
+    // Playlists on the account itself, which Spice can write to. The likes page is a listing, not a playlist,
+    // so it is excluded by requiring a numeric id.
+    val soundCloudPlaylists = library.playlists.filter {
+        it.provider == ProviderType.SOUNDCLOUD && it.id.all(Char::isDigit)
+    }
+
     AlertDialog(
         onDismissRequest = dismiss,
         title = { Text("Add to playlist") },
         text = {
-            LazyColumn(Modifier.heightIn(max = 320.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            LazyColumn(Modifier.heightIn(max = 340.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (soundCloudPlaylists.isNotEmpty() && track.provider == ProviderType.SOUNDCLOUD) {
+                    item {
+                        Text(
+                            "ON SOUNDCLOUD",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    items(soundCloudPlaylists, key = { "sc:${it.id}" }) { playlist ->
+                        Surface(
+                            onClick = { dismiss(); state.addTrackToSoundCloudPlaylist(playlist.id, track) },
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f),
+                            shape = RoundedCornerShape(10.dp),
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Cloud, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                                Spacer(Modifier.width(10.dp))
+                                Column(Modifier.weight(1f)) {
+                                    Text(playlist.title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        playlist.trackCount?.let { "$it tracks • on your account" } ?: "on your account",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    item {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "IN SPICE",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                }
                 items(playlists, key = { it.id }) { playlist ->
                     Surface(
                         onClick = { dismiss(); state.addTrackToPlaylist(playlist.id, track) },

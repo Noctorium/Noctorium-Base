@@ -52,6 +52,8 @@ data class Playlist(
     /** Page the playlist's tracks are loaded from; null for playlists Spice assembled itself. */
     val sourceUrl: String? = null,
     val trackCount: Int? = null,
+    /** Whether the service shows this playlist publicly. Null when the service does not say. */
+    val isPublic: Boolean? = null,
 ) {
     val playlistKey: String get() = "${provider.name}:$id"
 }

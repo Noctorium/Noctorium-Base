@@ -36,8 +36,12 @@ import app.spice.scrobble.ScrobbleManager
 import app.spice.social.LikeOutcome
 import app.spice.social.SoundCloudLikeClient
 import app.spice.social.SoundCloudToken
+import app.spice.social.soundCloudCookieHeader
 import app.spice.social.LikeResult
 import app.spice.social.SoundCloudAccountClient
+import app.spice.social.PlaylistWriteResult
+import app.spice.social.SoundCloudClientIdProvider
+import app.spice.social.SoundCloudPlaylistClient
 import app.spice.social.YouTubeApiClient
 import app.spice.settings.*
 import kotlinx.coroutines.CoroutineScope
@@ -89,6 +93,8 @@ data class LibraryState(
     /** True while artwork and durations are still being resolved slice by slice. */
     val openPlaylistEnriching: Boolean = false,
     val loaded: Boolean = false,
+    /** When the listing was last fetched, so a stale library can refresh itself. */
+    val loadedAtMillis: Long = 0,
 )
 
 /**
@@ -182,6 +188,8 @@ class AppState(
     private val googleOAuth: GoogleOAuthClient = GoogleOAuthClient(openBrowser = ::browseGoogleSignIn),
     private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
+    private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
+    private val playlistClient: SoundCloudPlaylistClient = SoundCloudPlaylistClient(),
 ) : AutoCloseable {
     @Volatile private var googleTokens: GoogleTokens? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -303,7 +311,12 @@ class AppState(
 
     /** Loads the listener's own playlists from every provider whose session is configured. */
     fun refreshLibrary(force: Boolean = false) {
-        if (!force && (mutableLibrary.value.loaded || mutableLibrary.value.loading)) return
+        val current = mutableLibrary.value
+        if (current.loading) return
+        // Playlists change on the service too, so a listing that has sat around for a while is refetched when
+        // the library is opened rather than staying as it was for the whole session.
+        val stale = System.currentTimeMillis() - current.loadedAtMillis > LIBRARY_STALE_AFTER_MS
+        if (!force && current.loaded && !stale) return
         libraryJob?.cancel()
         libraryJob = scope.launch {
             mutableLibrary.update { it.copy(loading = true, errorMessage = null) }
@@ -314,14 +327,20 @@ class AppState(
             val youTube = googleToken?.let { token ->
                 runCatching { youTubeApi.myPlaylists(token) }
             }
+            // SoundCloud's own listing is preferred over the public page: it says whether each playlist is
+            // public and it includes private ones, neither of which a page listing can show.
+            val soundCloudOwn = soundCloudOwnPlaylists()
             val connected = providers.filter { provider ->
-                provider.type != ProviderType.YOUTUBE_MUSIC && preferences.canListLibrary(provider.type)
+                provider.type != ProviderType.YOUTUBE_MUSIC &&
+                    preferences.canListLibrary(provider.type) &&
+                    !(provider.type == ProviderType.SOUNDCLOUD && soundCloudOwn != null)
             }
-            if (connected.isEmpty() && youTube == null) {
+            if (connected.isEmpty() && youTube == null && soundCloudOwn == null) {
                 mutableLibrary.update {
                     it.copy(
                         loading = false,
                         loaded = true,
+                        loadedAtMillis = System.currentTimeMillis(),
                         playlists = emptyList(),
                         needsSoundCloudUsername = needsSoundCloudName,
                         errorMessage = if (needsSoundCloudName) {
@@ -336,7 +355,7 @@ class AppState(
             val results = connected.map { provider ->
                 async { provider.type to runCatching { provider.getLibraryPlaylists() } }
             }.awaitAll() + listOfNotNull(youTube?.let { ProviderType.YOUTUBE_MUSIC to it })
-            val playlists = results.flatMap { (_, result) -> result.getOrDefault(emptyList()) }
+            val playlists = soundCloudOwn.orEmpty() + results.flatMap { (_, result) -> result.getOrDefault(emptyList()) }
             val failures = results.mapNotNull { (type, result) ->
                 result.exceptionOrNull()?.let { libraryFailureMessage(type, it) }
             }
@@ -344,6 +363,7 @@ class AppState(
                 it.copy(
                     loading = false,
                     loaded = true,
+                    loadedAtMillis = System.currentTimeMillis(),
                     playlists = playlists,
                     needsSoundCloudUsername = needsSoundCloudName,
                     errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() },
@@ -565,7 +585,11 @@ class AppState(
             }
             ScrobbleLog.event(
                 if (result.succeeded) "like_written" else "like_failed",
-                mapOf("provider" to track.provider.name, "outcome" to result.outcome.name),
+                mapOf(
+                    "provider" to track.provider.name,
+                    "outcome" to result.outcome.name,
+                    "detail" to result.detail,
+                ),
             )
             if (result.succeeded) refreshLikes()
         }
@@ -577,7 +601,20 @@ class AppState(
             if (token.isNullOrBlank()) {
                 LikeResult(LikeOutcome.NEEDS_TOKEN, "Sign in to SoundCloud in Settings before liking tracks.")
             } else {
-                likeClient.setLiked(track.id, token, liking)
+                val first = soundCloudLike(track, token, liking)
+                // A refused token is often simply a stale copy: the browser session may have rotated it since
+                // sign-in, and the exported cookie file is where a newer one would be.
+                if (first.outcome != LikeOutcome.TOKEN_REJECTED) {
+                    first
+                } else {
+                    val fresh = withContext(Dispatchers.IO) { tokenFromCookieFile() }
+                    if (fresh == null || fresh == token) {
+                        first
+                    } else {
+                        withContext(Dispatchers.IO) { runCatching { credentials.put(SOUNDCLOUD_TOKEN, fresh) } }
+                        soundCloudLike(track, fresh, liking)
+                    }
+                }
             }
         }
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> {
@@ -591,15 +628,51 @@ class AppState(
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
+    private suspend fun soundCloudLike(track: Track, token: String, liking: Boolean): LikeResult =
+        likeClient.setLiked(
+            trackId = track.id,
+            userId = SoundCloudToken.userIdFrom(token).orEmpty(),
+            token = token,
+            clientId = soundCloudClientIds.clientId(),
+            liked = liking,
+            cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
+        )
+
+    /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
+    private fun soundCloudCookies(): String? {
+        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile
+        return file.takeIf(String::isNotBlank)?.let { soundCloudCookieHeader(Path.of(it)) }
+    }
+
+    /** The session token as it stands in the exported cookie file, which sign-in refreshes. */
+    private fun tokenFromCookieFile(): String? {
+        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile
+        return file.takeIf(String::isNotBlank)?.let { SoundCloudToken.fromCookieFile(Path.of(it)) }
+    }
+
     /** Reads each connected account's likes so hearts reflect the services rather than only this session. */
     fun refreshLikes() {
         scope.launch {
-            val username = mutableSettings.value.preferences.soundCloudUsername
-            if (username.isNotBlank()) {
-                runCatching {
-                    ytDlp.listTracks(ProviderType.SOUNDCLOUD, "https://soundcloud.com/$username/likes", limit = 200)
-                }.getOrNull()?.let { tracks ->
-                    val keys = tracks.map(::likeKey).toSet()
+            // One call for the whole liked set, rather than listing two hundred tracks through yt-dlp.
+            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            if (!token.isNullOrBlank()) {
+                val liked = likeClient.likedTrackIds(
+                    userId = SoundCloudToken.userIdFrom(token).orEmpty(),
+                    token = token,
+                    clientId = soundCloudClientIds.clientId(),
+                    cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
+                )
+                ScrobbleLog.event(
+                    "likes_synced",
+                    mapOf(
+                        "provider" to "SOUNDCLOUD",
+                        "status" to liked.status,
+                        "count" to liked.ids.size,
+                        "sample" to liked.sample,
+                    ),
+                )
+                if (liked.ids.isNotEmpty()) {
+                    val keys = liked.ids.map { "sc:$it" }.toSet()
                     mutableLikes.update { state ->
                         state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("sc:") }.toSet() + keys)
                     }
@@ -739,19 +812,120 @@ class AppState(
         }
     }
 
+    // --- Playlists on the SoundCloud account itself ---
+
+    /**
+     * Makes a playlist on SoundCloud rather than only inside Spice. Private by default, since a playlist made
+     * in passing should not appear on a profile unless it was meant to.
+     */
+    fun createSoundCloudPlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
+        withSoundCloudWrite { token, clientId, cookies ->
+            playlistClient.create(
+                title = title,
+                trackIds = tracks.filter { it.provider == ProviderType.SOUNDCLOUD }.map { it.id },
+                isPublic = isPublic,
+                token = token,
+                clientId = clientId,
+                cookies = cookies,
+            )
+        }
+    }
+
+    /**
+     * Adds one track to a SoundCloud playlist. Their API replaces a playlist's contents wholesale, so the
+     * current order is read first and the new track appended to it.
+     */
+    fun addTrackToSoundCloudPlaylist(playlistId: String, track: Track) {
+        if (track.provider != ProviderType.SOUNDCLOUD) {
+            return libraryNotice("Only SoundCloud tracks can go into a SoundCloud playlist.")
+        }
+        withSoundCloudWrite { token, clientId, cookies ->
+            val existing = playlistClient.trackIds(playlistId, token, clientId, cookies)
+            if (existing.contains(track.id)) {
+                PlaylistWriteResult(true, "${track.title} is already in that playlist.")
+            } else {
+                playlistClient.setTracks(playlistId, existing + track.id, token, clientId, cookies)
+                    .let { if (it.ok) it.copy(detail = "Added ${track.title} on SoundCloud.") else it }
+            }
+        }
+    }
+
+    fun removeTrackFromSoundCloudPlaylist(playlistId: String, trackId: String) {
+        withSoundCloudWrite { token, clientId, cookies ->
+            val existing = playlistClient.trackIds(playlistId, token, clientId, cookies)
+            if (!existing.contains(trackId)) {
+                PlaylistWriteResult(true, "That track is not in the playlist.")
+            } else {
+                playlistClient.setTracks(playlistId, existing - trackId, token, clientId, cookies)
+            }
+        }
+    }
+
+    fun setSoundCloudPlaylistVisibility(playlistId: String, isPublic: Boolean) {
+        withSoundCloudWrite { token, clientId, cookies ->
+            playlistClient.setVisibility(playlistId, isPublic, token, clientId, cookies)
+        }
+    }
+
+    fun renameSoundCloudPlaylist(playlistId: String, title: String) {
+        withSoundCloudWrite { token, clientId, cookies ->
+            playlistClient.rename(playlistId, title, token, clientId, cookies)
+        }
+    }
+
+    fun deleteSoundCloudPlaylist(playlistId: String) {
+        withSoundCloudWrite { token, clientId, cookies ->
+            playlistClient.delete(playlistId, token, clientId, cookies)
+        }
+    }
+
+    /** Copies a playlist made in Spice up to SoundCloud, keeping only the tracks that live there. */
+    fun publishPlaylistToSoundCloud(playlist: LocalPlaylist, isPublic: Boolean = false) {
+        val soundCloudTracks = playlist.tracks.filter { it.provider == ProviderType.SOUNDCLOUD }
+        if (soundCloudTracks.isEmpty()) {
+            return libraryNotice("\"${playlist.title}\" has no SoundCloud tracks to publish.")
+        }
+        createSoundCloudPlaylist(playlist.title, soundCloudTracks, isPublic)
+    }
+
+    /**
+     * Runs a write against SoundCloud with the session it needs, then reports the outcome and reloads the
+     * library so what the listener sees matches the account.
+     */
+    private fun withSoundCloudWrite(write: suspend (String, String?, String?) -> PlaylistWriteResult) {
+        scope.launch {
+            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            if (token.isNullOrBlank()) {
+                return@launch libraryNotice("Sign in to SoundCloud under Settings before editing its playlists.")
+            }
+            val result = write(token, soundCloudClientIds.clientId(), withContext(Dispatchers.IO) { soundCloudCookies() })
+            libraryNotice(result.detail)
+            ScrobbleLog.event(
+                if (result.ok) "soundcloud_playlist_written" else "soundcloud_playlist_failed",
+                mapOf("detail" to result.detail),
+            )
+            if (result.ok) {
+                mutableLibrary.update { it.copy(loaded = false) }
+                refreshLibrary(force = true)
+            }
+        }
+    }
+
+    private fun libraryNotice(message: String) = mutableLibrary.update { it.copy(notice = message) }
+
     // --- Playlists the listener builds inside Spice ---
 
     fun createPlaylist(title: String, firstTrack: Track? = null): LocalPlaylist? {
         val cleanTitle = title.trim().take(120)
         if (cleanTitle.isBlank()) {
-            noticeLibrary("Give the playlist a name first.")
+            libraryNotice("Give the playlist a name first.")
             return null
         }
         val created = LocalPlaylist.create(cleanTitle).let { playlist ->
             if (firstTrack == null) playlist else playlist.copy(tracks = listOf(firstTrack))
         }
         persistPlaylists(mutableLibrary.value.localPlaylists + created)
-        noticeLibrary(
+        libraryNotice(
             if (firstTrack == null) "Created \"$cleanTitle\"." else "Created \"$cleanTitle\" with ${firstTrack.title}.",
         )
         return created
@@ -759,9 +933,9 @@ class AppState(
 
     fun renamePlaylist(id: String, title: String) {
         val cleanTitle = title.trim().take(120)
-        if (cleanTitle.isBlank()) return noticeLibrary("Give the playlist a name first.")
+        if (cleanTitle.isBlank()) return libraryNotice("Give the playlist a name first.")
         editPlaylist(id) { it.copy(title = cleanTitle) }
-        noticeLibrary("Renamed to \"$cleanTitle\".")
+        libraryNotice("Renamed to \"$cleanTitle\".")
     }
 
     fun deletePlaylist(id: String) {
@@ -770,16 +944,16 @@ class AppState(
         mutableLibrary.update { state ->
             if (state.openLocalPlaylist?.id == id) state.copy(openLocalPlaylist = null) else state
         }
-        noticeLibrary("Deleted \"${removed.title}\".")
+        libraryNotice("Deleted \"${removed.title}\".")
     }
 
     fun addTrackToPlaylist(playlistId: String, track: Track) {
         val playlist = mutableLibrary.value.localPlaylists.firstOrNull { it.id == playlistId } ?: return
         if (playlist.tracks.any { it.queueKey == track.queueKey }) {
-            return noticeLibrary("${track.title} is already in \"${playlist.title}\".")
+            return libraryNotice("${track.title} is already in \"${playlist.title}\".")
         }
         editPlaylist(playlistId) { it.copy(tracks = it.tracks + track) }
-        noticeLibrary("Added ${track.title} to \"${playlist.title}\".")
+        libraryNotice("Added ${track.title} to \"${playlist.title}\".")
     }
 
     fun removeTrackFromPlaylist(playlistId: String, queueKey: String) {
@@ -804,41 +978,40 @@ class AppState(
     /** Copies the provider page for one track, which anyone can open with or without Spice. */
     fun copyTrackLink(track: Track) {
         runCatching { clipboard(track.sourceUrl) }
-            .onSuccess { noticeLibrary("Link to ${track.title} copied.") }
-            .onFailure { noticeLibrary("Could not reach the clipboard.") }
+            .onSuccess { libraryNotice("Link to ${track.title} copied.") }
+            .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
 
     /** Copies a link that carries the whole playlist, so another Spice can rebuild it without a server. */
     fun copyPlaylistShareLink(playlist: LocalPlaylist) {
-        if (playlist.tracks.isEmpty()) return noticeLibrary("Add a track before sharing this playlist.")
+        if (playlist.tracks.isEmpty()) return libraryNotice("Add a track before sharing this playlist.")
         val link = PlaylistShareLink.encode(playlist.title, playlist.tracks)
         runCatching { clipboard(link) }
-            .onSuccess { noticeLibrary("Share link copied — ${playlist.trackCount} tracks, ${link.length} characters.") }
-            .onFailure { noticeLibrary("Could not reach the clipboard.") }
+            .onSuccess { libraryNotice("Share link copied — ${playlist.trackCount} tracks, ${link.length} characters.") }
+            .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
 
     /** Copies a readable track listing for sharing with people who do not run Spice. */
     fun copyPlaylistAsText(playlist: LocalPlaylist) {
-        if (playlist.tracks.isEmpty()) return noticeLibrary("This playlist is empty.")
+        if (playlist.tracks.isEmpty()) return libraryNotice("This playlist is empty.")
         runCatching { clipboard(shareableText(playlist.title, playlist.tracks)) }
-            .onSuccess { noticeLibrary("Track list copied as text.") }
-            .onFailure { noticeLibrary("Could not reach the clipboard.") }
+            .onSuccess { libraryNotice("Track list copied as text.") }
+            .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
 
     fun importSharedPlaylist(link: String) {
         val shared = PlaylistShareLink.decode(link)
         if (shared == null) {
-            noticeLibrary("That does not look like a Spice playlist link.")
+            libraryNotice("That does not look like a Spice playlist link.")
             return
         }
         val imported = LocalPlaylist.create(shared.title).copy(tracks = shared.tracks)
         persistPlaylists(mutableLibrary.value.localPlaylists + imported)
-        noticeLibrary("Imported \"${shared.title}\" with ${shared.tracks.size} tracks.")
+        libraryNotice("Imported \"${shared.title}\" with ${shared.tracks.size} tracks.")
     }
 
     fun clearLibraryNotice() = mutableLibrary.update { it.copy(notice = null) }
 
-    private fun noticeLibrary(message: String) = mutableLibrary.update { it.copy(notice = message) }
 
     private fun editPlaylist(id: String, transform: (LocalPlaylist) -> LocalPlaylist) {
         val now = Instant.now().epochSecond
@@ -1191,6 +1364,37 @@ class AppState(
         }
     }
 
+    /**
+     * The account's own SoundCloud playlists, or null when the session cannot provide them and the public
+     * page listing should be used instead.
+     */
+    private suspend fun soundCloudOwnPlaylists(): List<Playlist>? {
+        val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+        if (token.isNullOrBlank()) return null
+        val userId = SoundCloudToken.userIdFrom(token) ?: return null
+        val own = runCatching {
+            playlistClient.list(
+                userId = userId,
+                token = token,
+                clientId = soundCloudClientIds.clientId(),
+                cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
+            )
+        }.getOrDefault(emptyList())
+        if (own.isEmpty()) return null
+        // The likes page is a listing rather than a playlist, so it is added alongside rather than by the API.
+        val username = mutableSettings.value.preferences.soundCloudUsername
+        val likes = if (username.isBlank()) emptyList() else listOf(
+            Playlist(
+                id = "likes",
+                title = "Liked tracks",
+                provider = ProviderType.SOUNDCLOUD,
+                ownerName = username,
+                sourceUrl = "https://soundcloud.com/$username/likes",
+            ),
+        )
+        return own + likes
+    }
+
     /** Rows built from the signed-in account rather than from a search. */
     private suspend fun personalHomeSections(): List<HomeSection> = supervisorScope {
         val username = mutableSettings.value.preferences.soundCloudUsername
@@ -1431,3 +1635,6 @@ private fun StartPage.destination(): Destination = when (this) {
     StartPage.LIBRARY -> Destination.LIBRARY
     StartPage.NOW_PLAYING -> Destination.NOW_PLAYING
 }
+
+/** How long a library listing is trusted before opening the screen refetches it. */
+private const val LIBRARY_STALE_AFTER_MS = 5 * 60 * 1000L
