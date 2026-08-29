@@ -177,6 +177,10 @@ data class SpicePreferences(
     val startPage: StartPage = StartPage.HOME,
     val youtubeCookies: CookieSource = CookieSource(),
     val soundCloudCookies: CookieSource = CookieSource(),
+    /** Which YouTube channel to act as. Blank means the account's default channel. */
+    val youtubePageId: String = "",
+    /** Name of that channel, shown in Settings so the choice is legible. */
+    val youtubeChannelName: String = "",
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
@@ -235,15 +239,6 @@ data class SettingsState(
     val scrobbling: ScrobbleState = ScrobbleState(),
     val youtubeAccount: AccountConnectionState = AccountConnectionState(),
     val soundCloudAccount: AccountConnectionState = AccountConnectionState(),
-    val google: GoogleAccountState = GoogleAccountState(),
-)
-
-/** Sign-in state for the Google account behind YouTube likes and playlists. */
-data class GoogleAccountState(
-    val configured: Boolean = false,
-    val signedIn: Boolean = false,
-    val busy: Boolean = false,
-    val message: String? = null,
 )
 
 class SettingsRepository(

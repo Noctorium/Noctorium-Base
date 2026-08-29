@@ -132,6 +132,7 @@ private class ScriptedLikes(private vararg val replies: LikeHttpResponse) : Like
         token: String,
         cookies: String?,
         body: String?,
+        headers: Map<String, String>,
     ): LikeHttpResponse {
         val index = calls.size
         calls += "$method $url"

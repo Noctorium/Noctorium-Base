@@ -1,9 +1,5 @@
 package app.spice.core
 
-import app.spice.auth.GoogleAuthResult
-import app.spice.auth.GoogleOAuthClient
-import app.spice.auth.GoogleOAuthConfig
-import app.spice.auth.GoogleTokens
 import app.spice.discord.DiscordPresenceManager
 import app.spice.discord.DiscordPresenceSettings
 import app.spice.discord.DiscordPresenceStatus
@@ -43,8 +39,8 @@ import app.spice.social.PlaylistWriteResult
 import app.spice.social.SoundCloudClientIdProvider
 import app.spice.social.SoundCloudPlaylistClient
 import app.spice.social.InnertubeKeyProvider
-import app.spice.social.YouTubeApiClient
 import app.spice.social.YouTubeMusicClient
+import app.spice.social.YouTubeChannel
 import app.spice.social.YouTubeSession
 import app.spice.social.cookieHeaderFor
 import app.spice.settings.*
@@ -152,6 +148,8 @@ data class LikeState(
     val busyKeys: Set<String> = emptySet(),
     val soundCloudReady: Boolean = false,
     val youTubeReady: Boolean = false,
+    /** Channels the signed-in Google account owns, for choosing which one Spice acts as. */
+    val youTubeChannels: List<YouTubeChannel> = emptyList(),
     val message: String? = null,
 ) {
     fun isLiked(track: Track): Boolean = likeKey(track) in likedKeys
@@ -190,11 +188,8 @@ data class AppUiState(
 class AppState(
     private val ytDlp: YtDlpService = YtDlpService(),
     private val playbackEngine: PlaybackEngine = MpvPlaybackEngine(ytDlp),
-    private val providers: List<MusicProvider> = listOf(
-        YtDlpMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp),
-        YtDlpMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
-        YtDlpMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
-    ),
+    /** Left null so the real set can be built below, where a provider can be handed one of these methods. */
+    private val injectedProviders: List<MusicProvider>? = null,
     private val lyricsRepository: LyricsRepository = LyricsRepository(),
     private val settingsRepository: SettingsRepository = SettingsRepository(),
     private val scrobbleManager: ScrobbleManager = ScrobbleManager(),
@@ -204,8 +199,6 @@ class AppState(
     private val clipboard: (String) -> Unit = ::copyToSystemClipboard,
     private val likeClient: SoundCloudLikeClient = SoundCloudLikeClient(),
     private val credentials: SecureCredentialStore = SecureCredentialStore(),
-    private val youTubeApi: YouTubeApiClient = YouTubeApiClient(),
-    private val googleOAuth: GoogleOAuthClient = GoogleOAuthClient(openBrowser = ::browseGoogleSignIn),
     private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
     private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
@@ -213,7 +206,12 @@ class AppState(
     private val youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(),
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
 ) : AutoCloseable {
-    @Volatile private var googleTokens: GoogleTokens? = null
+    // Declared before the init block below, which reaches for it while opening the home screen.
+    private val providers: List<MusicProvider> = injectedProviders ?: listOf(
+        YtDlpMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp, ::youTubeSongSearch),
+        YtDlpMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
+        YtDlpMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
+    )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val storedPreferences = settingsRepository.load()
     private val mutableUi = MutableStateFlow(
@@ -412,7 +410,6 @@ class AppState(
                         openPlaylistError = "No provider for ${playlist.provider.displayName}",
                     )
                 }
-            // A YouTube playlist is read through the Data API when Google is signed in; yt-dlp is the fallback.
             // yt-dlp reads a YouTube playlist with the same session cookies the sign-in produced.
             val listed = runCatching { provider.getPlaylistTracks(playlist) }
             val tracks = listed.getOrDefault(emptyList())
@@ -460,107 +457,6 @@ class AppState(
     private fun updateOpenPlaylist(playlist: Playlist, transform: (LibraryState) -> LibraryState) {
         mutableLibrary.update { state ->
             if (state.openPlaylist?.playlistKey != playlist.playlistKey) state else transform(state)
-        }
-    }
-
-    // --- Google sign-in, the officially supported route for YouTube ---
-
-    /**
-     * Stores the OAuth client Spice signs in through. Spice ships no Google client of its own, so this is the
-     * one manual step: a Desktop-app OAuth client from Google Cloud Console with the YouTube Data API enabled.
-     */
-    fun saveGoogleClient(clientId: String, clientSecret: String) {
-        val id = clientId.trim()
-        val secret = clientSecret.trim()
-        if (id.isBlank() || secret.isBlank()) return googleMessage("Both the client id and the secret are needed.")
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                credentials.put(GOOGLE_CLIENT_ID, id)
-                credentials.put(GOOGLE_CLIENT_SECRET, secret)
-            }.onSuccess {
-                updateGoogle { it.copy(configured = true, message = "OAuth client saved. You can sign in now.") }
-            }.onFailure { error ->
-                googleMessage("Could not store the client securely: ${error.message?.take(140)}")
-            }
-        }
-    }
-
-    /** Opens Google's sign-in page in the system browser, the only place Google permits it. */
-    fun signInWithGoogle() {
-        if (mutableSettings.value.google.busy) return
-        scope.launch {
-            updateGoogle { it.copy(busy = true, message = "Waiting for Google in your browser…") }
-            val config = withContext(Dispatchers.IO) { googleConfig() }
-            if (config == null || !config.isUsable) {
-                updateGoogle {
-                    it.copy(busy = false, configured = false, message = "Add a Google OAuth client id and secret first.")
-                }
-                return@launch
-            }
-            when (val result = googleOAuth.authorize(config)) {
-                is GoogleAuthResult.Success -> {
-                    googleTokens = result.tokens
-                    result.tokens.refreshToken?.let { token ->
-                        withContext(Dispatchers.IO) { runCatching { credentials.put(GOOGLE_REFRESH_TOKEN, token) } }
-                    }
-                    updateGoogle {
-                        it.copy(busy = false, signedIn = true, message = "Signed in to Google. YouTube likes and playlists are live.")
-                    }
-                    mutableLikes.update { it.copy(youTubeReady = true) }
-                    refreshLikes()
-                    refreshLibrary(force = true)
-                }
-                is GoogleAuthResult.Failure -> {
-                    updateGoogle { it.copy(busy = false, signedIn = false, message = result.detail) }
-                    mutableLikes.update { it.copy(youTubeReady = false) }
-                }
-            }
-        }
-    }
-
-    fun signOutGoogle() {
-        runCatching { credentials.remove(GOOGLE_REFRESH_TOKEN) }
-        googleTokens = null
-        updateGoogle { it.copy(signedIn = false, message = "Signed out of Google.") }
-        mutableLikes.update { state ->
-            state.copy(youTubeReady = false, likedKeys = state.likedKeys.filterNot { it.startsWith("yt:") }.toSet())
-        }
-        playlistJob?.cancel()
-        mutableLibrary.update { it.withoutProvider(ProviderType.YOUTUBE_MUSIC) }
-    }
-
-    fun clearGoogleMessage() = updateGoogle { it.copy(message = null) }
-
-    private fun updateGoogle(transform: (GoogleAccountState) -> GoogleAccountState) =
-        mutableSettings.update { it.copy(google = transform(it.google)) }
-
-    private fun googleMessage(message: String) = updateGoogle { it.copy(message = message, busy = false) }
-
-    private fun googleConfig(): GoogleOAuthConfig? = GoogleOAuthConfig.fromEnvironment()
-        ?: runCatching {
-            val id = credentials.get(GOOGLE_CLIENT_ID)
-            val secret = credentials.get(GOOGLE_CLIENT_SECRET)
-            if (id.isNullOrBlank() || secret.isNullOrBlank()) null else GoogleOAuthConfig(id, secret)
-        }.getOrNull()
-
-    /** A usable access token, refreshed from the stored refresh token when the cached one has aged out. */
-    private suspend fun googleAccessToken(): String? {
-        val now = Instant.now().epochSecond
-        googleTokens?.takeIf { it.isFresh(now) }?.let { return it.accessToken }
-        val config = withContext(Dispatchers.IO) { googleConfig() } ?: return null
-        val refreshToken = googleTokens?.refreshToken
-            ?: withContext(Dispatchers.IO) { runCatching { credentials.get(GOOGLE_REFRESH_TOKEN) }.getOrNull() }
-            ?: return null
-        return when (val result = googleOAuth.refresh(config, refreshToken)) {
-            is GoogleAuthResult.Success -> {
-                googleTokens = result.tokens
-                result.tokens.accessToken
-            }
-            is GoogleAuthResult.Failure -> {
-                updateGoogle { it.copy(signedIn = false, message = "Google sign-in expired: ${result.detail}") }
-                mutableLikes.update { it.copy(youTubeReady = false) }
-                null
-            }
         }
     }
 
@@ -659,12 +555,28 @@ class AppState(
      * The session YouTube Music calls need: the page identifiers plus every cookie for the account, since
      * Google signs a request from several of them together rather than from one token.
      */
+    /**
+     * Songs for a query, straight from YouTube Music's own search.
+     *
+     * It runs signed out as readily as signed in, because the identifiers the interface needs are published
+     * on the page itself; a session only makes the results personal. Returning nothing sends the caller back
+     * to the yt-dlp listing.
+     */
+    private suspend fun youTubeSongSearch(query: String, limit: Int): List<Track> {
+        val keys = innertubeKeys.keys() ?: return emptyList()
+        val session = youTubeSession() ?: YouTubeSession(keys, null)
+        return youTubeMusic.searchSongs(query, limit, session)
+    }
+
     private suspend fun youTubeSession(): YouTubeSession? {
+        // The cookies are checked first because reading the page identifiers costs a download of the whole
+        // YouTube Music page; without a session there is nothing that download could be used for.
+        val file = mutableSettings.value.preferences.youtubeCookies.cookieFile.takeIf(String::isNotBlank)
+            ?: return null
+        val header = withContext(Dispatchers.IO) { cookieHeaderFor(Path.of(file), "youtube.com") }
+            ?: return null
         val keys = innertubeKeys.keys() ?: return null
-        val file = mutableSettings.value.preferences.youtubeCookies.cookieFile
-        val header = file.takeIf(String::isNotBlank)
-            ?.let { withContext(Dispatchers.IO) { cookieHeaderFor(Path.of(it), "youtube.com") } }
-        return YouTubeSession(keys, header)
+        return YouTubeSession(keys, header, mutableSettings.value.preferences.youtubePageId)
     }
 
     /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
@@ -704,6 +616,29 @@ class AppState(
                     val keys = liked.ids.map { "sc:$it" }.toSet()
                     mutableLikes.update { state ->
                         state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("sc:") }.toSet() + keys)
+                    }
+                }
+            }
+            // The same for YouTube, read from the liked-songs shelf its own player uses.
+            youTubeSession()?.takeIf { it.sapisid != null }?.let { session ->
+                val liked = youTubeMusic.likedVideoIds(session)
+                ScrobbleLog.event(
+                    "likes_synced",
+                    mapOf(
+                        "provider" to "YOUTUBE_MUSIC",
+                        "status" to liked.status,
+                        "count" to liked.ids.size,
+                        // Which listing answered, and a few of the ids it gave, so a set that loads but
+                        // never matches a heart can be compared against the tracks on screen.
+                        "source" to liked.source,
+                        "ids" to liked.ids.take(3).joinToString(","),
+                        "sample" to liked.sample,
+                    ),
+                )
+                if (liked.ids.isNotEmpty()) {
+                    val keys = liked.ids.map { "yt:$it" }.toSet()
+                    mutableLikes.update { state ->
+                        state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("yt:") }.toSet() + keys)
                     }
                 }
             }
@@ -858,6 +793,46 @@ class AppState(
         }
     }
 
+    /** The channels this Google account owns, so a brand channel can be used instead of the default one. */
+    fun loadYouTubeChannels() {
+        scope.launch {
+            val session = youTubeSession()
+            if (session?.sapisid == null) {
+                return@launch likeMessage("Sign in to YouTube Music first.")
+            }
+            val channels = youTubeMusic.channels(session)
+            mutableLikes.update { it.copy(youTubeChannels = channels) }
+            if (channels.isEmpty()) {
+                likeMessage("YouTube did not list any channels for this account.")
+            }
+        }
+    }
+
+    /** Switches which channel Spice acts as; every later call carries it. */
+    fun setYouTubeChannel(channel: YouTubeChannel) {
+        updatePreferences { copy(youtubePageId = channel.pageId, youtubeChannelName = channel.name) }
+        mutableLibrary.update { it.copy(loaded = false) }
+        likeMessage("Now acting as ${channel.name} on YouTube Music.")
+        refreshLikes()
+        refreshLibrary(force = true)
+    }
+
+    fun renameYouTubePlaylist(playlistId: String, title: String) {
+        withYouTubeWrite { session -> youTubeMusic.renamePlaylist(playlistId, title, session) }
+    }
+
+    fun deleteYouTubePlaylist(playlistId: String) {
+        withYouTubeWrite { session -> youTubeMusic.deletePlaylist(playlistId, session) }
+    }
+
+    fun setYouTubePlaylistVisibility(playlistId: String, isPublic: Boolean) {
+        withYouTubeWrite { session -> youTubeMusic.setPlaylistVisibility(playlistId, isPublic, session) }
+    }
+
+    fun removeTrackFromYouTubePlaylist(playlistId: String, videoId: String) {
+        withYouTubeWrite { session -> youTubeMusic.removeFromPlaylist(playlistId, videoId, session) }
+    }
+
     /** Makes a playlist on the YouTube Music account. Private by default, as on SoundCloud. */
     fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
         withYouTubeWrite { session ->
@@ -961,6 +936,15 @@ class AppState(
         withSoundCloudWrite { token, clientId, cookies ->
             playlistClient.delete(playlistId, token, clientId, cookies)
         }
+    }
+
+    /** Copies a playlist made in Spice up to YouTube Music, keeping only the tracks that live there. */
+    fun publishPlaylistToYouTube(playlist: LocalPlaylist, isPublic: Boolean = false) {
+        val youTubeTracks = playlist.tracks.filter { it.provider != ProviderType.SOUNDCLOUD }
+        if (youTubeTracks.isEmpty()) {
+            return libraryNotice("\"${playlist.title}\" has no YouTube tracks to publish.")
+        }
+        createYouTubePlaylist(playlist.title, youTubeTracks, isPublic)
     }
 
     /** Copies a playlist made in Spice up to SoundCloud, keeping only the tracks that live there. */
@@ -1700,17 +1684,6 @@ private fun copyToSystemClipboard(text: String) {
 
 /** Credential-store key for the SoundCloud session token that authorises writing likes. */
 private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
-
-/** Credential-store keys for the Google OAuth client and the refresh token it yields. */
-private const val GOOGLE_CLIENT_ID = "google.client_id"
-private const val GOOGLE_CLIENT_SECRET = "google.client_secret"
-private const val GOOGLE_REFRESH_TOKEN = "google.refresh_token"
-
-private fun browseGoogleSignIn(url: String) {
-    require(url.startsWith("https://")) { "Only secure links can be opened" }
-    check(Desktop.isDesktopSupported()) { "Opening links is not supported on this system" }
-    Desktop.getDesktop().browse(URI(url))
-}
 
 /** Where Spice opens, chosen in Customization. */
 private fun StartPage.destination(): Destination = when (this) {

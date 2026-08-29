@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -38,6 +39,9 @@ import kotlin.math.max
 internal const val NORMAL_MAX_VOLUME = 1f
 internal const val BOOSTED_MAX_VOLUME = 10f
 internal const val BOOST_START_VOLUME = 2f
+
+/** Ten seconds of asking at the ticker's rate, after which a stream is taken to have no length. */
+private const val MAX_DURATION_PROBES = 40
 
 class MpvPlaybackEngine(
     private val resolver: YtDlpService,
@@ -221,6 +225,7 @@ class MpvPlaybackEngine(
         progressJob?.cancel()
         progressJob = scope.launch {
             var lastTick = System.nanoTime()
+            var durationAttempts = 0
             while (isActive) {
                 delay(250)
                 val now = System.nanoTime()
@@ -232,14 +237,47 @@ class MpvPlaybackEngine(
                         mutableState.value = current.copy(status = PlaybackStatus.IDLE)
                         break
                     }
-                    val next = current.positionMs + elapsedMs
-                    mutableState.value = current.copy(
-                        positionMs = if (current.durationMs > 0) next.coerceAtMost(current.durationMs) else next,
-                    )
+                    // Ask mpv how long the stream is until it can say. A YouTube Music listing carries no
+                    // duration field at all, so a track played from one arrives here with nothing to scale
+                    // the seek bar against, and only the player itself can supply it.
+                    val playingKey = current.track?.queueKey
+                    val measured = if (current.durationMs > 0 || durationAttempts >= MAX_DURATION_PROBES) {
+                        0L
+                    } else {
+                        durationAttempts++
+                        measuredDurationMs()
+                    }
+                    mutableState.update { latest ->
+                        if (latest.status != PlaybackStatus.PLAYING) return@update latest
+                        val duration = when {
+                            latest.durationMs > 0 -> latest.durationMs
+                            // A different track may have started while mpv was answering; that length is
+                            // not this one's.
+                            latest.track?.queueKey == playingKey -> measured
+                            else -> 0L
+                        }
+                        val next = latest.positionMs + elapsedMs
+                        latest.copy(
+                            durationMs = duration,
+                            positionMs = if (duration > 0) next.coerceAtMost(duration) else next,
+                        )
+                    }
                 }
             }
         }
     }
+
+    /**
+     * The stream's length as mpv measures it, or 0 while that is still unknown.
+     *
+     * A genuinely endless stream never reports one, so the caller stops asking after [MAX_DURATION_PROBES];
+     * a normal track answers within the first tick or two.
+     */
+    private suspend fun measuredDurationMs(): Long =
+        runCatching { getNumberProperty("duration") }.getOrNull()
+            ?.takeIf { it.isFinite() && it > 0 }
+            ?.let { (it * 1_000).toLong() }
+            ?: 0L
 
     private fun createIpcEndpoint(): String {
         val name = "spice-mpv-${UUID.randomUUID()}"

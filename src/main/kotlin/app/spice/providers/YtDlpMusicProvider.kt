@@ -7,6 +7,14 @@ import app.spice.playback.YtDlpService
 class YtDlpMusicProvider(
     override val type: ProviderType,
     private val ytDlp: YtDlpService,
+    /**
+     * Searches YouTube Music through its own interface rather than through yt-dlp.
+     *
+     * yt-dlp can only list that page as bare stubs — no title, artist or length, with artists and albums
+     * mixed in among the songs — which is why a YouTube Music track used to show its provider's name where
+     * the artist belongs. Null, or anything it cannot answer, falls back to the yt-dlp listing.
+     */
+    private val searchSongs: (suspend (String, Int) -> List<Track>)? = null,
 ) : MusicProvider {
     override suspend fun getHome(): List<HomeSection> {
         // Each row states what it actually is. The subtitle names the service so the heading does not have to,
@@ -30,12 +38,21 @@ class YtDlpMusicProvider(
                 title = title,
                 subtitle = subtitle,
                 provider = type,
-                tracks = ytDlp.search(type, query, 8),
+                tracks = tracksFor(query, 8),
             )
         }
     }
 
-    override suspend fun search(query: String): SearchResults = SearchResults(tracks = ytDlp.search(type, query, 10))
+    override suspend fun search(query: String): SearchResults = SearchResults(tracks = tracksFor(query, 10))
+
+    /** The service's own search where there is one, and yt-dlp wherever that returns nothing usable. */
+    private suspend fun tracksFor(query: String, limit: Int): List<Track> {
+        searchSongs?.let { search ->
+            val songs = runCatching { search(query, limit) }.getOrDefault(emptyList())
+            if (songs.isNotEmpty()) return songs
+        }
+        return ytDlp.search(type, query, limit)
+    }
     override suspend fun getTrack(id: String): Track? = null
 
     override suspend fun getLibraryPlaylists(): List<Playlist> = when (type) {

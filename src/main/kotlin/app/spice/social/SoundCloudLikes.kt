@@ -4,11 +4,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.net.HttpURLConnection
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 
 enum class LikeOutcome {
     LIKED,
@@ -35,50 +38,80 @@ internal interface LikeHttpClient {
         token: String,
         cookies: String? = null,
         body: String? = null,
+        headers: Map<String, String> = emptyMap(),
     ): LikeHttpResponse
 }
 
+/**
+ * The one HTTP path every social write shares.
+ *
+ * It uses [java.net.http.HttpClient] rather than `HttpURLConnection` for two reasons that both showed up as
+ * silent failures: the older client refuses PUT and DELETE on some JDK paths, and it drops `Origin` from the
+ * restricted-header list without saying so. YouTube signs each request over its origin and then checks the
+ * header against the signature, so a dropped `Origin` is answered with 401 no matter how good the signature is.
+ */
 internal class DefaultLikeHttpClient : LikeHttpClient {
+    private val client = HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(8))
+        .followRedirects(HttpClient.Redirect.NORMAL)
+        .build()
+
     override suspend fun send(
         method: String,
         url: String,
         token: String,
         cookies: String?,
         body: String?,
+        headers: Map<String, String>,
     ): LikeHttpResponse =
         withContext(Dispatchers.IO) {
-            val connection = URI(url).toURL().openConnection() as HttpURLConnection
-            // PUT and DELETE are not in HttpURLConnection's default method set on every JDK path, but both are
-            // accepted here; anything it rejects surfaces as a FAILED result rather than an exception.
-            connection.requestMethod = method
-            connection.connectTimeout = 8_000
-            connection.readTimeout = 10_000
-            connection.setRequestProperty("Authorization", "OAuth $token")
-            connection.setRequestProperty("Accept", "application/json, text/javascript, */*; q=0.01")
-            connection.setRequestProperty("Accept-Language", "en-US,en;q=0.9")
+            val request = HttpRequest.newBuilder(URI(url)).timeout(Duration.ofSeconds(10))
+            val payload = body
+                ?.let { HttpRequest.BodyPublishers.ofString(it, StandardCharsets.UTF_8) }
+                ?: HttpRequest.BodyPublishers.noBody()
+            request.method(method, payload)
+
+            // Everything below is a default the caller may replace through [headers]. The authorization scheme
+            // in particular belongs to the service, not to this client: SoundCloud takes an OAuth bearer
+            // token, while YouTube signs every request with a SAPISIDHASH it supplies itself. Emitting the
+            // OAuth form unconditionally sent "OAuth SAPISIDHASH ..." and made each YouTube write a 401.
+            val overridden = headers.keys.mapTo(HashSet()) { it.lowercase() }
+            fun default(name: String, value: String) {
+                if (name.lowercase() !in overridden) request.header(name, value)
+            }
+            if (token.isNotBlank()) default("Authorization", "OAuth $token")
+            default("Accept", "application/json, text/javascript, */*; q=0.01")
+            default("Accept-Language", "en-US,en;q=0.9")
             // SoundCloud sits behind bot protection that scores the whole request, so this presents itself the
             // way the site's own page does — including the clearance cookie the browser session already earned.
-            connection.setRequestProperty(
+            default(
                 "User-Agent",
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
                     "Chrome/131.0.0.0 Safari/537.36",
             )
-            connection.setRequestProperty("Origin", "https://soundcloud.com")
-            connection.setRequestProperty("Referer", "https://soundcloud.com/")
-            cookies?.takeIf(String::isNotBlank)?.let { connection.setRequestProperty("Cookie", it) }
-            val payload = body?.toByteArray(StandardCharsets.UTF_8)
-            if (payload != null) connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            connection.setRequestProperty("Content-Length", (payload?.size ?: 0).toString())
-            connection.doOutput = method == "PUT" || method == "POST"
-            if (connection.doOutput) connection.outputStream.use { it.write(payload ?: ByteArray(0)) }
-            val status = connection.responseCode
-            val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+            default("Origin", "https://soundcloud.com")
+            default("Referer", "https://soundcloud.com/")
+            if (body != null) default("Content-Type", "application/json; charset=utf-8")
+            cookies?.takeIf(String::isNotBlank)?.let { request.header("Cookie", it) }
+            headers.forEach { (name, value) -> request.header(name, value) }
+
+            val response = client.send(request.build(), HttpResponse.BodyHandlers.ofInputStream())
             // Read the whole payload. A listing of liked tracks runs to tens of kilobytes, and truncating it
             // here once left the JSON cut mid-token, which parsed as nothing and looked like an empty account.
             // Shortening for human-readable messages happens at the point of display instead.
-            val body = stream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText().take(MAX_BODY) }.orEmpty()
-            connection.disconnect()
-            LikeHttpResponse(status, body)
+            val text = response.body()
+                .bufferedReader(StandardCharsets.UTF_8)
+                .use { reader ->
+                    val buffer = CharArray(8_192)
+                    val builder = StringBuilder()
+                    while (builder.length < MAX_BODY) {
+                        val read = reader.read(buffer)
+                        if (read < 0) break
+                        builder.appendRange(buffer, 0, read)
+                    }
+                    builder.toString().take(MAX_BODY)
+                }
+            LikeHttpResponse(response.statusCode(), text)
         }
 
     private companion object {
@@ -301,4 +334,15 @@ fun cookieHeaderFor(jarPath: Path, domain: String, names: Set<String>? = null): 
 }.getOrNull()
 
 /** What a liked-ids call came back with: the status so a refusal is visible, and whatever ids were readable. */
-data class LikedIds(val status: Int, val ids: Set<String>, val sample: String? = null)
+/**
+ * The outcome of reading a set of liked ids.
+ *
+ * [source] names which listing answered, because more than one can be asked and knowing which one replied
+ * is the difference between a diagnosable log line and a bare count.
+ */
+data class LikedIds(
+    val status: Int,
+    val ids: Set<String>,
+    val sample: String? = null,
+    val source: String? = null,
+)

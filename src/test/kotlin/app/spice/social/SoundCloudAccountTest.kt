@@ -95,6 +95,7 @@ private class ScriptedAccountClient(private vararg val replies: LikeHttpResponse
         token: String,
         cookies: String?,
         body: String?,
+        headers: Map<String, String>,
     ): LikeHttpResponse {
         val index = calls.size
         calls += "$method $url"

@@ -540,6 +540,13 @@ private fun LocalPlaylistDetail(playlist: LocalPlaylist, notice: String?, state:
                     Text("Save to SoundCloud")
                 }
             }
+            if (playlist.tracks.any { it.provider != ProviderType.SOUNDCLOUD }) {
+                OutlinedButton({ state.publishPlaylistToYouTube(playlist) }) {
+                    Icon(Icons.Default.CloudUpload, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Save to YouTube Music")
+                }
+            }
         }
         Spacer(Modifier.height(10.dp))
         notice?.let { LibraryNotice(it, state::clearLibraryNotice) }
@@ -835,9 +842,9 @@ private fun PlaylistDetail(playlist: Playlist, library: LibraryState, state: App
             }
         }
         // Account actions sit on their own line: in the title row they crowded out the name entirely.
-        if (playlist.provider == ProviderType.SOUNDCLOUD && playlist.id.all(Char::isDigit)) {
+        if (playlist.editableOnService()) {
             Spacer(Modifier.height(12.dp))
-            SoundCloudPlaylistActions(playlist, state)
+            ServicePlaylistActions(playlist, state)
         }
         Spacer(Modifier.height(16.dp))
         when {
@@ -888,30 +895,54 @@ private fun VisibilityBadge(isPublic: Boolean?, compact: Boolean = false) {
     }
 }
 
-/** Rename and delete for a playlist that lives on the SoundCloud account, not only in Spice. */
+/**
+ * A playlist Spice can change on the service it came from.
+ *
+ * SoundCloud numbers its playlists, while YouTube ids start with PL or VL; the likes listing on either service
+ * is a view rather than a playlist, so it is excluded.
+ */
+fun Playlist.editableOnService(): Boolean = when (provider) {
+    ProviderType.SOUNDCLOUD -> id.all(Char::isDigit)
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id.startsWith("PL") || id.startsWith("VL")
+    ProviderType.LOCAL -> false
+}
+
+/** Rename, delete and privacy for a playlist that lives on a service account rather than only in Spice. */
 @Composable
-private fun SoundCloudPlaylistActions(playlist: Playlist, state: AppState) {
+private fun ServicePlaylistActions(playlist: Playlist, state: AppState) {
+    val onSoundCloud = playlist.provider == ProviderType.SOUNDCLOUD
+    SoundCloudPlaylistActions(playlist, state, onSoundCloud)
+}
+
+@Composable
+private fun SoundCloudPlaylistActions(playlist: Playlist, state: AppState, onSoundCloud: Boolean = true) {
     var renaming by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf(false) }
 
     if (renaming) {
-        PlaylistNameDialog("Rename on SoundCloud", playlist.title, "Rename") { title ->
+        PlaylistNameDialog("Rename on ${playlist.provider.displayName}", playlist.title, "Rename") { title ->
             renaming = false
-            title?.let { state.renameSoundCloudPlaylist(playlist.id, it) }
+            title?.let {
+                if (onSoundCloud) state.renameSoundCloudPlaylist(playlist.id, it)
+                else state.renameYouTubePlaylist(playlist.id, it)
+            }
         }
     }
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete \"${playlist.title}\" from SoundCloud?") },
+            title = { Text("Delete \"${playlist.title}\" from ${playlist.provider.displayName}?") },
             text = {
                 Text(
-                    "This removes the playlist from your SoundCloud account, not just from Spice. The tracks " +
-                        "themselves are untouched.",
+                    "This removes the playlist from your ${playlist.provider.displayName} account, not just from " +
+                        "Spice. The tracks themselves are untouched.",
                 )
             },
             confirmButton = {
-                Button({ confirmDelete = false; state.deleteSoundCloudPlaylist(playlist.id) }) { Text("Delete") }
+                Button({
+                    confirmDelete = false
+                    if (onSoundCloud) state.deleteSoundCloudPlaylist(playlist.id) else state.deleteYouTubePlaylist(playlist.id)
+                }) { Text("Delete") }
             },
             dismissButton = { OutlinedButton({ confirmDelete = false }) { Text("Keep") } },
         )
@@ -922,7 +953,10 @@ private fun SoundCloudPlaylistActions(playlist: Playlist, state: AppState) {
         // Only offered when SoundCloud has actually told us the current state, so the button cannot claim to
         // flip something whose value is unknown.
         playlist.isPublic?.let { isPublic ->
-            OutlinedButton({ state.setSoundCloudPlaylistVisibility(playlist.id, !isPublic) }) {
+            OutlinedButton({
+                if (onSoundCloud) state.setSoundCloudPlaylistVisibility(playlist.id, !isPublic)
+                else state.setYouTubePlaylistVisibility(playlist.id, !isPublic)
+            }) {
                 Icon(
                     if (isPublic) Icons.Default.Lock else Icons.Default.Public,
                     null,
@@ -1045,21 +1079,29 @@ private fun TrackRow(track: Track, sourceQueue: List<Track>, state: AppState) {
 }
 
 /**
- * Writes the like to the provider account, not just to Spice, so the heart reflects what SoundCloud holds.
+ * Writes the like to the provider account, not just to Spice, so the heart reflects what the service holds.
+ *
+ * Which services can be written to is [LikeState.supports]'s decision, not this button's: naming SoundCloud
+ * here is what left the heart permanently dead on YouTube Music long after YouTube liking worked.
  */
 @Composable
 private fun LikeButton(track: Track, state: AppState, size: Dp = 36.dp) {
     val likes by state.likes.collectAsState()
     val liked = likes.isLiked(track)
     val busy = likes.isBusy(track)
-    val supported = track.provider == ProviderType.SOUNDCLOUD
+    val supported = likes.supports(track)
+    val service = track.provider.displayName
     IconButton({ state.toggleLike(track) }, Modifier.size(size), enabled = supported && !busy) {
         when {
             busy -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-            liked -> Icon(Icons.Default.Favorite, "Remove from your SoundCloud likes", tint = MaterialTheme.colorScheme.primary)
+            liked -> Icon(
+                Icons.Default.Favorite,
+                "Remove from your $service likes",
+                tint = MaterialTheme.colorScheme.primary,
+            )
             else -> Icon(
                 Icons.Default.FavoriteBorder,
-                if (supported) "Like on SoundCloud" else "Liking is only available for SoundCloud",
+                if (supported) "Like on $service" else "Sign in to $service to like tracks",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (supported) 1f else .4f),
             )
         }
@@ -1088,9 +1130,10 @@ private fun TrackMenu(track: Track, state: AppState) {
                 leadingIcon = { Icon(Icons.AutoMirrored.Filled.QueueMusic, null) },
                 onClick = { state.addToQueue(track); expanded = false },
             )
-            if (track.provider == ProviderType.SOUNDCLOUD) {
+            if (likes.supports(track)) {
+                val service = track.provider.displayName
                 DropdownMenuItem(
-                    text = { Text(if (likedNow) "Remove from SoundCloud likes" else "Like on SoundCloud") },
+                    text = { Text(if (likedNow) "Remove from $service likes" else "Like on $service") },
                     leadingIcon = {
                         Icon(if (likedNow) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null)
                     },
@@ -1148,27 +1191,32 @@ private fun AddToPlaylistDialog(
     val library by state.library.collectAsState()
     // Playlists on the account itself, which Spice can write to. The likes page is a listing, not a playlist,
     // so it is excluded by requiring a numeric id.
-    val soundCloudPlaylists = library.playlists.filter {
-        it.provider == ProviderType.SOUNDCLOUD && it.id.all(Char::isDigit)
-    }
+    val servicePlaylists = library.playlists.filter { it.editableOnService() && it.provider.acceptsTrack(track) }
 
     AlertDialog(
         onDismissRequest = dismiss,
         title = { Text("Add to playlist") },
         text = {
             LazyColumn(Modifier.heightIn(max = 340.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (soundCloudPlaylists.isNotEmpty() && track.provider == ProviderType.SOUNDCLOUD) {
+                if (servicePlaylists.isNotEmpty()) {
                     item {
                         Text(
-                            "ON SOUNDCLOUD",
+                            "ON ${track.provider.displayName.uppercase()}",
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
                         )
                     }
-                    items(soundCloudPlaylists, key = { "sc:${it.id}" }) { playlist ->
+                    items(servicePlaylists, key = { "svc:${it.id}" }) { playlist ->
                         Surface(
-                            onClick = { dismiss(); state.addTrackToSoundCloudPlaylist(playlist.id, track) },
+                            onClick = {
+                                dismiss()
+                                if (playlist.provider == ProviderType.SOUNDCLOUD) {
+                                    state.addTrackToSoundCloudPlaylist(playlist.id, track)
+                                } else {
+                                    state.addTrackToYouTubePlaylist(playlist.id, track)
+                                }
+                            },
                             color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f),
                             shape = RoundedCornerShape(10.dp),
                         ) {
@@ -2366,21 +2414,29 @@ private fun PlaybackProgressBar(
     timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
 ) {
     val durationMs = playback.durationMs.coerceAtLeast(0)
-    val canSeek = playback.track != null && durationMs > 0 && playback.status != PlaybackStatus.RESOLVING
+    // Whether the track's length is known yet. Standing in 1 ms for the unknown made every ratio below round
+    // to a full bar, so a track of unknown length showed as finished the moment it started playing.
+    val hasDuration = durationMs > 0
+    val canSeek = playback.track != null && hasDuration && playback.status != PlaybackStatus.RESOLVING
     var dragging by remember { mutableStateOf(false) }
     var draggedPosition by remember { mutableFloatStateOf(0f) }
     val displayedPosition = if (dragging) draggedPosition else playback.positionMs.toFloat()
     val maximum = durationMs.coerceAtLeast(1).toFloat()
-    // The right-hand figure is either the length of the track or what is left of it.
-    val trailing = when (timeDisplay) {
-        TimeDisplay.TOTAL -> formatPlaybackTime(durationMs)
-        TimeDisplay.REMAINING -> "-" + formatPlaybackTime((maximum - displayedPosition).toLong().coerceAtLeast(0))
+    val fraction = playbackFraction(displayedPosition, durationMs)
+    // The right-hand figure is either the length of the track or what is left of it. An unknown length is
+    // said to be unknown rather than reported as zero.
+    val trailing = when {
+        !hasDuration -> UNKNOWN_PLAYBACK_TIME
+        timeDisplay == TimeDisplay.REMAINING ->
+            "-" + formatPlaybackTime((maximum - displayedPosition).toLong().coerceAtLeast(0))
+        else -> formatPlaybackTime(durationMs)
     }
 
     if (style == ProgressBarStyle.MINIMAL) {
         MinimalProgressBar(
             positionMs = displayedPosition,
             maximumMs = maximum,
+            fraction = fraction,
             trailingLabel = trailing,
             canSeek = canSeek,
             onScrub = { fraction ->
@@ -2405,7 +2461,7 @@ private fun PlaybackProgressBar(
             modifier = Modifier.width(44.dp),
         )
         Slider(
-            value = displayedPosition.coerceIn(0f, maximum),
+            value = if (hasDuration) displayedPosition.coerceIn(0f, maximum) else 0f,
             onValueChange = {
                 dragging = true
                 draggedPosition = it
@@ -2436,6 +2492,8 @@ private fun PlaybackProgressBar(
 private fun MinimalProgressBar(
     positionMs: Float,
     maximumMs: Float,
+    /** How much of the track has played, already resolved by the caller so an unknown length reads as empty. */
+    fraction: Float,
     trailingLabel: String,
     canSeek: Boolean,
     onScrub: (Float) -> Unit,
@@ -2443,7 +2501,6 @@ private fun MinimalProgressBar(
     modifier: Modifier = Modifier,
 ) {
     var widthPx by remember { mutableIntStateOf(1) }
-    val fraction = (positionMs / maximumMs).coerceIn(0f, 1f)
     val trackColour = Color.White.copy(alpha = .22f)
     val filledColour = MaterialTheme.colorScheme.primary
 
@@ -2512,6 +2569,19 @@ private fun MinimalProgressBar(
         )
     }
 }
+
+/** Stands in for a length that is not known yet, so an unknown track does not claim to be zero seconds long. */
+private const val UNKNOWN_PLAYBACK_TIME = "--:--"
+
+/**
+ * How much of the seek bar is filled.
+ *
+ * A track whose length is not known has nothing to measure a position against. Standing in 1 ms for the
+ * unknown made every position round to a full bar, so a YouTube Music track — whose listing carries no
+ * duration at all — showed as finished the moment it started playing.
+ */
+internal fun playbackFraction(positionMs: Float, durationMs: Long): Float =
+    if (durationMs <= 0L) 0f else (positionMs / durationMs.toFloat()).coerceIn(0f, 1f)
 
 private fun formatPlaybackTime(milliseconds: Long): String {
     val totalSeconds = milliseconds.coerceAtLeast(0) / 1_000
@@ -3204,72 +3274,66 @@ private fun YouTubeAccountPanel(settings: SettingsState, state: AppState) {
             }
         }
 
-        SettingsPanelCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Security, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(8.dp)); Text("What signing in covers", fontWeight = FontWeight.SemiBold)
-            }
-            Spacer(Modifier.height(9.dp))
-            AccountFact("Your playlists and liked songs, read and written the way the YouTube Music site does.")
-            AccountFact("Liking a YouTube track in Spice marks it liked on your account.")
-            AccountFact("Playback also uses this session, so age-restricted tracks play.")
-            AccountFact("Your password goes to Google's page, never to Spice, and only the session is kept.")
-        }
-    }
-}
-
-@Composable
-private fun GoogleAccountPanel(settings: SettingsState, state: AppState) {
-    val google = settings.google
-    var clientId by remember { mutableStateOf("") }
-    var clientSecret by remember { mutableStateOf("") }
-    var showClientFields by remember(google.configured) { mutableStateOf(!google.configured) }
-
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        SettingsPanelCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.PlayCircle, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.width(12.dp))
-                Column {
-                    Text(
-                        if (google.signedIn) "Signed in with Google" else "Sign in with Google",
-                        fontSize = 19.sp,
-                        fontWeight = FontWeight.Bold,
-                    )
-                    Text(
-                        "Spice opens Google's own sign-in page in your browser. Google refuses sign-in inside " +
-                            "apps, so this is the only route it permits — your password never touches Spice.",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        fontSize = 12.sp,
-                    )
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                Button(state::signInWithGoogle, enabled = google.configured && !google.busy) {
-                    if (google.busy) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    } else {
-                        Icon(Icons.Default.OpenInBrowser, null)
-                    }
+        if (likes.youTubeReady) {
+            SettingsPanelCard {
+                CardHeading(Icons.Default.SwitchAccount, "Channel")
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    "One Google account can own several YouTube channels, and the default one is not always the " +
+                        "right one. Whichever is chosen here is the account Spice acts as.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(11.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.CheckCircle, null, Modifier.size(15.dp), tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(7.dp))
                     Text(
-                        when {
-                            google.busy -> "Waiting for Google…"
-                            google.signedIn -> "Sign in again"
-                            else -> "Sign in with Google"
-                        },
+                        settings.preferences.youtubeChannelName.ifBlank { "Default channel" },
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
                     )
                 }
-                if (google.signedIn) OutlinedButton(state::signOutGoogle) { Text("Sign out") }
-            }
-            google.message?.let { message ->
-                Spacer(Modifier.height(12.dp))
-                Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = .6f), shape = RoundedCornerShape(10.dp)) {
-                    Row(Modifier.fillMaxWidth().padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
-                        SelectionContainer(Modifier.weight(1f)) { Text(message, fontSize = 11.sp) }
-                        IconButton(state::clearGoogleMessage, Modifier.size(24.dp)) {
-                            Icon(Icons.Default.Close, "Dismiss", Modifier.size(14.dp))
+                Spacer(Modifier.height(11.dp))
+                OutlinedButton(state::loadYouTubeChannels) {
+                    Icon(Icons.Default.Refresh, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (likes.youTubeChannels.isEmpty()) "Find my channels" else "Refresh channels")
+                }
+                if (likes.youTubeChannels.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                        likes.youTubeChannels.forEach { channel ->
+                            val selected = channel.pageId == settings.preferences.youtubePageId
+                            Surface(
+                                onClick = { state.setYouTubeChannel(channel) },
+                                shape = RoundedCornerShape(11.dp),
+                                color = if (selected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = .5f)
+                                else Color.White.copy(alpha = .04f),
+                                border = BorderStroke(
+                                    1.dp,
+                                    if (selected) MaterialTheme.colorScheme.primary.copy(alpha = .5f)
+                                    else Color.White.copy(alpha = .08f),
+                                ),
+                            ) {
+                                Row(
+                                    Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 10.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    RadioButton(selected, { state.setYouTubeChannel(channel) })
+                                    Spacer(Modifier.width(4.dp))
+                                    Column(Modifier.weight(1f)) {
+                                        Text(channel.name, fontSize = 13.sp)
+                                        if (channel.isDefault) {
+                                            Text(
+                                                "The account's default channel",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 10.sp,
+                                            )
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3278,93 +3342,14 @@ private fun GoogleAccountPanel(settings: SettingsState, state: AppState) {
 
         SettingsPanelCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    if (google.configured) Icons.Default.CheckCircle else Icons.Default.Warning,
-                    null,
-                    Modifier.size(18.dp),
-                    tint = if (google.configured) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.tertiary,
-                )
-                Spacer(Modifier.width(9.dp))
-                Text(
-                    if (google.configured) "OAuth client saved" else "One-time setup: your own OAuth client",
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.weight(1f))
-                if (google.configured) {
-                    TextButton({ showClientFields = !showClientFields }) {
-                        Text(if (showClientFields) "Hide" else "Replace")
-                    }
-                }
-            }
-            if (showClientFields) {
-                Spacer(Modifier.height(9.dp))
-                Text(
-                    "Spice ships no Google client of its own, so you create one once — it is free and takes a couple " +
-                        "of minutes:",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontSize = 12.sp,
-                )
-                Spacer(Modifier.height(7.dp))
-                AccountFact("In Google Cloud Console, create a project and enable the YouTube Data API v3.")
-                AccountFact("Create an OAuth client of type Desktop app, then copy its id and secret here.")
-                AccountFact("Add yourself as a test user on the OAuth consent screen so it will let you in.")
-                Spacer(Modifier.height(11.dp))
-                OutlinedTextField(
-                    clientId,
-                    { clientId = it.trim() },
-                    label = { Text("OAuth client id") },
-                    placeholder = { Text("…apps.googleusercontent.com") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(9.dp))
-                OutlinedTextField(
-                    clientSecret,
-                    { clientSecret = it.trim() },
-                    label = { Text("OAuth client secret") },
-                    singleLine = true,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Spacer(Modifier.height(11.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                    Button(
-                        {
-                            val id = clientId
-                            val secret = clientSecret
-                            clientId = ""
-                            clientSecret = ""
-                            state.saveGoogleClient(id, secret)
-                        },
-                        enabled = clientId.isNotBlank() && clientSecret.isNotBlank(),
-                    ) { Icon(Icons.Default.Lock, null); Spacer(Modifier.width(7.dp)); Text("Save securely") }
-                    TextButton({ state.openExternalUrl("https://console.cloud.google.com/apis/credentials") }) {
-                        Text("Open Google Cloud Console")
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Stored encrypted for your Windows account. SPICE_GOOGLE_CLIENT_ID and " +
-                        "SPICE_GOOGLE_CLIENT_SECRET override these if you prefer environment variables.",
-                    color = MaterialTheme.colorScheme.tertiary,
-                    fontSize = 11.sp,
-                )
-            }
-        }
-
-        SettingsPanelCard {
-            Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Security, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(8.dp)); Text("What signing in covers", fontWeight = FontWeight.SemiBold)
             }
             Spacer(Modifier.height(9.dp))
-            AccountFact("Your playlists and liked videos, read and written through the official YouTube Data API.")
-            AccountFact("Liking a YouTube track in Spice rates the video on your account, exactly as the site would.")
-            AccountFact(
-                "Playback stays unauthenticated: yt-dlp cannot stream with an OAuth token, so public tracks play " +
-                    "normally while age-restricted or private ones will not.",
-            )
-            AccountFact("No cookies are read or stored for YouTube any more.")
+            AccountFact("Your playlists and liked songs, read and written the way the YouTube Music site does.")
+            AccountFact("Liking a YouTube track in Spice marks it liked on your account.")
+            AccountFact("Your library and playlists come from this session; playback itself resolves without it.")
+            AccountFact("Your password goes to Google's page, never to Spice, and only the session is kept.")
         }
     }
 }
@@ -4269,4 +4254,11 @@ private fun LoadingSection() {
             repeat(5) { Box(Modifier.size(140.dp).clip(RoundedCornerShape(14.dp)).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .7f))) }
         }
     }
+}
+
+/** Whether a playlist on this service can hold the given track: services do not take each other's music. */
+private fun ProviderType.acceptsTrack(track: Track): Boolean = when (this) {
+    ProviderType.SOUNDCLOUD -> track.provider == ProviderType.SOUNDCLOUD
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> track.provider != ProviderType.SOUNDCLOUD
+    ProviderType.LOCAL -> false
 }

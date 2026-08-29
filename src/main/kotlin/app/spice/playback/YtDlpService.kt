@@ -154,12 +154,27 @@ class YtDlpService(
             "--get-url",
             "--no-playlist",
             "--no-warnings",
-            *provider?.let(::accountArguments).orEmpty().toTypedArray(),
+            *provider?.let(::playbackArguments).orEmpty().toTypedArray(),
             "--",
             sourceUrl,
         ).lineSequence().firstOrNull { it.startsWith("http") }
             ?: throw BackendException("yt-dlp returned no playable audio URL")
     }
+
+    /**
+     * The cookies to attach when asking for a stream URL, which are not always the ones used for browsing.
+     *
+     * YouTube scores the whole request: a signed-in session arriving from something that is not a browser is
+     * refused at the player with "The page needs to be reloaded", and no player client escapes it, while the
+     * same track resolves immediately with no cookies at all. Browsing is unaffected, so the session stays in
+     * place everywhere else and only stream resolution goes out anonymous. SoundCloud has no such check and
+     * needs its session here to reach private and subscriber-only audio, so it keeps its cookies.
+     */
+    internal fun playbackArguments(provider: ProviderType): List<String> = when (provider) {
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> emptyList()
+        else -> accountArguments(provider)
+    }
+
 
     suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
         if (!track.hasPlaceholderArtist()) return@withContext track
@@ -168,7 +183,10 @@ class YtDlpService(
             "--skip-download",
             "--no-warnings",
             "--no-playlist",
-            *accountArguments(track.provider).toTypedArray(),
+            // A player-level request, so it is refused for exactly the same reason a stream is: see
+            // [playbackArguments]. With cookies attached this silently failed and left every YouTube
+            // Music track showing its provider name where the artist belongs.
+            *playbackArguments(track.provider).toTypedArray(),
             "--",
             track.sourceUrl,
         )

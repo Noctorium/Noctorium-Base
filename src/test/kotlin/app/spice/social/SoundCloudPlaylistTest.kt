@@ -151,6 +151,7 @@ private class RecordingPlaylistClient(private vararg val replies: LikeHttpRespon
         token: String,
         cookies: String?,
         body: String?,
+        headers: Map<String, String>,
     ): LikeHttpResponse {
         val index = calls.size
         calls += "$method $url"

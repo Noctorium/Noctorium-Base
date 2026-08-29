@@ -4,6 +4,7 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -151,6 +152,8 @@ class YouTubeMusicTest {
 private class RecordingYouTube(private vararg val replies: LikeHttpResponse) : LikeHttpClient {
     val calls = mutableListOf<String>()
     val bodies = mutableListOf<String?>()
+    val tokens = mutableListOf<String>()
+    val sentHeaders = mutableListOf<Map<String, String>>()
 
     override suspend fun send(
         method: String,
@@ -158,10 +161,50 @@ private class RecordingYouTube(private vararg val replies: LikeHttpResponse) : L
         token: String,
         cookies: String?,
         body: String?,
+        headers: Map<String, String>,
     ): LikeHttpResponse {
         val index = calls.size
         calls += "$method $url"
         bodies += body
+        tokens += token
+        sentHeaders += headers
         return replies.getOrNull(index) ?: error("no scripted reply")
+    }
+}
+
+/**
+ * The seam the 401 lived in. The signature has to travel as a finished `Authorization` header, because the
+ * shared client prefixes SoundCloud's `OAuth ` onto whatever it finds in the token slot — so putting the hash
+ * there produced `OAuth SAPISIDHASH ...`, which YouTube refuses.
+ */
+class YouTubeRequestSigningTest {
+    private val session = YouTubeSession(
+        InnertubeKeys("AIzaSyTest", "1.20260825.00.00"),
+        "SAPISID=abc123; HSID=x",
+    )
+
+    @Test
+    fun `the signature travels in the headers and never in the OAuth token slot`() = runBlocking {
+        val http = RecordingYouTube(LikeHttpResponse(200, "{}"))
+
+        YouTubeMusicClient(http).setLiked("videoId", liked = true, session = session)
+
+        assertEquals("", http.tokens.single())
+        val authorization = http.sentHeaders.single().getValue("Authorization")
+        assertTrue(authorization.startsWith("SAPISIDHASH "))
+        assertFalse(authorization.contains("OAuth"))
+    }
+
+    /** YouTube checks the header against the origin the signature covers, so both must be sent together. */
+    @Test
+    fun `the origin the signature covers is sent alongside it`() = runBlocking {
+        val http = RecordingYouTube(LikeHttpResponse(200, "{}"))
+
+        YouTubeMusicClient(http).setLiked("videoId", liked = true, session = session)
+
+        val sent = http.sentHeaders.single()
+        assertEquals(MUSIC_ORIGIN, sent["Origin"])
+        val stamp = sent.getValue("Authorization").removePrefix("SAPISIDHASH ").substringBefore('_').toLong()
+        assertEquals(sapisidHash("abc123", MUSIC_ORIGIN, stamp), sent["Authorization"])
     }
 }
