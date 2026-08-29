@@ -65,6 +65,9 @@ import app.spice.playback.PlaybackStatus
 import app.spice.playback.RepeatMode
 import app.spice.auth.EmbeddedBrowserSession
 import app.spice.auth.SOUNDCLOUD_OWN_LIKES
+import app.spice.auth.YOUTUBE_MUSIC_HOME
+import app.spice.auth.YOUTUBE_SIGN_IN
+import app.spice.auth.isYouTubeSignedIn
 import app.spice.auth.isSoundCloudSignedIn
 import app.spice.auth.permalinkFromBrowserUrl
 import app.spice.auth.writeCookieFile
@@ -352,7 +355,7 @@ private fun LibraryScreen(state: AppState) {
                 when (destination) {
                     PlaylistDestination.SPICE -> state.createPlaylist(name)
                     PlaylistDestination.SOUNDCLOUD -> state.createSoundCloudPlaylist(name)
-                    PlaylistDestination.YOUTUBE -> state.createPlaylist(name)
+                    PlaylistDestination.YOUTUBE -> state.createYouTubePlaylist(name)
                 }
             }
         }
@@ -1129,12 +1132,13 @@ private fun AddToPlaylistDialog(
             // A SoundCloud playlist can only hold SoundCloud tracks, so the option is offered only when the
             // track being added could actually go in one.
             soundCloudReady = likes.soundCloudReady && track.provider == ProviderType.SOUNDCLOUD,
-            youTubeReady = false,
+            youTubeReady = likes.youTubeReady && track.provider != ProviderType.SOUNDCLOUD,
         ) { name, destination ->
             dismiss()
             if (name != null) {
                 when (destination) {
                     PlaylistDestination.SOUNDCLOUD -> state.createSoundCloudPlaylist(name, listOf(track))
+                    PlaylistDestination.YOUTUBE -> state.createYouTubePlaylist(name, listOf(track))
                     else -> state.createPlaylist(name, firstTrack = track)
                 }
             }
@@ -2539,7 +2543,7 @@ private fun SettingsScreen(state: AppState) {
             when (page) {
                 SettingsPage.PROFILE -> ProfileSettingsPanel(settings.preferences, state)
                 SettingsPage.CUSTOMIZATION -> CustomizationPanel(settings.preferences, state)
-                SettingsPage.YOUTUBE -> GoogleAccountPanel(settings, state)
+                SettingsPage.YOUTUBE -> YouTubeAccountPanel(settings, state)
                 SettingsPage.SOUNDCLOUD -> AccountConnectionPanel(
                     ProviderType.SOUNDCLOUD,
                     settings.preferences.soundCloudCookies,
@@ -3036,6 +3040,180 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Signs in to YouTube Music on Google's own page inside Spice.
+ *
+ * Sign-in starts at the accounts page and finishes on the music site, because the cookies that authorise the
+ * API belong to that domain rather than to the accounts one.
+ */
+@Composable
+private fun YouTubeSignInWindow(state: AppState, close: () -> Unit) {
+    var status by remember { mutableStateOf("Starting the embedded browser…") }
+    var component by remember { mutableStateOf<java.awt.Component?>(null) }
+    var currentUrl by remember { mutableStateOf("") }
+    var finishing by remember { mutableStateOf(false) }
+    val session = remember { state.dataDirectory()?.let { EmbeddedBrowserSession(it.resolve("chromium")) } }
+
+    DisposableEffect(session) { onDispose { session?.dispose() } }
+
+    LaunchedEffect(session) {
+        if (session == null) {
+            status = "Spice has nowhere to store the browser on this system."
+            return@LaunchedEffect
+        }
+        runCatching {
+            session.start(
+                url = YOUTUBE_SIGN_IN,
+                onProgress = { progress -> status = "Preparing Chromium — $progress" },
+                onPageLoaded = { url -> currentUrl = url },
+            )
+        }.onSuccess { ui ->
+            component = ui
+            status = "Sign in with Google below. Spice picks the session up on its own."
+        }.onFailure { error ->
+            status = "Could not start the embedded browser: ${error.message?.take(180)}"
+        }
+    }
+
+    LaunchedEffect(component) {
+        val live = session ?: return@LaunchedEffect
+        if (component == null) return@LaunchedEffect
+        var visitedMusic = false
+        while (true) {
+            delay(2_500)
+            val cookies = runCatching { live.harvestCookies(YOUTUBE_MUSIC_HOME) }.getOrDefault(emptyList())
+            if (!isYouTubeSignedIn(cookies)) {
+                // The signing cookie is set for the music site once it has been visited, so go there after
+                // the accounts page has done its part.
+                if (!visitedMusic && live.currentUrl()?.contains("accounts.google.com") == false) {
+                    visitedMusic = true
+                    live.navigate(YOUTUBE_MUSIC_HOME)
+                }
+                continue
+            }
+            finishing = true
+            status = "Signed in — saving the session…"
+            val destination = state.dataDirectory()?.resolve("youtube.cookies") ?: return@LaunchedEffect
+            val saved = runCatching { writeCookieFile(cookies, destination) }.getOrNull()
+            if (saved == null) {
+                status = "Signed in, but the session could not be written to disk."
+                finishing = false
+            } else {
+                state.completeYouTubeSignIn(saved.toString())
+                close()
+            }
+            return@LaunchedEffect
+        }
+    }
+
+    DialogWindow(
+        onCloseRequest = close,
+        state = rememberDialogState(width = 1000.dp, height = 780.dp),
+        title = "Sign in to YouTube Music",
+    ) {
+        Column(Modifier.fillMaxSize().background(SpicePanel)) {
+            Row(Modifier.fillMaxWidth().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (finishing || component == null) {
+                    CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                    Spacer(Modifier.width(10.dp))
+                }
+                Column(Modifier.weight(1f)) {
+                    Text(status, fontSize = 12.sp)
+                    if (currentUrl.isNotBlank()) {
+                        Text(
+                            currentUrl,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+                OutlinedButton({ session?.navigate(YOUTUBE_MUSIC_HOME) }) { Text("Go to YouTube Music") }
+                Spacer(Modifier.width(8.dp))
+                OutlinedButton(close) { Text("Cancel") }
+            }
+            HorizontalDivider()
+            component?.let { ui ->
+                SwingPanel(background = Color.Black, factory = { ui }, modifier = Modifier.fillMaxSize())
+            } ?: Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Text(
+                    "Chromium ships with Spice and is unpacked once on this computer.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 12.sp,
+                )
+            }
+        }
+    }
+}
+
+/** YouTube Music through a signed-in browser session, the same arrangement SoundCloud uses. */
+@Composable
+private fun YouTubeAccountPanel(settings: SettingsState, state: AppState) {
+    val likes by state.likes.collectAsState()
+    val source = settings.preferences.youtubeCookies
+    var signInOpen by remember { mutableStateOf(false) }
+    if (signInOpen) YouTubeSignInWindow(state) { signInOpen = false }
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SettingsPanelCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PlayCircle, null, Modifier.size(40.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (likes.youTubeReady) "Signed in to YouTube Music" else "Sign in to YouTube Music",
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Signs in on Google's own page inside Spice. Your playlists and likes then work through " +
+                            "the same interface the YouTube Music site uses, with no Google Cloud project involved.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            AccountStatusRow(settings.youtubeAccount)
+            Spacer(Modifier.height(15.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Button({ signInOpen = true }) {
+                    Icon(Icons.Default.Login, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (source.isConfigured) "Sign in again" else "Sign in to YouTube Music")
+                }
+                if (source.isConfigured) {
+                    OutlinedButton({ state.disconnectAccount(ProviderType.YOUTUBE_MUSIC) }) { Text("Disconnect") }
+                }
+            }
+            likes.message?.let { message ->
+                Spacer(Modifier.height(12.dp))
+                Surface(color = MaterialTheme.colorScheme.surface.copy(alpha = .6f), shape = RoundedCornerShape(10.dp)) {
+                    Row(Modifier.fillMaxWidth().padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
+                        SelectionContainer(Modifier.weight(1f)) { Text(message, fontSize = 11.sp) }
+                        IconButton(state::clearLikeMessage, Modifier.size(24.dp)) {
+                            Icon(Icons.Default.Close, "Dismiss", Modifier.size(14.dp))
+                        }
+                    }
+                }
+            }
+        }
+
+        SettingsPanelCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Security, null, Modifier.size(18.dp), tint = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.width(8.dp)); Text("What signing in covers", fontWeight = FontWeight.SemiBold)
+            }
+            Spacer(Modifier.height(9.dp))
+            AccountFact("Your playlists and liked songs, read and written the way the YouTube Music site does.")
+            AccountFact("Liking a YouTube track in Spice marks it liked on your account.")
+            AccountFact("Playback also uses this session, so age-restricted tracks play.")
+            AccountFact("Your password goes to Google's page, never to Spice, and only the session is kept.")
         }
     }
 }

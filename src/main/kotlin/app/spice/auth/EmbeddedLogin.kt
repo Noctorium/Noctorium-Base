@@ -32,8 +32,7 @@ data class HarvestedCookie(
  *
  * The listener types their password into the provider's real page, never into a Spice form, and the session
  * that results lives in this browser's own cookie store rather than in the system browser. That store is then
- * exported once as a cookie file for yt-dlp. Google is deliberately not offered here — it rejects sign-in from
- * embedded webviews outright — so this exists for SoundCloud.
+ * exported once as a cookie file for yt-dlp, and for the session-signed API calls Spice makes.
  *
  * Chromium ships inside Spice rather than being fetched on demand, so [start] only has to unpack it the first
  * time and needs no network at all. Progress is still reported because unpacking is not instant.
@@ -177,4 +176,20 @@ fun permalinkFromBrowserUrl(url: String?): String? {
         it.isNotBlank() &&
             it !in setOf("you", "signin", "discover", "feed", "search", "upload", "settings", "pages", "stream")
     }
+}
+
+/** Where Google's sign-in starts, continuing to YouTube Music once it succeeds. */
+const val YOUTUBE_SIGN_IN = "https://accounts.google.com/ServiceLogin?continue=https%3A%2F%2Fmusic.youtube.com%2F"
+
+/** The page whose cookies Spice needs, which is the music site rather than the accounts one. */
+const val YOUTUBE_MUSIC_HOME = "https://music.youtube.com/"
+
+/**
+ * True once the session carries the cookie Google signs requests with.
+ *
+ * Signing in sets a great many cookies; this is the one that matters, and it appears under either name
+ * depending on how the account was signed in.
+ */
+fun isYouTubeSignedIn(cookies: List<HarvestedCookie>): Boolean = cookies.any {
+    (it.name == "SAPISID" || it.name == "__Secure-3PAPISID") && it.value.isNotBlank()
 }

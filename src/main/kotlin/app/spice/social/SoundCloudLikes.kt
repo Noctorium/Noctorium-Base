@@ -276,16 +276,24 @@ internal fun LikeHttpResponse.hint(): String {
  * `datadome` is the clearance the real browser session already earned by passing their checks; sending it makes
  * an API call from Spice look like a continuation of that session rather than a fresh unknown client.
  */
-fun soundCloudCookieHeader(jarPath: Path): String? = runCatching {
-    val wanted = setOf("datadome", "oauth_token", "sc_anonymous_id", "sc_session")
+fun soundCloudCookieHeader(jarPath: Path): String? =
+    cookieHeaderFor(jarPath, "soundcloud.com", setOf("datadome", "oauth_token", "sc_anonymous_id", "sc_session"))
+
+/**
+ * Cookies for one site, formatted as a request header.
+ *
+ * Naming [names] keeps a request to the minimum a service needs. Passing null sends every cookie for that
+ * domain, which is what Google requires — its request signature depends on several of them together.
+ */
+fun cookieHeaderFor(jarPath: Path, domain: String, names: Set<String>? = null): String? = runCatching {
     val pairs = Files.readAllLines(jarPath)
         .filterNot { it.startsWith("#") || it.isBlank() }
         .mapNotNull { line ->
             val fields = line.split('\t')
             if (fields.size < 7) return@mapNotNull null
-            if (!fields[0].contains("soundcloud.com", ignoreCase = true)) return@mapNotNull null
+            if (!fields[0].contains(domain, ignoreCase = true)) return@mapNotNull null
             val name = fields[5]
-            if (name !in wanted) return@mapNotNull null
+            if (names != null && name !in names) return@mapNotNull null
             "$name=${fields[6]}"
         }
         .distinct()

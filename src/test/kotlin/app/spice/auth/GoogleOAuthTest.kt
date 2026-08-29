@@ -127,3 +127,36 @@ private class ScriptedTokenClient(private vararg val replies: HttpReply) : Token
         return replies.getOrNull(index) ?: HttpReply(500, "{}")
     }
 }
+
+/**
+ * Google answers a refusal with one word. `access_denied` is the one that misleads: it usually means the OAuth
+ * client is still in Testing and the account is not on its test-user list, not that anyone declined anything.
+ */
+class GoogleOAuthErrorTest {
+    @Test
+    fun `access_denied points at the test-user list rather than blaming the listener`() {
+        val message = explainOAuthError("access_denied")
+
+        assertContains(message, "Test users")
+        assertContains(message, "publish")
+        // The seven-day expiry of a testing client is the reason to publish rather than keep adding testers.
+        assertContains(message, "seven days")
+    }
+
+    @Test
+    fun `a workspace policy is named as an administrator problem`() {
+        assertContains(explainOAuthError("admin_policy_enforced"), "administrator")
+    }
+
+    @Test
+    fun `client and scope problems say which setting is wrong`() {
+        assertContains(explainOAuthError("invalid_client"), "Desktop app")
+        assertContains(explainOAuthError("invalid_scope"), "YouTube Data API")
+        assertContains(explainOAuthError("redirect_uri_mismatch"), "Desktop app")
+    }
+
+    @Test
+    fun `an unfamiliar error is passed through rather than mistranslated`() {
+        assertContains(explainOAuthError("something_new"), "something_new")
+    }
+}

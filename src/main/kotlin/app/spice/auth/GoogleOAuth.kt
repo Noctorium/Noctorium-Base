@@ -111,7 +111,7 @@ class GoogleOAuthClient internal constructor(
             val query = exchange.requestURI.rawQuery.orEmpty().parseQuery()
             val answer = when {
                 query["state"] != state -> Result.failure(IllegalStateException("The sign-in reply did not match this request."))
-                query["error"] != null -> Result.failure(IllegalStateException("Google reported: ${query["error"]}"))
+                query["error"] != null -> Result.failure(IllegalStateException(explainOAuthError(query.getValue("error"))))
                 query["code"].isNullOrBlank() -> Result.failure(IllegalStateException("Google returned no authorization code."))
                 else -> Result.success(query.getValue("code"))
             }
@@ -255,3 +255,28 @@ private fun encode(value: String): String = URLEncoder.encode(value, StandardCha
 
 private fun decode(value: String): String =
     runCatching { java.net.URLDecoder.decode(value, StandardCharsets.UTF_8) }.getOrDefault(value)
+
+/**
+ * Turns Google's one-word refusals into the thing to actually go and do.
+ *
+ * `access_denied` in particular almost never means the listener declined: while an OAuth client sits in
+ * Testing, Google refuses everyone who is not on its test-user list, and says only "access_denied".
+ */
+internal fun explainOAuthError(error: String): String = when (error.lowercase()) {
+    "access_denied" ->
+        "Google refused the sign-in (access_denied). If your OAuth client is still in Testing, add your own " +
+            "address under OAuth consent screen › Audience › Test users — or publish the app there, which also " +
+            "stops the sign-in expiring every seven days."
+    "admin_policy_enforced" ->
+        "A Google Workspace policy on this account blocks third-party apps from YouTube. An administrator has " +
+            "to allow it."
+    "invalid_client" ->
+        "Google does not recognise this OAuth client. Check the client id and secret, and that the client is of " +
+            "type Desktop app."
+    "invalid_scope" ->
+        "Google rejected the permissions requested. Enable the YouTube Data API v3 for this project."
+    "redirect_uri_mismatch" ->
+        "Google rejected the local callback address. A Desktop app client is required; Web application clients " +
+            "will not accept it."
+    else -> "Google reported: $error"
+}

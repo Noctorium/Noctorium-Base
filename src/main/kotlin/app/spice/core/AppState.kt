@@ -42,7 +42,11 @@ import app.spice.social.SoundCloudAccountClient
 import app.spice.social.PlaylistWriteResult
 import app.spice.social.SoundCloudClientIdProvider
 import app.spice.social.SoundCloudPlaylistClient
+import app.spice.social.InnertubeKeyProvider
 import app.spice.social.YouTubeApiClient
+import app.spice.social.YouTubeMusicClient
+import app.spice.social.YouTubeSession
+import app.spice.social.cookieHeaderFor
 import app.spice.settings.*
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -119,6 +123,22 @@ internal fun LibraryState.withoutProvider(slot: ProviderType): LibraryState {
     )
 }
 
+/**
+ * Applies a freshly fetched listing, carrying the update through to the playlist currently on screen.
+ *
+ * The open playlist is a separate copy, so replacing only the list left the detail view showing whatever it
+ * was opened with — a playlist made public still read as private until it was closed and opened again. Tracks
+ * already loaded are kept, since the listing does not carry them.
+ */
+internal fun LibraryState.withRefreshedPlaylists(fresh: List<Playlist>): LibraryState = copy(
+    playlists = fresh,
+    openPlaylist = openPlaylist?.let { open ->
+        fresh.firstOrNull { it.playlistKey == open.playlistKey }
+            ?.copy(tracks = open.tracks)
+            ?: open
+    },
+)
+
 /** Replaces listed tracks with their resolved counterparts, matched on the page each one came from. */
 internal fun mergeResolvedTracks(current: List<Track>, resolved: List<Track>): List<Track> {
     if (resolved.isEmpty()) return current
@@ -190,6 +210,8 @@ class AppState(
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
     private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
     private val playlistClient: SoundCloudPlaylistClient = SoundCloudPlaylistClient(),
+    private val youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(),
+    private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
 ) : AutoCloseable {
     @Volatile private var googleTokens: GoogleTokens? = null
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -234,12 +256,9 @@ class AppState(
         observeDiscordPresence()
         scope.launch(Dispatchers.IO) {
             val soundCloudReady = runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull()?.isNotBlank() == true
-            val googleConfigured = googleConfig()?.isUsable == true
-            val googleSignedIn = googleConfigured &&
-                runCatching { credentials.get(GOOGLE_REFRESH_TOKEN) }.getOrNull()?.isNotBlank() == true
-            mutableLikes.update { it.copy(soundCloudReady = soundCloudReady, youTubeReady = googleSignedIn) }
-            updateGoogle { it.copy(configured = googleConfigured, signedIn = googleSignedIn) }
-            if (soundCloudReady || googleSignedIn) refreshLikes()
+            val youTubeSignedIn = youTubeSession()?.sapisid != null
+            mutableLikes.update { it.copy(soundCloudReady = soundCloudReady, youTubeReady = youTubeSignedIn) }
+            if (soundCloudReady || youTubeSignedIn) refreshLikes()
         }
     }
 
@@ -322,10 +341,10 @@ class AppState(
             mutableLibrary.update { it.copy(loading = true, errorMessage = null) }
             val preferences = mutableSettings.value.preferences
             val needsSoundCloudName = preferences.soundCloudUsername.isBlank()
-            // YouTube playlists come from the Data API once Google is signed in, so no cookies are involved.
-            val googleToken = googleAccessToken()
-            val youTube = googleToken?.let { token ->
-                runCatching { youTubeApi.myPlaylists(token) }
+            // YouTube playlists come through the same session the site uses.
+            val youTubeSession = youTubeSession()?.takeIf { it.sapisid != null }
+            val youTube = youTubeSession?.let { session ->
+                runCatching { youTubeMusic.playlists(session) }.takeIf { it.getOrNull()?.isNotEmpty() == true }
             }
             // SoundCloud's own listing is preferred over the public page: it says whether each playlist is
             // public and it includes private ones, neither of which a page listing can show.
@@ -360,11 +379,10 @@ class AppState(
                 result.exceptionOrNull()?.let { libraryFailureMessage(type, it) }
             }
             mutableLibrary.update {
-                it.copy(
+                it.withRefreshedPlaylists(playlists).copy(
                     loading = false,
                     loaded = true,
                     loadedAtMillis = System.currentTimeMillis(),
-                    playlists = playlists,
                     needsSoundCloudUsername = needsSoundCloudName,
                     errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() },
                 )
@@ -395,12 +413,8 @@ class AppState(
                     )
                 }
             // A YouTube playlist is read through the Data API when Google is signed in; yt-dlp is the fallback.
-            val youTubeToken = if (playlist.provider == ProviderType.YOUTUBE_MUSIC) googleAccessToken() else null
-            val listed = if (youTubeToken != null) {
-                runCatching { youTubeApi.playlistTracks(playlist.id, youTubeToken) }
-            } else {
-                runCatching { provider.getPlaylistTracks(playlist) }
-            }
+            // yt-dlp reads a YouTube playlist with the same session cookies the sign-in produced.
+            val listed = runCatching { provider.getPlaylistTracks(playlist) }
             val tracks = listed.getOrDefault(emptyList())
             updateOpenPlaylist(playlist) { state ->
                 state.copy(
@@ -618,11 +632,14 @@ class AppState(
             }
         }
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> {
-            val token = googleAccessToken()
-            if (token.isNullOrBlank()) {
-                LikeResult(LikeOutcome.NEEDS_TOKEN, "Sign in with Google in Settings before liking YouTube tracks.")
+            val session = youTubeSession()
+            if (session?.sapisid == null) {
+                LikeResult(
+                    LikeOutcome.NEEDS_TOKEN,
+                    "Sign in to YouTube Music in Settings before liking YouTube tracks.",
+                )
             } else {
-                youTubeApi.rate(track.id, token, liking)
+                youTubeMusic.setLiked(track.id, liking, session)
             }
         }
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
@@ -637,6 +654,18 @@ class AppState(
             liked = liking,
             cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
         )
+
+    /**
+     * The session YouTube Music calls need: the page identifiers plus every cookie for the account, since
+     * Google signs a request from several of them together rather than from one token.
+     */
+    private suspend fun youTubeSession(): YouTubeSession? {
+        val keys = innertubeKeys.keys() ?: return null
+        val file = mutableSettings.value.preferences.youtubeCookies.cookieFile
+        val header = file.takeIf(String::isNotBlank)
+            ?.let { withContext(Dispatchers.IO) { cookieHeaderFor(Path.of(it), "youtube.com") } }
+        return YouTubeSession(keys, header)
+    }
 
     /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
     private fun soundCloudCookies(): String? {
@@ -678,12 +707,7 @@ class AppState(
                     }
                 }
             }
-            googleAccessToken()?.let { token ->
-                val liked = youTubeApi.likedVideoIds(token).map { "yt:$it" }.toSet()
-                mutableLikes.update { state ->
-                    state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("yt:") }.toSet() + liked)
-                }
-            }
+
         }
     }
 
@@ -718,6 +742,28 @@ class AppState(
      * Records a session captured by the in-app SoundCloud sign-in. The exported cookie file becomes the source
      * yt-dlp reads, and the session token is what authorises likes, so one sign-in covers both.
      */
+    /** Records a YouTube session captured by the in-app sign-in, which replaces the OAuth client entirely. */
+    fun completeYouTubeSignIn(cookieFilePath: String) {
+        val source = CookieSource.ofFile(cookieFilePath).copy(verifiedAtEpochSeconds = Instant.now().epochSecond)
+        updatePreferences { copy(youtubeCookies = source) }
+        updateAccountState(
+            ProviderType.YOUTUBE_MUSIC,
+            AccountConnectionState(AccountConnectionStatus.CONNECTED, "Signed in inside Spice."),
+        )
+        scope.launch {
+            val ready = youTubeSession()?.sapisid != null
+            mutableLikes.update { it.copy(youTubeReady = ready) }
+            likeMessage(
+                if (ready) "YouTube Music sign-in complete."
+                else "Signed in, but no Google session cookie was found. Try signing in again.",
+            )
+            if (ready) {
+                mutableLibrary.update { it.copy(loaded = false) }
+                refreshLibrary(force = true)
+            }
+        }
+    }
+
     fun completeSoundCloudSignIn(cookieFilePath: String, oauthToken: String?, permalink: String? = null) {
         val source = CookieSource.ofFile(cookieFilePath).copy(verifiedAtEpochSeconds = Instant.now().epochSecond)
         updatePreferences { copy(soundCloudCookies = source) }
@@ -809,6 +855,44 @@ class AppState(
             else SoundCloudToken.fromCookieFile(jar)
         } finally {
             runCatching { Files.deleteIfExists(jar) }
+        }
+    }
+
+    /** Makes a playlist on the YouTube Music account. Private by default, as on SoundCloud. */
+    fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
+        withYouTubeWrite { session ->
+            youTubeMusic.createPlaylist(
+                title = title,
+                videoIds = tracks.filter { it.provider != ProviderType.SOUNDCLOUD }.map { it.id },
+                isPublic = isPublic,
+                session = session,
+            )
+        }
+    }
+
+    fun addTrackToYouTubePlaylist(playlistId: String, track: Track) {
+        if (track.provider == ProviderType.SOUNDCLOUD) {
+            return libraryNotice("Only YouTube tracks can go into a YouTube Music playlist.")
+        }
+        withYouTubeWrite { session -> youTubeMusic.addToPlaylist(playlistId, track.id, session) }
+    }
+
+    private fun withYouTubeWrite(write: suspend (YouTubeSession) -> PlaylistWriteResult) {
+        scope.launch {
+            val session = youTubeSession()
+            if (session?.sapisid == null) {
+                return@launch libraryNotice("Sign in to YouTube Music under Settings first.")
+            }
+            val result = write(session)
+            libraryNotice(result.detail)
+            ScrobbleLog.event(
+                if (result.ok) "youtube_playlist_written" else "youtube_playlist_failed",
+                mapOf("detail" to result.detail),
+            )
+            if (result.ok) {
+                mutableLibrary.update { it.copy(loaded = false) }
+                refreshLibrary(force = true)
+            }
         }
     }
 
