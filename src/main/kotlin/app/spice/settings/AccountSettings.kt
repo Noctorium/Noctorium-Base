@@ -149,6 +149,19 @@ enum class PlayerBarStyle(val displayName: String, val description: String) {
     ),
 }
 
+/** Which edge of the window the player bar is fixed to. */
+@Serializable
+enum class PlayerBarPosition(val displayName: String, val description: String) {
+    BOTTOM(
+        "Bottom",
+        "Along the foot of the window, under whatever you are browsing.",
+    ),
+    TOP(
+        "Top",
+        "Across the head of the window, above whatever you are browsing.",
+    ),
+}
+
 /** How the seek bar is drawn. Both are fully functional; the difference is how much furniture they carry. */
 @Serializable
 enum class ProgressBarStyle(val displayName: String, val description: String) {
@@ -167,6 +180,7 @@ data class SpicePreferences(
     val profileName: String = "Spice Listener",
     val progressBarStyle: ProgressBarStyle = ProgressBarStyle.MINIMAL,
     val playerBarStyle: PlayerBarStyle = PlayerBarStyle.INLINE,
+    val playerBarPosition: PlayerBarPosition = PlayerBarPosition.BOTTOM,
     val accent: AccentPreset = AccentPreset.VIOLET,
     val backgroundDepth: BackgroundDepth = BackgroundDepth.AMOLED,
     val cardSize: CardSize = CardSize.COMFORTABLE,

@@ -104,6 +104,8 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
             Row {
                 NavigationRail(ui.destination, appState::navigate)
                 Column(Modifier.weight(1f)) {
+                    val playerAtTop = preferences.playerBarPosition == PlayerBarPosition.TOP
+                    if (playerAtTop) PlayerBar(queue, playback, appState)
                     Box(Modifier.weight(1f)) {
                         when (ui.destination) {
                             Destination.HOME -> HomeScreen(ui, appState)
@@ -114,7 +116,7 @@ fun SpiceApp(appState: AppState = remember { AppState() }) {
                             Destination.SETTINGS -> SettingsScreen(appState)
                         }
                     }
-                    PlayerBar(queue, playback, appState)
+                    if (!playerAtTop) PlayerBar(queue, playback, appState)
                 }
             }
         }
@@ -1364,11 +1366,15 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
         AddToPlaylistDialog(current, library.localPlaylists, state) { addToPlaylist = false }
     }
 
+    // The rule separates the bar from what it sits against, so it belongs on whichever edge faces the
+    // content: below the bar when the bar is at the top of the window, above it when it is at the foot.
+    val atTop = preferences.playerBarPosition == PlayerBarPosition.TOP
+    val rule = MaterialTheme.colorScheme.primary.copy(alpha = .22f)
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxWidth().height(74.dp)) {
         Column {
-            HorizontalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = .22f))
+            if (!atTop) HorizontalDivider(color = rule)
             Row(
-                Modifier.fillMaxSize().padding(horizontal = 14.dp),
+                Modifier.fillMaxWidth().weight(1f).padding(horizontal = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(state::toggleShuffle, Modifier.size(34.dp)) {
@@ -1473,6 +1479,7 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 }
                 VolumeControl(playback, state)
             }
+            if (atTop) HorizontalDivider(color = rule)
         }
     }
 }
@@ -1487,6 +1494,8 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
     val playerPreferences = state.settings.collectAsState().value.preferences
     val progressStyle = playerPreferences.progressBarStyle
     val timeDisplay = playerPreferences.timeDisplay
+    val stackedAtTop = playerPreferences.playerBarPosition == PlayerBarPosition.TOP
+    val stackedRule = MaterialTheme.colorScheme.primary.copy(alpha = .35f)
     Surface(
         shadowElevation = 0.dp,
         color = SpicePanel,
@@ -1499,7 +1508,8 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val compact = maxWidth < 760.dp
             Column {
-                HorizontalDivider(color = MaterialTheme.colorScheme.primary.copy(alpha = .35f))
+                // As above: the rule marks the edge the content is on.
+                if (!stackedAtTop) HorizontalDivider(color = stackedRule)
                 PlaybackProgressBar(
                     playback = playback,
                     onSeek = state::seekTo,
@@ -1611,6 +1621,7 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                         }
                     }
                 }
+                if (stackedAtTop) HorizontalDivider(color = stackedRule)
             }
         }
     }
@@ -2765,6 +2776,20 @@ private fun CustomizationPanel(preferences: SpicePreferences, state: AppState) {
             Spacer(Modifier.height(6.dp))
             Text(
                 preferences.playerBarStyle.description,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(15.dp))
+            ChoiceRow(
+                "Player bar position",
+                PlayerBarPosition.entries,
+                preferences.playerBarPosition,
+                { it.displayName },
+                state::setPlayerBarPosition,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                preferences.playerBarPosition.description,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
             )

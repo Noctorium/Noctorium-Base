@@ -309,6 +309,8 @@ class AppState(
 
     fun setProgressBarStyle(style: ProgressBarStyle) = updatePreferences { copy(progressBarStyle = style) }
     fun setPlayerBarStyle(style: PlayerBarStyle) = updatePreferences { copy(playerBarStyle = style) }
+    fun setPlayerBarPosition(position: PlayerBarPosition) =
+        updatePreferences { copy(playerBarPosition = position) }
     fun setAccent(accent: AccentPreset) = updatePreferences { copy(accent = accent) }
     fun setBackgroundDepth(depth: BackgroundDepth) = updatePreferences { copy(backgroundDepth = depth) }
     fun setCardSize(size: CardSize) = updatePreferences { copy(cardSize = size) }
