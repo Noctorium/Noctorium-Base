@@ -1,8 +1,8 @@
-# Spice
+# Spicetify
 
-Spice is a Kotlin desktop music player designed to bring YouTube Music and SoundCloud into one coherent interface: one home, one search, one library, one queue, and one player. Provider-aware playback context keeps automatic recommendations on the service that started the listening session.
+Spicetify is a Kotlin desktop music player designed to bring YouTube Music and SoundCloud into one coherent interface: one home, one search, one library, one queue, and one player. Provider-aware playback context keeps automatic recommendations on the service that started the listening session.
 
-> Spice is an independent third-party client. It is not affiliated with Google, YouTube, SoundCloud, Last.fm, ListenBrainz, or Discord.
+> Spicetify is an independent third-party client. It is not affiliated with Google, YouTube, SoundCloud, Last.fm, ListenBrainz, or Discord.
 
 ## Current status
 
@@ -14,7 +14,7 @@ Authenticated accounts, personalized feeds, scrobbling, secure credential storag
 
 - JDK 21
 - Windows or Linux
-- Current versions of `yt-dlp` and `mpv` (Spice also checks `%LOCALAPPDATA%/Spice/bin`)
+- Current versions of `yt-dlp` and `mpv` (Spicetify also checks `%LOCALAPPDATA%/Spicetify/bin`)
 
 ## Run
 

@@ -8,4 +8,4 @@ The shared queue is already provider-aware. Manual entries can mix services, whi
 
 ## yt-dlp baseline
 
-Use yt-dlp `2026.06.09` or newer. That release fixed a cookie leak affecting external curl-based downloads. Spice will check the detected version in Diagnostics and will never silently fetch executables from untrusted locations.
+Use yt-dlp `2026.06.09` or newer. That release fixed a cookie leak affecting external curl-based downloads. Spicetify will check the detected version in Diagnostics and will never silently fetch executables from untrusted locations.

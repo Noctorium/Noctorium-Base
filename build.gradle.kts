@@ -15,7 +15,7 @@ kotlin {
 }
 
 /**
- * Chromium build that ships inside Spice. jcefmaven downloads this payload at first use unless the matching
+ * Chromium build that ships inside Spicetify. jcefmaven downloads this payload at first use unless the matching
  * natives artifact is on the classpath, so bundling it is what removes the wait before the first sign-in.
  * The version string is jcefmaven's own, and has to match the `jcefmaven` dependency exactly.
  */
@@ -52,7 +52,7 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
-    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spice.
+    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spicetify.
     implementation("me.friwi:jcefmaven:146.0.10")
     jcefNativesArtifacts().forEach { artifact ->
         implementation("me.friwi:$artifact:$jcefNativesVersion")
@@ -64,14 +64,14 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "app.spice.MainKt"
+        mainClass = "app.spicetify.MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "Spice"
+            packageName = "Spicetify"
             packageVersion = "1.0.0"
             description = "One music player for YouTube Music and SoundCloud"
-            vendor = "Spice"
+            vendor = "Spicetify"
         }
     }
 }
