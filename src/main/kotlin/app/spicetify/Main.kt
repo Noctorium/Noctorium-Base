@@ -20,6 +20,6 @@ fun main() = application {
         ),
     ) {
         window.minimumSize = Dimension(760, 560)
-        SpicetifyApp()
+        SpicetifyApp(window = window)
     }
 }

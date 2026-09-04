@@ -52,6 +52,8 @@ dependencies {
     implementation(compose.materialIconsExtended)
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
+    // Reaches the one Windows call that colours the title bar; the window itself stays a native one.
+    implementation("net.java.dev.jna:jna:5.17.0")
     // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spicetify.
     implementation("me.friwi:jcefmaven:146.0.10")
     jcefNativesArtifacts().forEach { artifact ->

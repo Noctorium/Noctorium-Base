@@ -38,6 +38,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -79,7 +80,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
-fun SpicetifyApp(appState: AppState = remember { AppState() }) {
+fun SpicetifyApp(appState: AppState = remember { AppState() }, window: java.awt.Window? = null) {
     val ui by appState.ui.collectAsState()
     val queue by appState.queue.state.collectAsState()
     val playback by appState.playback.collectAsState()
@@ -97,6 +98,16 @@ fun SpicetifyApp(appState: AppState = remember { AppState() }) {
     val background = when (preferences.backgroundDepth) {
         BackgroundDepth.AMOLED -> AmoledBlack
         BackgroundDepth.DARK -> SpicetifyDarkBackground
+    }
+
+    // The title bar is Windows', not ours, so it has to be told the colour separately — and told again
+    // whenever the chosen depth changes, or a switch to pure black would leave a grey strip above it.
+    LaunchedEffect(window, background) {
+        WindowChrome.applyDarkTitleBar(
+            window,
+            backgroundArgb = background.toArgb(),
+            foregroundArgb = Color.White.copy(alpha = .88f).toArgb(),
+        )
     }
 
     MaterialTheme(colorScheme = spicetifyColorScheme(accent, background)) {
