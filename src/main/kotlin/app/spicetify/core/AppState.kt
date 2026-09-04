@@ -1684,9 +1684,7 @@ class AppState(
      */
     private fun recordListen(track: Track, positionMs: Long, durationMs: Long) {
         if (mutableAccount.value.user == null) return
-        val enough = positionMs >= PLAY_COUNTS_AFTER_MS ||
-            (durationMs > 0 && positionMs >= durationMs * PLAY_COUNTS_AFTER_FRACTION)
-        if (!enough) return
+        if (!listenCounts(positionMs, durationMs)) return
 
         unreportedPlays += PlayReport(
             clientId = java.util.UUID.randomUUID().toString(),
@@ -1812,6 +1810,20 @@ private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
 
 /** Credential-store key for the Spicetify account session. The password itself is never kept. */
 private const val SPICETIFY_TOKEN = "spicetify.session_token"
+
+/**
+ * Whether enough of a track was heard for it to count as a listen.
+ *
+ * Half a minute, or half the track for anything shorter than a minute. Without a rule of some kind,
+ * skipping through a playlist would afterwards read as having listened to the whole of it — and the
+ * figures the account exists to keep would be the first thing to become untrustworthy.
+ *
+ * A track of unknown length falls back to the fixed threshold alone. Treating an unknown length as zero
+ * would make the fraction test pass immediately and count every skip.
+ */
+internal fun listenCounts(positionMs: Long, durationMs: Long): Boolean =
+    positionMs >= PLAY_COUNTS_AFTER_MS ||
+        (durationMs > 0 && positionMs >= durationMs * PLAY_COUNTS_AFTER_FRACTION)
 
 /** A listen counts once this much of it has been heard, the convention scrobbling has long settled on. */
 private const val PLAY_COUNTS_AFTER_MS = 30_000L

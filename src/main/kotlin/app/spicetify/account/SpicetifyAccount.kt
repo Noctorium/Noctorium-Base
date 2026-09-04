@@ -73,13 +73,19 @@ class SpicetifyAccountClient(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    /**
+     * Trimming happens here rather than being left to the caller.
+     *
+     * This is the boundary, and a stray space around an address would otherwise reach the service as a
+     * different address. The password is never trimmed: whitespace inside it is part of it.
+     */
     suspend fun signUp(email: String, password: String, displayName: String): AccountResult =
         authenticate(
             "/api/auth/signup",
             buildJsonObject {
-                put("email", email)
+                put("email", email.trim())
                 put("password", password)
-                put("displayName", displayName)
+                put("displayName", displayName.trim())
             },
         )
 
@@ -87,7 +93,7 @@ class SpicetifyAccountClient(
         authenticate(
             "/api/auth/login",
             buildJsonObject {
-                put("email", email)
+                put("email", email.trim())
                 put("password", password)
             },
         )
