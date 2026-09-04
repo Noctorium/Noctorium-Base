@@ -221,6 +221,9 @@ data class SpicetifyPreferences(
             ).rehomed(),
         youtubeBrowser = null,
         soundCloudBrowser = null,
+        // Cleared once its choice has been carried across, like the browser fields above. Leaving it set
+        // is what let it be mistaken for the live setting and reported back as Disabled.
+        discordPresenceEnabled = false,
     )
 
     /** Follows a saved cookie jar into the folder's new name, so a rename does not read as a sign-out. */

@@ -2737,12 +2737,15 @@ private fun SettingsScreen(state: AppState) {
         }
         item { SettingsCard("Lyrics providers", "LRCLIB, Better Lyrics, Genius and 5 more", Icons.Default.Lyrics, { page = SettingsPage.LYRICS }) }
         item {
+            // Read from the live setting. This once read the field that only exists to carry a choice over
+            // from an older build, which is never written and so always said Disabled however it was set.
+            val discord = settings.preferences.discord
             SettingsCard(
                 "Discord Rich Presence",
-                if (settings.preferences.discordPresenceEnabled) "Enabled" else "Disabled",
+                if (discord.enabled) "Enabled · ${discord.timestamps.displayName}" else "Disabled",
                 Icons.Default.SportsEsports,
                 { page = SettingsPage.DISCORD },
-                settings.preferences.discordPresenceEnabled,
+                discord.enabled,
             )
         }
         item { SettingsCard("Diagnostics", "Check yt-dlp, mpv, FFmpeg and storage", Icons.Default.MonitorHeart, { page = SettingsPage.DIAGNOSTICS }) }
