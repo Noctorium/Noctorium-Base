@@ -74,6 +74,13 @@ compose.desktop {
             packageVersion = "1.0.0"
             description = "One music player for YouTube Music and SoundCloud"
             vendor = "Spicetify"
+
+            // The same mark the window shows, so the installed application and the running one agree.
+            // Generated from AppIcon; a test fails if the committed file drifts from the drawing code.
+            windows {
+                iconFile.set(project.file("src/main/resources/spicetify.ico"))
+                menuGroup = "Spicetify"
+            }
         }
     }
 }
