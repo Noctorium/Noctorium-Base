@@ -30,8 +30,15 @@ enum class PresenceActivityKind(val displayName: String, val code: Int) {
 
 @Serializable
 enum class PresenceTimestamps(val displayName: String, val description: String) {
-    ELAPSED("Elapsed", "Counts up from where the track started."),
-    REMAINING("Remaining", "Counts down to the end of the track."),
+    /**
+     * Both ends of the track, which is what makes Discord draw the bar.
+     *
+     * Given only one timestamp Discord writes a running clock and nothing else; it is the pair that tells
+     * it where in the track you are, and only then does it draw the line with the times at either end.
+     */
+    PROGRESS("Progress bar", "The line across the card, filling as the track plays."),
+    ELAPSED("Elapsed", "A clock counting up from where the track started."),
+    REMAINING("Remaining", "A clock counting down to the end of the track."),
     NONE("None", "No clock on the card."),
 }
 
@@ -71,7 +78,7 @@ data class DiscordPresenceSettings(
     val artworkAssetKey: String = "spicetify",
     val smallImageAssetKey: String = "",
     val smallTextTemplate: String = "{provider}",
-    val timestamps: PresenceTimestamps = PresenceTimestamps.ELAPSED,
+    val timestamps: PresenceTimestamps = PresenceTimestamps.PROGRESS,
     val paused: PausedBehaviour = PausedBehaviour.SHOW_PAUSED,
     val pausedSuffix: String = " (paused)",
     val firstButton: PresenceButton = PresenceButton("Listen on {provider}", "{url}"),
@@ -190,6 +197,12 @@ fun buildPresenceActivity(
         if (playing && durationMs > 0 && settings.timestamps != PresenceTimestamps.NONE) {
             putJsonObjectIfAny("timestamps") {
                 when (settings.timestamps) {
+                    // Both ends together: Discord draws the bar only when it can see the whole span, and
+                    // works out the position from where the start sits relative to now.
+                    PresenceTimestamps.PROGRESS -> {
+                        put("start", nowEpochSeconds - positionMs / 1_000)
+                        put("end", nowEpochSeconds + (durationMs - positionMs) / 1_000)
+                    }
                     PresenceTimestamps.ELAPSED -> put("start", nowEpochSeconds - positionMs / 1_000)
                     PresenceTimestamps.REMAINING -> put("end", nowEpochSeconds + (durationMs - positionMs) / 1_000)
                     PresenceTimestamps.NONE -> Unit

@@ -4,6 +4,7 @@ import app.spicetify.playback.PlaybackState
 import app.spicetify.playback.PlaybackStatus
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,13 +69,18 @@ class DiscordPresenceManager internal constructor(
             nowEpochSeconds = nowEpochSeconds(),
         )
         if (activity == lastPayload) return
-        if (elapsedMillis() - lastSentAt < MINIMUM_INTERVAL_MS) return
         lastPayload = activity
-        lastSentAt = elapsedMillis()
         mutableStatus.value = mutableStatus.value.copy(preview = activity.toPreview())
 
+        // A change arriving inside the throttle window is held back, not thrown away. Discarding it loses
+        // a pause outright: the position stops changing the moment playback does, so nothing arrives
+        // afterwards to carry the change through, and the card is left with a bar running on its own.
+        // Cancelling any waiting send first means a newer state simply replaces an older one still queued.
+        val wait = MINIMUM_INTERVAL_MS - (elapsedMillis() - lastSentAt)
         updateJob?.cancel()
         updateJob = scope.launch {
+            if (wait > 0) delay(wait)
+            lastSentAt = elapsedMillis()
             if (!client.connected && !client.connect(settings.resolvedApplicationId())) {
                 mutableStatus.value = DiscordPresenceStatus(
                     connected = false,

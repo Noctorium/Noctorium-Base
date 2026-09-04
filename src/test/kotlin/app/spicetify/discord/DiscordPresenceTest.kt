@@ -69,8 +69,9 @@ class DiscordPresenceTest {
         assertEquals(2, activity["type"]?.jsonPrimitive?.content?.toInt())
         assertEquals("KATAMARI", activity["details"]?.jsonPrimitive?.content)
         assertEquals("by FEMTANYL", activity["state"]?.jsonPrimitive?.content)
-        // Elapsed is expressed as a start in the past, which is how Discord counts up.
+        // A start in the past and an end in the future: the pair is what Discord draws the bar from.
         assertEquals(1_699_999_970, activity["timestamps"]?.jsonObject?.get("start")?.jsonPrimitive?.content?.toLong())
+        assertEquals(1_700_000_103, activity["timestamps"]?.jsonObject?.get("end")?.jsonPrimitive?.content?.toLong())
         assertEquals(
             "https://i1.sndcdn.com/artworks-x-t500x500.jpg",
             activity["assets"]?.jsonObject?.get("large_image")?.jsonPrimitive?.content,
@@ -212,5 +213,108 @@ class DiscordApplicationTest {
     @Test
     fun `whitespace does not count as setting an id`() {
         assertEquals("1464831676877111489", DiscordPresenceSettings(applicationId = "   ").resolvedApplicationId())
+    }
+}
+
+/**
+ * The bar across the card.
+ *
+ * Discord draws it only when an activity carries both ends of the track. Given one timestamp alone it
+ * writes a running clock and nothing more, which is why sending only a start showed a counter where the
+ * line should have been.
+ */
+class DiscordProgressBarTest {
+    private val track = Track(
+        provider = ProviderType.YOUTUBE_MUSIC,
+        id = "7tLGGiNjp_U",
+        title = "Antarctica",
+        artists = listOf(Artist("a", "\$uicideboy\$", ProviderType.YOUTUBE_MUSIC)),
+        durationMs = 127_000,
+        sourceUrl = "https://music.youtube.com/watch?v=7tLGGiNjp_U",
+    )
+
+    private fun activity(
+        timestamps: PresenceTimestamps = PresenceTimestamps.PROGRESS,
+        positionMs: Long = 30_000,
+        durationMs: Long = 130_000,
+        playing: Boolean = true,
+    ) = buildPresenceActivity(
+        settings = DiscordPresenceSettings(timestamps = timestamps),
+        track = track,
+        positionMs = positionMs,
+        durationMs = durationMs,
+        playing = playing,
+        nowEpochSeconds = 1_700_000_000,
+    )
+
+    private fun stamps(activity: JsonObject?) = activity?.get("timestamps")?.jsonObject
+
+    @Test
+    fun `the bar needs both ends, and gets them`() {
+        val timestamps = stamps(activity())!!
+
+        // Start in the past by however much has played; end in the future by whatever is left.
+        assertEquals(1_699_999_970, timestamps["start"]?.jsonPrimitive?.content?.toLong())
+        assertEquals(1_700_000_100, timestamps["end"]?.jsonPrimitive?.content?.toLong())
+    }
+
+    @Test
+    fun `the span between them is the length of the track`() {
+        val timestamps = stamps(activity(durationMs = 213_000, positionMs = 45_000))!!
+        val start = timestamps.getValue("start").jsonPrimitive.content.toLong()
+        val end = timestamps.getValue("end").jsonPrimitive.content.toLong()
+
+        assertEquals(213, end - start, "the bar would be the wrong length")
+        // And the position within it is where the listener actually is.
+        assertEquals(45, 1_700_000_000 - start)
+    }
+
+    @Test
+    fun `a track at its very beginning still spans the whole bar`() {
+        val timestamps = stamps(activity(positionMs = 0, durationMs = 130_000))!!
+
+        assertEquals(1_700_000_000, timestamps["start"]?.jsonPrimitive?.content?.toLong())
+        assertEquals(1_700_000_130, timestamps["end"]?.jsonPrimitive?.content?.toLong())
+    }
+
+    /** The single-timestamp choices must stay as they were; the bar is an addition, not a replacement. */
+    @Test
+    fun `the clock options still send one end only`() {
+        val elapsed = stamps(activity(timestamps = PresenceTimestamps.ELAPSED))!!
+        assertEquals(1_699_999_970, elapsed["start"]?.jsonPrimitive?.content?.toLong())
+        assertNull(elapsed["end"], "elapsed should not carry an end, or it becomes a bar")
+
+        val remaining = stamps(activity(timestamps = PresenceTimestamps.REMAINING))!!
+        assertEquals(1_700_000_100, remaining["end"]?.jsonPrimitive?.content?.toLong())
+        assertNull(remaining["start"], "remaining should not carry a start, or it becomes a bar")
+    }
+
+    @Test
+    fun `choosing no clock sends no timestamps at all`() {
+        assertNull(stamps(activity(timestamps = PresenceTimestamps.NONE)))
+    }
+
+    /**
+     * A paused track must not carry timestamps. Discord works the position out from the clock rather than
+     * being told it, so a bar left in place would go on filling while nothing is playing.
+     */
+    @Test
+    fun `a paused track carries no bar to run on without it`() {
+        assertNull(stamps(activity(playing = false)))
+    }
+
+    /** A stream with no known length has no span to draw, and a bar of unknown width is worse than none. */
+    @Test
+    fun `a track of unknown length gets no bar`() {
+        assertNull(stamps(activity(durationMs = 0)))
+    }
+
+    /** The bar is what someone setting this up wants; making it the default saves them finding it. */
+    @Test
+    fun `the bar is what a fresh install sends`() {
+        assertEquals(PresenceTimestamps.PROGRESS, DiscordPresenceSettings().timestamps)
+        // And the card is a listening one, which is the shape Discord gives music.
+        assertEquals(PresenceActivityKind.LISTENING, DiscordPresenceSettings().activityKind)
+        assertEquals(2, DiscordPresenceSettings().activityKind.code)
     }
 }
