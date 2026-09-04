@@ -1,6 +1,6 @@
-# Spicetify architecture
+# Spiceity architecture
 
-Spicetify uses Kotlin and Compose Desktop for a native JVM application with coroutines and `StateFlow` for predictable, non-blocking state updates.
+Spiceity uses Kotlin and Compose Desktop for a native JVM application with coroutines and `StateFlow` for predictable, non-blocking state updates.
 
 ## Layers
 

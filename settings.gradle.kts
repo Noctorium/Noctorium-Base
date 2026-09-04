@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Spicetify"
+rootProject.name = "Spiceity"
 

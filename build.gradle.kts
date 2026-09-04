@@ -15,7 +15,7 @@ kotlin {
 }
 
 /**
- * Chromium build that ships inside Spicetify. jcefmaven downloads this payload at first use unless the matching
+ * Chromium build that ships inside Spiceity. jcefmaven downloads this payload at first use unless the matching
  * natives artifact is on the classpath, so bundling it is what removes the wait before the first sign-in.
  * The version string is jcefmaven's own, and has to match the `jcefmaven` dependency exactly.
  */
@@ -54,7 +54,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     // Reaches the one Windows call that colours the title bar; the window itself stays a native one.
     implementation("net.java.dev.jna:jna:5.17.0")
-    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spicetify.
+    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spiceity.
     implementation("me.friwi:jcefmaven:146.0.10")
     jcefNativesArtifacts().forEach { artifact ->
         implementation("me.friwi:$artifact:$jcefNativesVersion")
@@ -66,20 +66,20 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "app.spicetify.MainKt"
+        mainClass = "app.spiceity.MainKt"
 
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
-            packageName = "Spicetify"
+            packageName = "Spiceity"
             packageVersion = "1.0.0"
             description = "One music player for YouTube Music and SoundCloud"
-            vendor = "Spicetify"
+            vendor = "Spiceity"
 
             // The same mark the window shows, so the installed application and the running one agree.
             // Generated from AppIcon; a test fails if the committed file drifts from the drawing code.
             windows {
-                iconFile.set(project.file("src/main/resources/spicetify.ico"))
-                menuGroup = "Spicetify"
+                iconFile.set(project.file("src/main/resources/spiceity.ico"))
+                menuGroup = "Spiceity"
             }
         }
     }
