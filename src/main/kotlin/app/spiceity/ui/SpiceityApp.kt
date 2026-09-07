@@ -541,6 +541,16 @@ private fun LocalPlaylistDetail(playlist: LocalPlaylist, notice: String?, state:
                 Button({ state.playLocalPlaylist(playlist) }) {
                     Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(7.dp)); Text("Play all")
                 }
+                Spacer(Modifier.width(9.dp))
+                val downloads by state.downloadState.collectAsState()
+                val missing = playlist.tracks.count { !downloads.isDownloaded(it) }
+                OutlinedButton({ state.downloadAll(playlist.tracks) }, enabled = missing > 0) {
+                    Icon(Icons.Default.Download, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    // Naming how many are left makes clear that a second press is not needed, and that a
+                    // playlist already kept is finished rather than the button being broken.
+                    Text(if (missing == 0) "All downloaded" else "Download $missing")
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
@@ -859,6 +869,16 @@ private fun PlaylistDetail(playlist: Playlist, library: LibraryState, state: App
                 Button({ state.playPlaylist(playlist) }) {
                     Icon(Icons.Default.PlayArrow, null); Spacer(Modifier.width(7.dp)); Text("Play all")
                 }
+                Spacer(Modifier.width(9.dp))
+                val downloads by state.downloadState.collectAsState()
+                val missing = playlist.tracks.count { !downloads.isDownloaded(it) }
+                OutlinedButton({ state.downloadAll(playlist.tracks) }, enabled = missing > 0) {
+                    Icon(Icons.Default.Download, null, Modifier.size(18.dp))
+                    Spacer(Modifier.width(7.dp))
+                    // Naming how many are left makes clear that a second press is not needed, and that a
+                    // playlist already kept is finished rather than the button being broken.
+                    Text(if (missing == 0) "All downloaded" else "Download $missing")
+                }
             }
         }
         // Account actions sit on their own line: in the title row they crowded out the name entirely.
@@ -1093,6 +1113,7 @@ private fun TrackRow(track: Track, sourceQueue: List<Track>, state: AppState) {
                 Text(track.artistLine, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
             ProviderBadge(track.provider)
+            DownloadButton(track, state, size = 34.dp)
             TrackMenu(track, state)
         }
     }
@@ -1461,6 +1482,7 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 }
                 current?.let { track ->
                     LikeButton(track, state, size = 34.dp)
+                    DownloadButton(track, state, size = 34.dp)
                     IconButton({ addToPlaylist = true }, Modifier.size(34.dp)) {
                         Icon(
                             Icons.AutoMirrored.Filled.PlaylistAdd,
@@ -1593,6 +1615,7 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                             )
                         }
                         current?.let { LikeButton(it, state) }
+                        current?.let { DownloadButton(it, state) }
                     }
 
                     Row(
@@ -1872,6 +1895,7 @@ private fun HeroFooter(track: Track, playback: PlaybackState, state: AppState) {
 
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         LikeButton(track, state, size = 34.dp)
+        DownloadButton(track, state, size = 34.dp)
         IconButton({ state.copyTrackLink(track) }, Modifier.size(34.dp)) {
             Icon(Icons.Default.Link, "Copy link", Modifier.size(17.dp), tint = Color.White.copy(alpha = .6f))
         }

@@ -3,6 +3,7 @@ package app.spiceity.ui
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,9 +15,13 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.DownloadDone
+import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.DownloadForOffline
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -27,6 +32,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +45,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.AppState
+import androidx.compose.ui.unit.Dp
+import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
 import app.spiceity.downloads.DownloadsState
 import java.util.Locale
@@ -187,6 +195,72 @@ internal fun OfflineDownloadsCard(downloads: DownloadsState, state: AppState) {
                     Text("Remove all downloads", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                 }
             }
+        }
+    }
+}
+
+/**
+ * Keeping the track in hand, from wherever it happens to be on screen.
+ *
+ * Sits beside the heart in the player bar and on the now playing screen, because that is where somebody
+ * decides they want to keep something. The action was at first only in a track's menu, which on the home
+ * screen appears when a card is pointed at — findable if you already know it is there, and invisible
+ * otherwise.
+ */
+@Composable
+internal fun DownloadButton(track: Track, state: AppState, size: Dp = 36.dp) {
+    val downloads by state.downloadState.collectAsState()
+    val job = downloads.jobFor(track)
+    val kept = downloads.isDownloaded(track)
+
+    IconButton(
+        onClick = {
+            when {
+                job != null && job.stage == DownloadStage.FAILED -> {
+                    state.cancelDownload(track.queueKey)
+                    state.downloadTrack(track)
+                }
+                job != null -> state.cancelDownload(track.queueKey)
+                kept -> state.deleteDownload(track.queueKey)
+                else -> state.downloadTrack(track)
+            }
+        },
+        modifier = Modifier.size(size),
+    ) {
+        when {
+            job != null && job.stage == DownloadStage.FAILED -> Icon(
+                Icons.Default.ErrorOutline,
+                "Download failed — press to try again",
+                Modifier.size(17.dp),
+                tint = MaterialTheme.colorScheme.error,
+            )
+            // The ring doubles as the progress: a spinner would say something is happening without ever
+            // saying how much is left, which on a long track reads as stuck.
+            job != null -> Box(contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(
+                    progress = { job.progress.coerceAtLeast(.03f) },
+                    modifier = Modifier.size(size * .55f),
+                    strokeWidth = 2.dp,
+                )
+                Icon(
+                    Icons.Default.Close,
+                    "Stop this download",
+                    Modifier.size(size * .28f),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            kept -> Icon(
+                Icons.Default.DownloadDone,
+                "Downloaded — press to remove",
+                Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
+            else -> Icon(
+                Icons.Default.Download,
+                "Download for offline",
+                Modifier.size(18.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
