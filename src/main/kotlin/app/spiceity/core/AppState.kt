@@ -257,6 +257,7 @@ class AppState(
     private var playlistJob: Job? = null
     private var lastFmApprovalJob: Job? = null
     private val accountJobs = ConcurrentHashMap<ProviderType, Job>()
+    private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
         applyAccountPreferences(mutableSettings.value.preferences)
@@ -1757,7 +1758,14 @@ class AppState(
         play(first, origin = PlaybackOrigin.LIBRARY, sourceQueue = tracks)
     }
 
+    /**
+     * Shuts everything down, and does nothing if that has already happened.
+     *
+     * Called twice on the way out: once by the window before the process ends, and once when the interface
+     * is disposed. Whichever arrives first should do the work, and the other should be harmless.
+     */
     override fun close() {
+        if (!closed.compareAndSet(false, true)) return
         playbackEngine.close()
         discordPresence.close()
         downloads.close()

@@ -33,6 +33,7 @@ import java.net.UnixDomainSocketAddress
 import java.io.RandomAccessFile
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.math.max
 
@@ -65,6 +66,23 @@ class MpvPlaybackEngine(
     private val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
     private var ipcEndpoint: String? = null
     private var volumeBeforeBoost = mutableState.value.volume
+
+    /**
+     * Kills the player if the application goes without having been closed properly.
+     *
+     * mpv is a separate program, not part of this process, and on Windows a child outlives its parent.
+     * Anything that ends the application without disposing it therefore leaves music playing from a program
+     * with no window, which cannot be paused and has to be hunted down in the task manager. Closing tidily
+     * is still the normal path — this only catches the times it does not happen.
+     *
+     * A hook cannot run if the application is killed outright rather than asked to stop; nothing can help
+     * there, short of the operating system tying the two together.
+     */
+    private val shutdownHook = Thread({ runCatching { process?.destroyForcibly() } }, "spiceity-stop-mpv")
+
+    init {
+        runCatching { Runtime.getRuntime().addShutdownHook(shutdownHook) }
+    }
 
     /**
      * What mpv is pointed at: a file on the disk if the track has been downloaded, otherwise a stream.
@@ -233,7 +251,12 @@ class MpvPlaybackEngine(
     private fun stopProcess() {
         progressJob?.cancel()
         progressJob = null
-        process?.takeIf { it.isAlive }?.destroy()
+        process?.takeIf { it.isAlive }?.let { player ->
+            // Forcibly, and waited for. Asking politely and moving on leaves the audio playing for as
+            // long as it takes the player to notice, which on the way out is until after we have gone.
+            player.destroyForcibly()
+            runCatching { player.waitFor(2, TimeUnit.SECONDS) }
+        }
         process = null
         ipcEndpoint?.takeUnless { isWindows }?.let { runCatching { java.nio.file.Files.deleteIfExists(Path.of(it)) } }
         ipcEndpoint = null
@@ -375,6 +398,9 @@ class MpvPlaybackEngine(
 
     override fun close() {
         stopProcess()
+        // Removing the hook once it has nothing left to do; a hook cannot be removed during shutdown, so
+        // the failure that throws there is expected and ignored.
+        runCatching { Runtime.getRuntime().removeShutdownHook(shutdownHook) }
         scope.cancel()
     }
 }
