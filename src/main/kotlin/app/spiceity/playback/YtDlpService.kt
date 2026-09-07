@@ -1,6 +1,7 @@
 package app.spiceity.playback
 
 import app.spiceity.domain.Album
+import app.spiceity.downloads.ExportFormat
 import app.spiceity.domain.Artist
 import app.spiceity.domain.Playlist
 import app.spiceity.domain.ProviderType
@@ -21,6 +22,8 @@ class BackendException(message: String, cause: Throwable? = null) : Exception(me
 
 class YtDlpService(
     private val executable: () -> Path? = BackendLocator::ytDlp,
+    /** Injected rather than looked up, so what happens without it can be exercised on a machine that has it. */
+    private val ffmpeg: () -> Path? = BackendLocator::ffmpeg,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val cookieArguments = ConcurrentHashMap<ProviderType, List<String>>()
@@ -393,6 +396,69 @@ class YtDlpService(
         )
     }
 
+    /** Whether this machine can convert audio, which is the only thing standing between us and MP3. */
+    fun canConvertAudio(): Boolean = ffmpeg() != null
+
+    /**
+     * Saves a track as a file for the listener to keep, rather than for Spiceity to play.
+     *
+     * With ffmpeg present the audio is converted to MP3 and given its title, artist and cover art, since
+     * MP3 with tags is the thing that behaves properly on every phone and in every car. Without it, the
+     * stream is taken exactly as it comes: no conversion is possible, but none is desirable either —
+     * re-encoding lossy audio into another lossy format only ever loses more, and what the services serve
+     * is m4a, which phones play anyway.
+     */
+    suspend fun exportAudio(
+        sourceUrl: String,
+        outputTemplate: String,
+        format: ExportFormat,
+        onProgress: (Float) -> Unit = {},
+    ): Unit = withContext(Dispatchers.IO) {
+        require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
+            "Only HTTP media sources are accepted"
+        }
+        if (format == ExportFormat.MP3 && ffmpeg() == null) {
+            throw BackendException(
+                "Saving as MP3 needs ffmpeg, which is not installed. Put ffmpeg.exe in Spiceity's bin " +
+                    "folder, or set SPICEITY_FFMPEG_PATH, and try again.",
+            )
+        }
+        val provider = providerOf(sourceUrl)
+        val conversion = if (format == ExportFormat.MP3) {
+            listOf(
+                "--extract-audio",
+                "--audio-format", "mp3",
+                // 0 is yt-dlp's best variable bitrate, which for music is worth the extra megabyte.
+                "--audio-quality", "0",
+                // The tags and the cover, so a phone shows the track rather than a file name.
+                "--embed-metadata",
+                "--embed-thumbnail",
+                "--ffmpeg-location", ffmpeg()!!.parent.toString(),
+            )
+        } else {
+            // m4a for preference, since it needs no conversion and every phone plays it.
+            listOf("--format", "bestaudio[ext=m4a]/bestaudio")
+        }
+        stream(
+            EXPORT_TIMEOUT_SECONDS,
+            arrayOf(
+                *(if (format == ExportFormat.MP3) arrayOf("--format", "bestaudio/best") else emptyArray()),
+                "--no-playlist",
+                "--no-warnings",
+                "--newline",
+                "--progress",
+                "--no-part",
+                "--no-continue",
+                *conversion.toTypedArray(),
+                "--output", outputTemplate,
+                *provider?.let(::playbackArguments).orEmpty().toTypedArray(),
+                "--",
+                sourceUrl,
+            ),
+            onLine = { line -> progressOf(line)?.let(onProgress) },
+        )
+    }
+
     /** Which provider a media address belongs to, for choosing what to send with a request about it. */
     private fun providerOf(sourceUrl: String): ProviderType? = when {
         "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
@@ -488,3 +554,6 @@ private val PROGRESS = Regex("""\s(\d{1,3}(?:\.\d+)?)%""")
 
 /** A long track on a slow line still finishes well inside this; a stuck one does not sit forever. */
 private const val DOWNLOAD_TIMEOUT_SECONDS = 20L * 60L
+
+/** Converting takes longer than fetching, and a whole album saved one after another longer still. */
+private const val EXPORT_TIMEOUT_SECONDS = 30L * 60L

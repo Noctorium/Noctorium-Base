@@ -52,6 +52,7 @@ data class DownloadsState(
 class DownloadManager(
     private val ytDlp: YtDlpService,
     private val store: DownloadStore = DownloadStore(),
+    private val converter: AudioConverter = AudioConverter(),
 ) {
     private val mutableState = MutableStateFlow(DownloadsState())
     val state: StateFlow<DownloadsState> = mutableState.asStateFlow()
@@ -147,6 +148,119 @@ class DownloadManager(
             }
         }
     }
+
+    /**
+     * Saves a track out as a file for the listener to keep.
+     *
+     * Nothing to do with the offline library: this writes one file, named the way a person would name it,
+     * into a folder they can open. MP3 when this machine can convert, and the stream untouched when it
+     * cannot — which is not a lesser result, only a less familiar extension.
+     */
+    fun export(track: Track, folder: Path?, onSaved: (Path) -> Unit = {}) {
+        val destination = folder ?: MusicExport.defaultFolder()
+            ?: return note("There is nowhere to save to. Choose a folder in Settings.")
+        if (track.sourceUrl.isBlank()) return note("That track has nothing to save.")
+        val key = "export:${track.queueKey}"
+        if (running.containsKey(key)) return note("\"${track.title}\" is already being saved.")
+
+        // MP3 either way it can be had: yt-dlp does it when ffmpeg is about, and mpv does it otherwise.
+        val format = if (ytDlp.canConvertAudio() || converter.canMakeMp3()) ExportFormat.MP3 else ExportFormat.ORIGINAL
+        mutableState.update {
+            it.copy(active = it.active + DownloadJob(track, DownloadStage.QUEUED, detail = "Saving as ${format.displayName}"), message = null)
+        }
+        val job = scope.launch {
+            try {
+                oneAtATime.withLock {
+                    stage(track, DownloadStage.DOWNLOADING, 0f)
+                    val saved = writeExport(track, destination, format)
+                    clear(track)
+                    onSaved(saved)
+                    mutableState.update {
+                        it.copy(message = "Saved \"${saved.fileName}\" to ${destination.fileName}.")
+                    }
+                }
+            } catch (cancellation: CancellationException) {
+                clear(track)
+                throw cancellation
+            } catch (error: Exception) {
+                mutableState.update { current ->
+                    current.copy(
+                        active = current.active.map { job ->
+                            if (job.track.queueKey == track.queueKey) {
+                                job.copy(stage = DownloadStage.FAILED, detail = error.message?.take(240))
+                            } else {
+                                job
+                            }
+                        },
+                        message = "Could not save \"${track.title}\".",
+                    )
+                }
+            } finally {
+                running.remove(key)
+            }
+        }
+        running[key] = job
+    }
+
+    private suspend fun writeExport(track: Track, folder: Path, format: ExportFormat): Path {
+        withContext(Dispatchers.IO) { Files.createDirectories(folder) }
+        val wanted = MusicExport.fileNameFor(track, format)
+        val name = withContext(Dispatchers.IO) { MusicExport.availableName(folder, wanted) }
+        val stem = name.substringBeforeLast('.')
+
+        // With ffmpeg about, yt-dlp converts and embeds the cover art in the same pass, which is the best
+        // result available and not worth doing in two steps.
+        if (format != ExportFormat.MP3 || ytDlp.canConvertAudio()) {
+            ytDlp.exportAudio(
+                sourceUrl = track.sourceUrl,
+                // yt-dlp settles the extension itself, and converting changes it after the download.
+                outputTemplate = folder.resolve("$stem.%(ext)s").toString(),
+                format = format,
+                onProgress = { fraction -> stage(track, DownloadStage.DOWNLOADING, fraction) },
+            )
+            return producedFile(folder, stem)
+        }
+
+        // Otherwise the audio comes down as it is and mpv makes the MP3. The intermediate is named apart
+        // from the finished file so a failure halfway cannot leave something that looks like the result.
+        val workingStem = "$stem.spiceity-part"
+        try {
+            ytDlp.exportAudio(
+                sourceUrl = track.sourceUrl,
+                outputTemplate = folder.resolve("$workingStem.%(ext)s").toString(),
+                format = ExportFormat.ORIGINAL,
+                // The download is most of the wait, so it gets most of the bar; converting finishes it.
+                onProgress = { fraction -> stage(track, DownloadStage.DOWNLOADING, fraction * .85f) },
+            )
+            val downloaded = producedFile(folder, workingStem)
+            stage(track, DownloadStage.DOWNLOADING, .9f)
+            val converted = converter.toMp3(
+                input = downloaded,
+                output = folder.resolve(name),
+                title = track.title,
+                artist = track.artistLine,
+            )
+            stage(track, DownloadStage.DOWNLOADING, 1f)
+            return converted
+        } finally {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    Files.list(folder).use { entries ->
+                        entries.filter { it.fileName.toString().startsWith("$workingStem.") }.toList()
+                    }.forEach { runCatching { Files.delete(it) } }
+                }
+            }
+        }
+    }
+
+    /** The file yt-dlp actually wrote, whose extension is only known once it has chosen a stream. */
+    private suspend fun producedFile(folder: Path, stem: String): Path = withContext(Dispatchers.IO) {
+        Files.list(folder).use { entries ->
+            entries.filter { Files.isRegularFile(it) && it.fileName.toString().startsWith("$stem.") }.toList()
+        }
+    }.maxByOrNull { runCatching { Files.getLastModifiedTime(it).toMillis() }.getOrDefault(0L) }
+        ?: throw IllegalStateException("The save reported success but left no file.")
+
 
     /** Deletes every download, and anything left in the folder that no download claims. */
     fun deleteEverything() {

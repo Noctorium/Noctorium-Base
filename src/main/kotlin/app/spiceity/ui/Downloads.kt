@@ -28,6 +28,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,6 +49,7 @@ import app.spiceity.core.AppState
 import androidx.compose.ui.unit.Dp
 import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
+import app.spiceity.settings.SpiceityPreferences
 import app.spiceity.downloads.DownloadsState
 import java.util.Locale
 import kotlin.math.roundToInt
@@ -263,4 +265,49 @@ internal fun DownloadButton(track: Track, state: AppState, size: Dp = 36.dp) {
             )
         }
     }
+}
+
+/**
+ * Where saved music goes, and what it will be.
+ *
+ * The format is not a choice offered here, because it is not one: MP3 is produced whenever this machine can
+ * produce it, and it almost always can, since mpv has to be installed for anything to play at all and its
+ * builds carry an MP3 encoder. Saying so plainly is more use than a menu whose second option nobody wants.
+ */
+@Composable
+internal fun SaveMusicSetting(preferences: SpiceityPreferences, state: AppState) {
+    var folder by remember(preferences.exportFolder) { mutableStateOf(preferences.exportFolder) }
+    val resolved = state.exportFolder()
+    val mp3 = state.canSaveAsMp3()
+
+    Text("Saving music", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+    Spacer(Modifier.height(9.dp))
+    OutlinedTextField(
+        folder,
+        { folder = it },
+        label = { Text("Folder") },
+        placeholder = { Text(resolved?.toString() ?: "Your desktop") },
+        singleLine = true,
+        supportingText = {
+            Text(
+                if (mp3) {
+                    "Saved as MP3, tagged with the title and artist."
+                } else {
+                    "Saved in the original format. MP3 needs mpv or ffmpeg installed."
+                },
+            )
+        },
+        trailingIcon = {
+            if (folder != preferences.exportFolder) {
+                TextButton({ state.setExportFolder(folder) }) { Text("Save") }
+            }
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Spacer(Modifier.height(7.dp))
+    Text(
+        "Leave it empty for your desktop. Files are named \"Artist - Title\", so they sort together on a phone.",
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        fontSize = 11.sp,
+    )
 }

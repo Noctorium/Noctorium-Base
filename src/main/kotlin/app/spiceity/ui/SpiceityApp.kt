@@ -1207,6 +1207,20 @@ private fun TrackMenu(track: Track, state: AppState) {
                     onClick = { state.downloadTrack(track); expanded = false },
                 )
             }
+            DropdownMenuItem(
+                text = { Text(if (state.canSaveAsMp3()) "Save as MP3…" else "Save a copy…") },
+                leadingIcon = { Icon(Icons.Default.SaveAlt, null) },
+                // Named for where it lands, because the difference between this and the item above it is
+                // exactly that one is Spiceity's copy and this one is the listener's.
+                trailingIcon = {
+                    Text(
+                        state.exportFolder()?.fileName?.toString() ?: "no folder",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                },
+                onClick = { state.exportTrack(track); expanded = false },
+            )
             HorizontalDivider()
             DropdownMenuItem(
                 text = { Text("Copy link") },
@@ -2880,6 +2894,8 @@ private fun CustomizationPanel(preferences: SpiceityPreferences, state: AppState
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
             )
+            Spacer(Modifier.height(18.dp))
+            SaveMusicSetting(preferences, state)
             Spacer(Modifier.height(18.dp))
             Text("Seek bar style", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(9.dp))

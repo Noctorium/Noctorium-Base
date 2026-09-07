@@ -1,7 +1,9 @@
 package app.spiceity.core
 
 import app.spiceity.discord.DiscordPresenceManager
+import app.spiceity.downloads.AudioConverter
 import app.spiceity.downloads.DownloadManager
+import app.spiceity.downloads.MusicExport
 import app.spiceity.downloads.DownloadsState
 import app.spiceity.discord.DiscordPresenceSettings
 import app.spiceity.discord.DiscordPresenceStatus
@@ -1743,6 +1745,51 @@ class AppState(
         val pending = tracks.filterNot { downloads.state.value.isDownloaded(it) }
         if (pending.isEmpty()) return downloads.refresh()
         pending.forEach(downloads::download)
+    }
+
+    /**
+     * Saves a track out as a file to keep, and reveals it once it is written.
+     *
+     * Distinct from downloading it: a download is Spiceity's own copy so playback works offline, whereas
+     * this is a file for the listener — named as they would name it, in a folder they can open, and in a
+     * format anything will play.
+     */
+    fun exportTrack(track: Track) {
+        downloads.export(track, exportFolder()) { saved -> revealInFileManager(saved) }
+    }
+
+    fun exportAll(tracks: List<Track>) {
+        val folder = exportFolder()
+        // Only the last one reveals the folder, or saving an album would open a window per track.
+        tracks.forEachIndexed { index, track ->
+            downloads.export(track, folder) { saved -> if (index == tracks.lastIndex) revealInFileManager(saved) }
+        }
+    }
+
+    /** Whether this machine can make an MP3, which decides what saving actually produces. */
+    fun canSaveAsMp3(): Boolean = ytDlp.canConvertAudio() || AudioConverter().canMakeMp3()
+
+    /** Where saved music goes: the chosen folder, or the desktop when none has been chosen. */
+    fun exportFolder(): Path? = mutableSettings.value.preferences.exportFolder
+        .takeIf(String::isNotBlank)
+        ?.let { runCatching { Path.of(it) }.getOrNull() }
+        ?: MusicExport.defaultFolder()
+
+    fun setExportFolder(folder: String) = updatePreferences { copy(exportFolder = folder.trim()) }
+
+    /** Opens the folder a file was saved into, with the file itself picked out. */
+    private fun revealInFileManager(file: Path) {
+        scope.launch(Dispatchers.IO) {
+            runCatching {
+                if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) {
+                    // Explorer's own switch for "open the folder and select this", which saves the listener
+                    // hunting for a file among however many others are on their desktop.
+                    ProcessBuilder("explorer.exe", "/select,${file.toAbsolutePath()}").start()
+                } else {
+                    Desktop.getDesktop().open(file.parent.toFile())
+                }
+            }
+        }
     }
 
     fun cancelDownload(queueKey: String) = downloads.cancel(queueKey)

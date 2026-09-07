@@ -189,6 +189,8 @@ data class SpiceityPreferences(
     val timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
     val ambientBackdrop: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
+    /** Where saved music is written. Blank means the desktop, which is where it can be seen. */
+    val exportFolder: String = "",
     val youtubeCookies: CookieSource = CookieSource(),
     val soundCloudCookies: CookieSource = CookieSource(),
     /** Which YouTube channel to act as. Blank means the account's default channel. */
