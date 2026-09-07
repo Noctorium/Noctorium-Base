@@ -1,0 +1,192 @@
+package app.spiceity.ui
+
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteOutline
+import androidx.compose.material.icons.filled.DownloadForOffline
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import app.spiceity.core.AppState
+import app.spiceity.downloads.DownloadStage
+import app.spiceity.downloads.DownloadsState
+import java.util.Locale
+import kotlin.math.roundToInt
+
+/** A size somebody can judge at a glance, rather than a number of bytes. */
+internal fun formatBytes(bytes: Long): String = when {
+    bytes <= 0 -> "nothing yet"
+    bytes < 1024L * 1024 -> "${(bytes / 1024.0).roundToInt()} KB"
+    bytes < 1024L * 1024 * 1024 -> "${(bytes / (1024.0 * 1024)).roundToInt()} MB"
+    else -> String.format(Locale.US, "%.1f GB", bytes / (1024.0 * 1024 * 1024))
+}
+
+/** How many tracks are kept, what they occupy, and what is still arriving. */
+internal fun describeDownloads(downloads: DownloadsState): String = buildString {
+    append(
+        when (downloads.entries.size) {
+            0 -> "Nothing kept yet"
+            1 -> "1 track"
+            else -> "${downloads.entries.size} tracks"
+        },
+    )
+    if (downloads.entries.isNotEmpty()) {
+        append(" · ")
+        append(formatBytes(downloads.totalBytes))
+    }
+    if (downloads.active.isNotEmpty()) {
+        append(" · ")
+        append(downloads.active.size)
+        append(" on the way")
+    }
+}
+
+/**
+ * What is kept on this machine, and what is on its way here.
+ *
+ * Sits at the top of the library because it is the one part of it that still works with no connection,
+ * which is exactly when somebody goes looking for it.
+ */
+@Composable
+internal fun OfflineDownloadsCard(downloads: DownloadsState, state: AppState) {
+    var expanded by remember { mutableStateOf(false) }
+
+    Surface(
+        color = SpiceityPanel,
+        shape = RoundedCornerShape(14.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = .08f)),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.DownloadForOffline,
+                    null,
+                    Modifier.size(22.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Spacer(Modifier.width(11.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Available offline", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+                    Text(
+                        describeDownloads(downloads),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+                if (downloads.entries.isNotEmpty()) {
+                    OutlinedButton({ state.playDownloads() }) {
+                        Icon(Icons.Default.PlayArrow, null, Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("Play")
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    TextButton({ expanded = !expanded }) { Text(if (expanded) "Hide" else "Show") }
+                }
+            }
+
+            // Anything still arriving is shown whether or not the list is open. A download in progress is
+            // the thing most likely to be wondered about, and hiding it invites pressing download twice.
+            downloads.active.forEach { job ->
+                Spacer(Modifier.height(10.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(job.track.title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Spacer(Modifier.height(5.dp))
+                        if (job.stage == DownloadStage.FAILED) {
+                            Text(
+                                job.detail ?: "Could not download this one.",
+                                color = MaterialTheme.colorScheme.error,
+                                fontSize = 11.sp,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        } else {
+                            LinearProgressIndicator(
+                                progress = { job.progress },
+                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        when (job.stage) {
+                            DownloadStage.QUEUED -> "Waiting"
+                            DownloadStage.DOWNLOADING -> "${(job.progress * 100).roundToInt()}%"
+                            DownloadStage.FAILED -> "Failed"
+                        },
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp,
+                    )
+                    IconButton({ state.cancelDownload(job.track.queueKey) }, Modifier.size(30.dp)) {
+                        Icon(Icons.Default.Close, "Stop this download", Modifier.size(16.dp))
+                    }
+                }
+            }
+
+            if (expanded && downloads.entries.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                HorizontalDivider(color = Color.White.copy(alpha = .07f))
+                Column(verticalArrangement = Arrangement.spacedBy(0.dp)) {
+                    downloads.entries.forEach { entry ->
+                        Row(
+                            Modifier.fillMaxWidth()
+                                .clickable { state.playDownloads(entry.toTrack()) }
+                                .padding(vertical = 9.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(Modifier.weight(1f)) {
+                                Text(entry.title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(
+                                    "${entry.artistName} · ${entry.provider.displayName} · ${formatBytes(entry.bytes)}",
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                            IconButton({ state.deleteDownload(entry.queueKey) }, Modifier.size(32.dp)) {
+                                Icon(Icons.Default.DeleteOutline, "Remove this download", Modifier.size(17.dp))
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(4.dp))
+                TextButton(state::deleteAllDownloads) {
+                    Text("Remove all downloads", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                }
+            }
+        }
+    }
+}

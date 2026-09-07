@@ -1,6 +1,8 @@
 package app.spiceity.core
 
 import app.spiceity.discord.DiscordPresenceManager
+import app.spiceity.downloads.DownloadManager
+import app.spiceity.downloads.DownloadsState
 import app.spiceity.discord.DiscordPresenceSettings
 import app.spiceity.discord.DiscordPresenceStatus
 import app.spiceity.domain.*
@@ -192,7 +194,10 @@ data class AppUiState(
 
 class AppState(
     private val ytDlp: YtDlpService = YtDlpService(),
-    private val playbackEngine: PlaybackEngine = MpvPlaybackEngine(ytDlp),
+    private val downloads: DownloadManager = DownloadManager(ytDlp),
+    // Given the download library to consult, so a track kept on the disk plays from there and asks the
+    // network for nothing. Declared after it because a default may only refer to what precedes it.
+    private val playbackEngine: PlaybackEngine = MpvPlaybackEngine(ytDlp, downloadedFile = downloads::localFile),
     /** Left null so the real set can be built below, where a provider can be handed one of these methods. */
     private val injectedProviders: List<MusicProvider>? = null,
     private val lyricsRepository: LyricsRepository = LyricsRepository(),
@@ -1725,9 +1730,37 @@ class AppState(
         }
     }
 
+    // --- Keeping music on this machine ---
+
+    val downloadState: StateFlow<DownloadsState> get() = downloads.state
+
+    /** Fetches a track's audio so it can be played with nothing to reach. */
+    fun downloadTrack(track: Track) = downloads.download(track)
+
+    /** Downloads every track in a playlist that is not already here. */
+    fun downloadAll(tracks: List<Track>) {
+        val pending = tracks.filterNot { downloads.state.value.isDownloaded(it) }
+        if (pending.isEmpty()) return downloads.refresh()
+        pending.forEach(downloads::download)
+    }
+
+    fun cancelDownload(queueKey: String) = downloads.cancel(queueKey)
+    fun deleteDownload(queueKey: String) = downloads.delete(queueKey)
+    fun deleteAllDownloads() = downloads.deleteEverything()
+    fun clearDownloadMessage() = downloads.clearMessage()
+
+    /** Plays what is on the disk, which is the one thing that still works with no connection at all. */
+    fun playDownloads(startFrom: Track? = null) {
+        val tracks = downloads.state.value.entries.map { it.toTrack() }
+        if (tracks.isEmpty()) return
+        val first = startFrom ?: tracks.first()
+        play(first, origin = PlaybackOrigin.LIBRARY, sourceQueue = tracks)
+    }
+
     override fun close() {
         playbackEngine.close()
         discordPresence.close()
+        downloads.close()
         scope.cancel()
     }
 }

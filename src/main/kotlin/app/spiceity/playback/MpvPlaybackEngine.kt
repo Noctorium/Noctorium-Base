@@ -46,6 +46,13 @@ private const val MAX_DURATION_PROBES = 40
 class MpvPlaybackEngine(
     private val resolver: YtDlpService,
     private val executable: () -> Path? = BackendLocator::mpv,
+    /**
+     * Audio for this track already on the disk, if there is any.
+     *
+     * A lambda rather than the download library itself, so the engine needs to know nothing about how
+     * downloads are kept — only whether there is a file to play instead of a stream to go and find.
+     */
+    private val downloadedFile: (Track) -> Path? = { null },
 ) : PlaybackEngine {
     private val mutableState = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
@@ -59,6 +66,17 @@ class MpvPlaybackEngine(
     private var ipcEndpoint: String? = null
     private var volumeBeforeBoost = mutableState.value.volume
 
+    /**
+     * What mpv is pointed at: a file on the disk if the track has been downloaded, otherwise a stream.
+     *
+     * This one line is the whole of offline playback. Everywhere else a track is still the same track —
+     * liked, shared, added to playlists by its original address — and only the moment of playing it cares
+     * where the audio comes from. Visible for testing so it can be shown that a downloaded track asks the
+     * network for nothing, which cannot be observed from the outside once it is playing.
+     */
+    internal suspend fun mediaAddress(track: Track): String =
+        downloadedFile(track)?.toString() ?: resolver.resolveAudio(track.sourceUrl)
+
     override suspend fun play(track: Track) {
         mutableState.value = mutableState.value.copy(
             status = PlaybackStatus.RESOLVING,
@@ -71,7 +89,7 @@ class MpvPlaybackEngine(
             val mpv = executable() ?: throw BackendException(
                 "mpv is missing. Install it in Spiceity Settings or set SPICEITY_MPV_PATH.",
             )
-            val mediaUrl = resolver.resolveAudio(track.sourceUrl)
+            val mediaUrl = mediaAddress(track)
             stopProcess()
             ipcEndpoint = createIpcEndpoint()
             PlaybackLog.event(

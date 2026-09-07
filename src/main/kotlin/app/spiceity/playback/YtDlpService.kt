@@ -349,7 +349,101 @@ class YtDlpService(
         .takeIf { it.isNotBlank() && !it.startsWith("watch") }
         ?.replaceFirstChar(Char::uppercaseChar)
 
+    /**
+     * Downloads a track's audio to a file, reporting progress as it goes.
+     *
+     * The stream is taken in whatever container it already comes in. Converting it would mean depending on
+     * ffmpeg being present and re-encoding audio for no gain, and mpv plays every container yt-dlp hands
+     * back. [outputTemplate] carries yt-dlp's own `%(ext)s`, since which container it is only becomes known
+     * once the stream is chosen.
+     *
+     * Uses [playbackArguments], not the browsing session: this is a player-level request and YouTube
+     * refuses those from a signed-in non-browser exactly as it refuses a stream. Sending cookies here would
+     * make every YouTube download fail the way playback once did.
+     */
+    suspend fun downloadAudio(
+        sourceUrl: String,
+        outputTemplate: String,
+        onProgress: (Float) -> Unit = {},
+    ): Unit = withContext(Dispatchers.IO) {
+        require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
+            "Only HTTP media sources are accepted"
+        }
+        val provider = providerOf(sourceUrl)
+        stream(
+            DOWNLOAD_TIMEOUT_SECONDS,
+            arrayOf(
+                "--format", "bestaudio/best",
+                "--no-playlist",
+                "--no-warnings",
+                // One progress line per update instead of a carriage-returned bar, so it can be read here.
+                "--newline",
+                "--progress",
+                // Written straight to its final name, and never resumed onto: yt-dlp continues a partial
+                // file by default, which after an interrupted attempt appends to a truncated one and
+                // yields audio that will not play.
+                "--no-part",
+                "--no-continue",
+                "--output", outputTemplate,
+                *provider?.let(::playbackArguments).orEmpty().toTypedArray(),
+                "--",
+                sourceUrl,
+            ),
+            onLine = { line -> progressOf(line)?.let(onProgress) },
+        )
+    }
+
+    /** Which provider a media address belongs to, for choosing what to send with a request about it. */
+    private fun providerOf(sourceUrl: String): ProviderType? = when {
+        "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
+        "youtube.com" in sourceUrl || "youtu.be" in sourceUrl -> ProviderType.YOUTUBE_VIDEO
+        "soundcloud.com" in sourceUrl -> ProviderType.SOUNDCLOUD
+        else -> null
+    }
+
+    /**
+     * Runs yt-dlp and hands over each line as it arrives.
+     *
+     * Separate from [run] because that one waits for the process and then reads everything at once, which
+     * is right for a query answered in a second and useless for something that takes minutes and whose
+     * only interesting output is how far along it is.
+     */
+    private fun stream(timeoutSeconds: Long, arguments: Array<out String>, onLine: (String) -> Unit) {
+        val binary = executable() ?: throw BackendException(
+            "yt-dlp is missing. Install it in Spiceity Settings or set SPICEITY_YTDLP_PATH.",
+        )
+        val process = try {
+            ProcessBuilder(listOf(binary.toString()) + arguments).redirectErrorStream(true).start()
+        } catch (error: IOException) {
+            throw BackendException("Could not start yt-dlp: ${error.message}", error)
+        }
+        val tail = ArrayDeque<String>()
+        try {
+            process.inputStream.bufferedReader().use { reader ->
+                reader.lineSequence().forEach { line ->
+                    // Keeping only the last few lines: the useful part of a failure is at the end, and a
+                    // download of a long track prints thousands of progress lines nobody will read.
+                    tail.addLast(line)
+                    if (tail.size > 12) tail.removeFirst()
+                    onLine(line)
+                }
+            }
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                throw BackendException("The download did not finish within ${timeoutSeconds / 60} minutes")
+            }
+            if (process.exitValue() != 0) {
+                val reason = tail.lastOrNull { it.isNotBlank() }.orEmpty().take(300)
+                throw BackendException("yt-dlp could not download this track. $reason")
+            }
+        } finally {
+            // Cancelling the surrounding coroutine must not leave yt-dlp running and still writing.
+            if (process.isAlive) process.destroyForcibly()
+        }
+    }
+
     private fun run(vararg arguments: String): String = run(90, arguments)
+
 
     private fun run(timeoutSeconds: Long, arguments: Array<out String>): String {
         val binary = executable() ?: throw BackendException(
@@ -376,3 +470,21 @@ class YtDlpService(
         return output
     }
 }
+
+/**
+ * How much of a download has arrived, from one of yt-dlp's own progress lines, or null for anything else.
+ *
+ * The lines look like `[download]   7.6% of    3.27MiB at   27.80MiB/s ETA 00:00`, and there are thousands
+ * of them for one track. Only the percentage is wanted; the rest changes every tenth of a second and none
+ * of it survives to the screen.
+ */
+internal fun progressOf(line: String): Float? {
+    if (!line.startsWith("[download]")) return null
+    val percent = PROGRESS.find(line)?.groupValues?.get(1)?.toFloatOrNull() ?: return null
+    return (percent / 100f).coerceIn(0f, 1f)
+}
+
+private val PROGRESS = Regex("""\s(\d{1,3}(?:\.\d+)?)%""")
+
+/** A long track on a slow line still finishes well inside this; a stuck one does not sit forever. */
+private const val DOWNLOAD_TIMEOUT_SECONDS = 20L * 60L

@@ -56,6 +56,7 @@ import app.spiceity.discord.PresenceActivityKind
 import app.spiceity.discord.PresenceArtwork
 import app.spiceity.discord.PresenceButton
 import app.spiceity.discord.PresenceTimestamps
+import app.spiceity.downloads.DownloadStage
 import app.spiceity.domain.*
 import app.spiceity.lyrics.LyricLine
 import app.spiceity.lyrics.LyricsProviderOutcome
@@ -413,6 +414,12 @@ private fun LibraryScreen(state: AppState) {
         }
         Spacer(Modifier.height(10.dp))
         library.notice?.let { LibraryNotice(it, state::clearLibraryNotice) }
+        val downloads by state.downloadState.collectAsState()
+        downloads.message?.let { LibraryNotice(it, state::clearDownloadMessage) }
+        if (downloads.entries.isNotEmpty() || downloads.active.isNotEmpty()) {
+            OfflineDownloadsCard(downloads, state)
+            Spacer(Modifier.height(14.dp))
+        }
         Spacer(Modifier.height(6.dp))
         if (library.localPlaylists.isNotEmpty()) {
             LazyColumn(
@@ -1151,6 +1158,32 @@ private fun TrackMenu(track: Track, state: AppState) {
                         Icon(if (likedNow) Icons.Default.Favorite else Icons.Default.FavoriteBorder, null)
                     },
                     onClick = { state.toggleLike(track); expanded = false },
+                )
+            }
+            val downloads by state.downloadState.collectAsState()
+            val job = downloads.jobFor(track)
+            when {
+                // In progress, and tapping it stops it. A download nobody can call off is worse than none.
+                job != null && job.stage != DownloadStage.FAILED -> DropdownMenuItem(
+                    text = { Text("Downloading… ${(job.progress * 100).roundToInt()}%") },
+                    leadingIcon = { Icon(Icons.Default.Downloading, null) },
+                    trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) },
+                    onClick = { state.cancelDownload(track.queueKey); expanded = false },
+                )
+                job != null -> DropdownMenuItem(
+                    text = { Text("Download failed — try again") },
+                    leadingIcon = { Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error) },
+                    onClick = { state.cancelDownload(track.queueKey); state.downloadTrack(track); expanded = false },
+                )
+                downloads.isDownloaded(track) -> DropdownMenuItem(
+                    text = { Text("Remove download") },
+                    leadingIcon = { Icon(Icons.Default.DownloadDone, null, tint = MaterialTheme.colorScheme.primary) },
+                    onClick = { state.deleteDownload(track.queueKey); expanded = false },
+                )
+                else -> DropdownMenuItem(
+                    text = { Text("Download for offline") },
+                    leadingIcon = { Icon(Icons.Default.Download, null) },
+                    onClick = { state.downloadTrack(track); expanded = false },
                 )
             }
             HorizontalDivider()
