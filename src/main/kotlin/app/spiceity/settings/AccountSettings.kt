@@ -199,6 +199,16 @@ data class SpiceityPreferences(
     val youtubeChannelName: String = "",
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
+    /**
+     * Client id of the Spotify app the listener registered, which is the whole of Spotify's setup here.
+     *
+     * It is an identifier rather than a secret — the flow Spiceity uses is the one built for programs that
+     * cannot keep one — so unlike a token it lives in the settings file instead of the credential store.
+     * Blank means Spotify is not set up, which is the ordinary state.
+     */
+    val spotifyClientId: String = "",
+    /** Name of the connected Spotify account, kept only so Settings can say whose library is showing. */
+    val spotifyAccountName: String = "",
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
@@ -266,6 +276,25 @@ data class SettingsState(
     val scrobbling: ScrobbleState = ScrobbleState(),
     val youtubeAccount: AccountConnectionState = AccountConnectionState(),
     val soundCloudAccount: AccountConnectionState = AccountConnectionState(),
+    val spotify: SpotifyConnectionState = SpotifyConnectionState(),
+)
+
+/**
+ * How far along Spotify's one-time setup is, and whether a library can be read.
+ *
+ * Kept apart from [AccountConnectionState] because Spotify is connected differently and for a different
+ * purpose: there are no cookies to export and nothing to probe with yt-dlp, and a connection here grants
+ * reading and nothing else.
+ */
+data class SpotifyConnectionState(
+    /** A client id has been entered, so connecting is possible. */
+    val configured: Boolean = false,
+    /** A sign-in is stored. Spotify may still refuse it, which shows up as a message when it does. */
+    val connected: Boolean = false,
+    /** True while the browser is open on Spotify's consent page and the reply has not arrived. */
+    val connecting: Boolean = false,
+    val accountName: String = "",
+    val message: String? = null,
 )
 
 class SettingsRepository(

@@ -108,6 +108,7 @@ internal class ListenBrainzClient(
                     when (track.provider) {
                         ProviderType.SOUNDCLOUD -> "soundcloud.com"
                         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "youtube.com"
+                        ProviderType.SPOTIFY -> "spotify"
                         ProviderType.LOCAL -> "local"
                     },
                 )

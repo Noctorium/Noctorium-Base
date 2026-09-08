@@ -47,6 +47,13 @@ import app.spiceity.social.YouTubeMusicClient
 import app.spiceity.social.YouTubeChannel
 import app.spiceity.social.YouTubeSession
 import app.spiceity.social.cookieHeaderFor
+import app.spiceity.spotify.SpotifyAccess
+import app.spiceity.spotify.SpotifyAuth
+import app.spiceity.spotify.SpotifyClient
+import app.spiceity.spotify.SpotifyMatch
+import app.spiceity.spotify.SpotifyMatchStore
+import app.spiceity.spotify.SpotifyMusicProvider
+import app.spiceity.spotify.SpotifyRead
 import app.spiceity.account.AccountResult
 import app.spiceity.account.ListeningStats
 import app.spiceity.account.PlayReport
@@ -166,7 +173,7 @@ data class LikeState(
     fun supports(track: Track): Boolean = when (track.provider) {
         ProviderType.SOUNDCLOUD -> soundCloudReady
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
-        ProviderType.LOCAL -> false
+        ProviderType.SPOTIFY, ProviderType.LOCAL -> false
     }
 }
 
@@ -177,6 +184,8 @@ data class LikeState(
 internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "yt:${track.id}"
     ProviderType.SOUNDCLOUD -> "sc:${track.id}"
+    // Read-only: Spotify likes are shown, never written, but the key still has to be its own.
+    ProviderType.SPOTIFY -> "spotify:${track.id}"
     ProviderType.LOCAL -> "local:${track.id}"
 }
 
@@ -218,12 +227,30 @@ class AppState(
     private val youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(),
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
     private val accountClient: SpiceityAccountClient = SpiceityAccountClient(),
+    private val spotifyClient: SpotifyClient = SpotifyClient(),
+    private val spotifyMatches: SpotifyMatchStore = SpotifyMatchStore(),
 ) : AutoCloseable {
+    /**
+     * Spotify's tokens, read from and written to where the rest of Spiceity keeps such things.
+     *
+     * The client id is an identifier and lives in the settings file; the refresh token is a credential and
+     * lives encrypted beside the others. Which is which matters: putting the refresh token in the settings
+     * file would leave a working key to somebody's Spotify account in plain text.
+     */
+    private val spotifyAccess = SpotifyAccess(
+        refresh = SpotifyAuth(openBrowser = ::browseSecureUrl)::refresh,
+        clientId = { mutableSettings.value.preferences.spotifyClientId },
+        readRefreshToken = { runCatching { credentials.get(SPOTIFY_REFRESH_TOKEN) }.getOrNull() },
+        writeRefreshToken = { token -> runCatching { credentials.put(SPOTIFY_REFRESH_TOKEN, token) } },
+        clearRefreshToken = { runCatching { credentials.remove(SPOTIFY_REFRESH_TOKEN) } },
+    )
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         YtDlpMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp, ::youTubeSongSearch),
         YtDlpMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
         YtDlpMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
+        SpotifyMusicProvider(spotifyClient, spotifyAccess),
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val storedPreferences = settingsRepository.load()
@@ -276,6 +303,8 @@ class AppState(
         observeTrackCompletion()
         observeDiscordPresence()
         restoreSpiceityAccount()
+        // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
+        scope.launch(Dispatchers.IO) { publishSpotifyState() }
         scope.launch(Dispatchers.IO) {
             val soundCloudReady = runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull()?.isNotBlank() == true
             val youTubeSignedIn = youTubeSession()?.sapisid != null
@@ -344,6 +373,137 @@ class AppState(
     fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
 
+    // --- Spotify, which is read and never played from ---
+
+    /**
+     * Stores the client id of the Spotify app the listener registered.
+     *
+     * This is the whole of Spotify's setup, and it exists because Spotify has no way to be read without one.
+     * A client id identifies an application rather than authorising anything, which is why it can simply be
+     * typed in and saved.
+     */
+    fun setSpotifyClientId(clientId: String) {
+        val cleaned = clientId.trim().take(64)
+        if (cleaned == mutableSettings.value.preferences.spotifyClientId) return
+        updatePreferences { copy(spotifyClientId = cleaned) }
+        // A different application means the stored sign-in belongs to something else and cannot be
+        // refreshed against this one. Dropping it here is what stops that showing up later as a refusal.
+        if (cleaned.isBlank() || spotifyAccess.isConnected()) {
+            scope.launch(Dispatchers.IO) { spotifyAccess.disconnect() }
+            updatePreferences { copy(spotifyAccountName = "") }
+        }
+        publishSpotifyState(
+            message = if (cleaned.isBlank()) "Spotify client id cleared." else "Client id saved. Connect Spotify next.",
+        )
+        mutableLibrary.update { it.withoutProvider(ProviderType.SPOTIFY).copy(loaded = false) }
+    }
+
+    /** Takes the listener through Spotify's own consent page, then reads whose library it is. */
+    fun connectSpotify() {
+        if (mutableSettings.value.spotify.connecting) return
+        val clientId = mutableSettings.value.preferences.spotifyClientId
+        if (clientId.isBlank()) {
+            publishSpotifyState(message = "Add your Spotify client id first.")
+            return
+        }
+        scope.launch {
+            publishSpotifyState(connecting = true, message = "Finish signing in to Spotify in your browser.")
+            when (val result = SpotifyAuth(openBrowser = ::browseSecureUrl).authorize(clientId)) {
+                is SpotifyAuth.Result.Success -> {
+                    withContext(Dispatchers.IO) { spotifyAccess.adopt(result.tokens) }
+                    val name = spotifyClient.displayName(result.tokens.accessToken).valueOrNull().orEmpty()
+                    updatePreferences { copy(spotifyAccountName = name) }
+                    publishSpotifyState(
+                        message = if (name.isBlank()) {
+                            "Spotify connected. Your playlists are in the library."
+                        } else {
+                            "Spotify connected as $name. Your playlists are in the library."
+                        },
+                    )
+                    refreshLibrary(force = true)
+                }
+                is SpotifyAuth.Result.Failure -> publishSpotifyState(message = result.detail)
+            }
+        }
+    }
+
+    /**
+     * Forgets the Spotify sign-in.
+     *
+     * Nothing is revoked at Spotify because nothing was ever written there — the connection only ever read.
+     * The resolved matches are kept: they cost a search each, they are still correct, and the playlists they
+     * belong to will be right where they were if Spotify is connected again.
+     */
+    fun disconnectSpotify() {
+        scope.launch {
+            withContext(Dispatchers.IO) { spotifyAccess.disconnect() }
+            updatePreferences { copy(spotifyAccountName = "") }
+            mutableLibrary.update { it.withoutProvider(ProviderType.SPOTIFY) }
+            publishSpotifyState(message = "Spotify disconnected.")
+        }
+    }
+
+    /** The loopback address Spotify sends its reply to, shown so it can be registered against the app. */
+    fun spotifyRedirectUri(): String = SpotifyAuth.redirectUri()
+
+    /** Opens Spotify's developer dashboard, where the client id comes from. */
+    fun openSpotifyDashboard() {
+        runCatching { browseSecureUrl("https://developer.spotify.com/dashboard") }
+            .onFailure { publishSpotifyState(message = it.message ?: "Could not open Spotify's dashboard.") }
+    }
+
+    private fun publishSpotifyState(connecting: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                spotify = SpotifyConnectionState(
+                    configured = preferences.spotifyClientId.isNotBlank(),
+                    connected = spotifyAccess.isConnected(),
+                    connecting = connecting,
+                    accountName = preferences.spotifyAccountName,
+                    message = message,
+                ),
+            )
+        }
+    }
+
+    /**
+     * The recording a Spotify track stands for, found once and then remembered.
+     *
+     * Spotify hands out no audio, so this is the only way one of its tracks can make a sound: search for the
+     * song and decide whether what came back is really it. When nothing is close enough, nothing is played
+     * and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
+     * chose is worse than telling them it could not be found.
+     */
+    private suspend fun resolveSpotify(track: Track): Track? {
+        spotifyMatches[track.id]?.let { return it }
+
+        val query = SpotifyMatch.searchQuery(track)
+        val candidates = runCatching { youTubeSongSearch(query, limit = 8) }.getOrDefault(emptyList())
+            .ifEmpty {
+                // The innertube search needs the page identifiers; without them, or when it simply finds
+                // nothing, the yt-dlp listing is the other way to ask the same question.
+                runCatching { ytDlp.search(ProviderType.YOUTUBE_MUSIC, query, limit = 8) }
+                    .getOrDefault(emptyList())
+            }
+        val match = SpotifyMatch.choose(track, candidates)
+        if (match == null) {
+            // Said in both places a Spotify track can be played from, because a track that makes no sound
+            // and explains nothing is the worst outcome this path has. Spotify tracks are started from a
+            // playlist in the library far more often than from anywhere else, and the home screen's banner
+            // is not visible there.
+            val explanation = "Could not find \"${track.title}\" by ${track.artistLine} to play. Spotify " +
+                "does not hand out its audio, so every track has to be matched elsewhere first."
+            mutableUi.update { it.copy(errorMessage = explanation) }
+            libraryNotice(explanation)
+            return null
+        }
+
+        val resolved = SpotifyMatch.resolved(track, match)
+        withContext(Dispatchers.IO) { spotifyMatches.put(track.id, resolved) }
+        return resolved
+    }
+
     fun setSoundCloudUsername(username: String) {
         val cleaned = username.trim().trim('/').substringAfterLast('/').take(80)
         updatePreferences { copy(soundCloudUsername = cleaned) }
@@ -402,13 +562,19 @@ class AppState(
             val failures = results.mapNotNull { (type, result) ->
                 result.exceptionOrNull()?.let { libraryFailureMessage(type, it) }
             }
+            // A client id saved but never connected is a half-finished setup, and it otherwise ends in an
+            // empty library that explains nothing — the provider has no session to fail with.
+            val spotifyHalfWay = preferences.spotifyClientId.isNotBlank() &&
+                !withContext(Dispatchers.IO) { spotifyAccess.isConnected() }
             mutableLibrary.update {
                 it.withRefreshedPlaylists(playlists).copy(
                     loading = false,
                     loaded = true,
                     loadedAtMillis = System.currentTimeMillis(),
                     needsSoundCloudUsername = needsSoundCloudName,
-                    errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() },
+                    errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() }
+                        ?: "Connect Spotify under Settings › Spotify library to see your playlists here."
+                            .takeIf { spotifyHalfWay && playlists.isEmpty() },
                 )
             }
         }
@@ -564,6 +730,9 @@ class AppState(
                 youTubeMusic.setLiked(track.id, liking, session)
             }
         }
+        // Spotify is read here and never written to, so its likes are shown but not changed.
+        ProviderType.SPOTIFY ->
+            LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Spotify is read-only in Spiceity; like it in Spotify itself.")
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
@@ -1068,6 +1237,18 @@ class AppState(
     }
 
     // --- Sharing ---
+
+    /**
+     * The address Spotify has to be told to send its reply to, put on the clipboard.
+     *
+     * Spotify compares this exactly, and typing it out by hand is where this setup goes wrong — one
+     * character adrift and the sign-in ends on Spotify's own error page rather than back here.
+     */
+    fun copySpotifyRedirectUri() {
+        runCatching { clipboard(SpotifyAuth.redirectUri()) }
+            .onSuccess { publishSpotifyState(message = "Redirect address copied. Paste it into your Spotify app.") }
+            .onFailure { publishSpotifyState(message = "Could not reach the clipboard: ${it.message}") }
+    }
 
     /** Copies the provider page for one track, which anyone can open with or without Spiceity. */
     fun copyTrackLink(track: Track) {
@@ -1603,8 +1784,16 @@ class AppState(
     }
 
     private suspend fun playEnriched(track: Track) {
-        val enriched = runCatching { ytDlp.enrichMetadata(track) }.getOrDefault(track)
-        if (enriched != track) queue.replace(track.queueKey, enriched)
+        // Everything plays through here — pressing a track, and the queue moving on by itself — which is why
+        // this is where a Spotify reference becomes a real recording. A track that cannot be matched is not
+        // played at all, and the queue is left holding the Spotify entry so trying again is possible.
+        val playable = if (track.provider == ProviderType.SPOTIFY) {
+            resolveSpotify(track)?.also { queue.replace(track.queueKey, it) } ?: return
+        } else {
+            track
+        }
+        val enriched = runCatching { ytDlp.enrichMetadata(playable) }.getOrDefault(playable)
+        if (enriched != playable) queue.replace(playable.queueKey, enriched)
         rememberRecent(enriched)
         playbackEngine.play(enriched)
     }
@@ -1751,13 +1940,38 @@ class AppState(
     val downloadState: StateFlow<DownloadsState> get() = downloads.state
 
     /** Fetches a track's audio so it can be played with nothing to reach. */
-    fun downloadTrack(track: Track) = downloads.download(track)
+    fun downloadTrack(track: Track) = onPlayable(track, downloads::download)
 
     /** Downloads every track in a playlist that is not already here. */
     fun downloadAll(tracks: List<Track>) {
-        val pending = tracks.filterNot { downloads.state.value.isDownloaded(it) }
+        val pending = tracks
+            .map(::downloadableTrack)
+            .filterNot { downloads.state.value.isDownloaded(it) }
         if (pending.isEmpty()) return downloads.refresh()
-        pending.forEach(downloads::download)
+        pending.forEach { track -> onPlayable(track, downloads::download) }
+    }
+
+    /**
+     * The track a download or an export really acts on.
+     *
+     * A Spotify track has no audio of its own, so what gets kept on the disk is the recording matched to it,
+     * filed under that recording's own key. This is how a Spotify row in a playlist can still show whether
+     * the song behind it is downloaded — without it, the row would offer to download something already
+     * sitting in the folder.
+     */
+    fun downloadableTrack(track: Track): Track =
+        if (track.provider == ProviderType.SPOTIFY) spotifyMatches[track.id] ?: track else track
+
+    /**
+     * Runs an action against something that has audio, resolving a Spotify reference first if need be.
+     *
+     * Resolving costs a search, so this is asynchronous where the direct case is not. Nothing happens when
+     * the song cannot be found, and [resolveSpotify] has already said why.
+     */
+    private fun onPlayable(track: Track, act: (Track) -> Unit) {
+        if (track.provider != ProviderType.SPOTIFY) return act(track)
+        spotifyMatches[track.id]?.let { return act(it) }
+        scope.launch { resolveSpotify(track)?.let(act) }
     }
 
     /**
@@ -1768,14 +1982,20 @@ class AppState(
      * format anything will play.
      */
     fun exportTrack(track: Track) {
-        downloads.export(track, exportFolder()) { saved -> revealInFileManager(saved) }
+        onPlayable(track) { playable ->
+            downloads.export(playable, exportFolder()) { saved -> revealInFileManager(saved) }
+        }
     }
 
     fun exportAll(tracks: List<Track>) {
         val folder = exportFolder()
         // Only the last one reveals the folder, or saving an album would open a window per track.
         tracks.forEachIndexed { index, track ->
-            downloads.export(track, folder) { saved -> if (index == tracks.lastIndex) revealInFileManager(saved) }
+            onPlayable(track) { playable ->
+                downloads.export(playable, folder) { saved ->
+                    if (index == tracks.lastIndex) revealInFileManager(saved)
+                }
+            }
         }
     }
 
@@ -1837,7 +2057,7 @@ class AppState(
 private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> ProviderType.YOUTUBE_MUSIC
     ProviderType.SOUNDCLOUD -> ProviderType.SOUNDCLOUD
-    ProviderType.LOCAL -> null
+    ProviderType.SPOTIFY, ProviderType.LOCAL -> null
 }
 
 /**
@@ -1847,6 +2067,9 @@ private fun ProviderType.accountSlot(): ProviderType? = when (this) {
 internal fun SpiceityPreferences.canListLibrary(provider: ProviderType): Boolean = when (provider) {
     ProviderType.YOUTUBE_MUSIC -> youtubeCookies.isConfigured
     ProviderType.SOUNDCLOUD -> soundCloudUsername.isNotBlank()
+    // Spotify needs no profile name and no cookies, only the client id its API refuses to answer without.
+    // Whether anybody has signed in is a separate question, and one the provider answers with silence.
+    ProviderType.SPOTIFY -> spotifyClientId.isNotBlank()
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -1856,8 +2079,18 @@ private fun SpiceityPreferences.cookiesFor(slot: ProviderType): CookieSource =
 private fun SpiceityPreferences.withCookies(slot: ProviderType, source: CookieSource): SpiceityPreferences =
     if (slot == ProviderType.SOUNDCLOUD) copy(soundCloudCookies = source) else copy(youtubeCookies = source)
 
-private fun providerLabel(slot: ProviderType): String =
-    if (slot == ProviderType.SOUNDCLOUD) "SoundCloud" else "YouTube Music"
+/**
+ * What to call a provider in a message about its account.
+ *
+ * Anything with no account of its own reads as YouTube Music, which is where a failure without a slot
+ * comes from — but Spotify has an account and is named as itself, or its messages would tell somebody to
+ * reconnect the wrong service.
+ */
+private fun providerLabel(slot: ProviderType): String = when (slot) {
+    ProviderType.SOUNDCLOUD -> "SoundCloud"
+    ProviderType.SPOTIFY -> "Spotify"
+    else -> "YouTube Music"
+}
 
 private fun accountStatusFor(outcome: AccountProbeOutcome): AccountConnectionStatus = when (outcome) {
     AccountProbeOutcome.SIGNED_IN, AccountProbeOutcome.COOKIES_READY -> AccountConnectionStatus.CONNECTED
@@ -1911,6 +2144,14 @@ private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
 
 /** Credential-store key for the Spiceity account session. The password itself is never kept. */
 private const val SPICEITY_TOKEN = "spiceity.session_token"
+
+/**
+ * Credential-store key for Spotify's refresh token.
+ *
+ * The only Spotify value that is a secret, and the only one kept encrypted: it can be exchanged for a
+ * working access token to somebody's account for as long as they leave it connected.
+ */
+private const val SPOTIFY_REFRESH_TOKEN = "spotify.refresh_token"
 
 /**
  * Whether enough of a track was heard for it to count as a listen.

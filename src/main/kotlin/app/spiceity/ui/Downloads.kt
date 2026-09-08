@@ -212,18 +212,23 @@ internal fun OfflineDownloadsCard(downloads: DownloadsState, state: AppState) {
 @Composable
 internal fun DownloadButton(track: Track, state: AppState, size: Dp = 36.dp) {
     val downloads by state.downloadState.collectAsState()
-    val job = downloads.jobFor(track)
-    val kept = downloads.isDownloaded(track)
+    // What is on the disk is the recording, which for a Spotify track is not the track itself. Asking about
+    // the Spotify entry would report every one of them as not downloaded, however many times it was kept.
+    val onDisk = state.downloadableTrack(track)
+    val job = downloads.jobFor(onDisk)
+    val kept = downloads.isDownloaded(onDisk)
 
     IconButton(
         onClick = {
             when {
                 job != null && job.stage == DownloadStage.FAILED -> {
-                    state.cancelDownload(track.queueKey)
+                    state.cancelDownload(onDisk.queueKey)
                     state.downloadTrack(track)
                 }
-                job != null -> state.cancelDownload(track.queueKey)
-                kept -> state.deleteDownload(track.queueKey)
+                job != null -> state.cancelDownload(onDisk.queueKey)
+                kept -> state.deleteDownload(onDisk.queueKey)
+                // The original, not the resolved one: an unmatched Spotify track has no recording to keep
+                // yet, and downloading it is what goes and finds one.
                 else -> state.downloadTrack(track)
             }
         },

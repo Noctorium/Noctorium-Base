@@ -24,7 +24,7 @@ class MockMusicProvider(override val type: ProviderType) : MusicProvider {
                 ProviderType.YOUTUBE_MUSIC -> "https://music.youtube.com/watch?v=mock$index"
                 ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/watch?v=mock$index"
                 ProviderType.SOUNDCLOUD -> "https://soundcloud.com/mock/track-$index"
-                ProviderType.LOCAL -> "file:///mock/track-$index"
+                ProviderType.SPOTIFY, ProviderType.LOCAL -> "file:///mock/track-$index"
             },
         )
     }

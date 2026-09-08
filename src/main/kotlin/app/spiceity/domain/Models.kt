@@ -7,6 +7,15 @@ enum class ProviderType(val displayName: String) {
     YOUTUBE_MUSIC("YouTube Music"),
     YOUTUBE_VIDEO("YouTube"),
     SOUNDCLOUD("SoundCloud"),
+
+    /**
+     * A library to read, not a source to play from.
+     *
+     * Spotify will not let anything but its own player decode its audio, so a track from here is matched to
+     * the same song on YouTube Music or SoundCloud at the moment it is played. Everything else about it --
+     * the playlists, the liked songs, the running order -- is Spotify's.
+     */
+    SPOTIFY("Spotify"),
     LOCAL("Local"),
 }
 

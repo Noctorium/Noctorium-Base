@@ -106,6 +106,7 @@ object PlaylistShareLink {
         ProviderType.YOUTUBE_MUSIC -> "M"
         ProviderType.YOUTUBE_VIDEO -> "Y"
         ProviderType.SOUNDCLOUD -> "S"
+        ProviderType.SPOTIFY -> "P"
         ProviderType.LOCAL -> "L"
     }
 
@@ -113,6 +114,7 @@ object PlaylistShareLink {
         "M" -> ProviderType.YOUTUBE_MUSIC
         "Y" -> ProviderType.YOUTUBE_VIDEO
         "S" -> ProviderType.SOUNDCLOUD
+        "P" -> ProviderType.SPOTIFY
         else -> null
     }
 }

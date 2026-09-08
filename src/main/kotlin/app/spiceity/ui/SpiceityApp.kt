@@ -39,6 +39,7 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -948,7 +949,7 @@ private fun VisibilityBadge(isPublic: Boolean?, compact: Boolean = false) {
 fun Playlist.editableOnService(): Boolean = when (provider) {
     ProviderType.SOUNDCLOUD -> id.all(Char::isDigit)
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id.startsWith("PL") || id.startsWith("VL")
-    ProviderType.LOCAL -> false
+    ProviderType.SPOTIFY, ProviderType.LOCAL -> false
 }
 
 /** Rename, delete and privacy for a playlist that lives on a service account rather than only in Spiceity. */
@@ -1186,24 +1187,27 @@ private fun TrackMenu(track: Track, state: AppState) {
                 )
             }
             val downloads by state.downloadState.collectAsState()
-            val job = downloads.jobFor(track)
+            // A Spotify track has no audio of its own, so what is on the disk is filed under the recording
+            // matched to it. Asking about the Spotify entry would report it as never downloaded.
+            val onDisk = state.downloadableTrack(track)
+            val job = downloads.jobFor(onDisk)
             when {
                 // In progress, and tapping it stops it. A download nobody can call off is worse than none.
                 job != null && job.stage != DownloadStage.FAILED -> DropdownMenuItem(
                     text = { Text("Downloading… ${(job.progress * 100).roundToInt()}%") },
                     leadingIcon = { Icon(Icons.Default.Downloading, null) },
                     trailingIcon = { Icon(Icons.Default.Close, null, Modifier.size(16.dp)) },
-                    onClick = { state.cancelDownload(track.queueKey); expanded = false },
+                    onClick = { state.cancelDownload(onDisk.queueKey); expanded = false },
                 )
                 job != null -> DropdownMenuItem(
                     text = { Text("Download failed — try again") },
                     leadingIcon = { Icon(Icons.Default.ErrorOutline, null, tint = MaterialTheme.colorScheme.error) },
-                    onClick = { state.cancelDownload(track.queueKey); state.downloadTrack(track); expanded = false },
+                    onClick = { state.cancelDownload(onDisk.queueKey); state.downloadTrack(track); expanded = false },
                 )
-                downloads.isDownloaded(track) -> DropdownMenuItem(
+                downloads.isDownloaded(onDisk) -> DropdownMenuItem(
                     text = { Text("Remove download") },
                     leadingIcon = { Icon(Icons.Default.DownloadDone, null, tint = MaterialTheme.colorScheme.primary) },
-                    onClick = { state.deleteDownload(track.queueKey); expanded = false },
+                    onClick = { state.deleteDownload(onDisk.queueKey); expanded = false },
                 )
                 else -> DropdownMenuItem(
                     text = { Text("Download for offline") },
@@ -1365,12 +1369,14 @@ private fun ProviderBadge(provider: ProviderType, compact: Boolean = false) {
         ProviderType.YOUTUBE_MUSIC -> Color(0xFF8B2AB8)
         ProviderType.YOUTUBE_VIDEO -> Color(0xFFB32C35)
         ProviderType.SOUNDCLOUD -> Color(0xFFC45A16)
+        ProviderType.SPOTIFY -> Color(0xFF1DB954)
         ProviderType.LOCAL -> Color(0xFF4F46E5)
     }
     val label = when (provider) {
         ProviderType.YOUTUBE_MUSIC -> if (compact) "YTM" else "YT MUSIC"
         ProviderType.YOUTUBE_VIDEO -> if (compact) "YT" else "YOUTUBE"
         ProviderType.SOUNDCLOUD -> if (compact) "SC" else "SOUNDCLOUD"
+        ProviderType.SPOTIFY -> if (compact) "SP" else "SPOTIFY"
         ProviderType.LOCAL -> if (compact) "LOCAL" else "LOCAL"
     }
     Text(
@@ -2699,7 +2705,9 @@ private fun PlaybackError(message: String) {
     }
 }
 
-private enum class SettingsPage { ACCOUNT, PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS }
+private enum class SettingsPage {
+    ACCOUNT, PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SPOTIFY, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS
+}
 
 @Composable
 private fun SettingsScreen(state: AppState) {
@@ -2719,6 +2727,7 @@ private fun SettingsScreen(state: AppState) {
                     state,
                     settings.preferences.soundCloudUsername,
                 )
+                SettingsPage.SPOTIFY -> SpotifySettingsPanel(settings, state)
                 SettingsPage.SCROBBLING -> ScrobblingSettingsPanel(settings, state)
                 SettingsPage.LYRICS -> LyricsSettingsPanel()
                 SettingsPage.DISCORD -> DiscordSettingsPanel(settings.preferences, state)
@@ -2799,6 +2808,15 @@ private fun SettingsScreen(state: AppState) {
             )
         }
         item {
+            SettingsCard(
+                "Spotify library",
+                spotifySummary(settings.spotify),
+                Icons.Default.LibraryMusic,
+                { page = SettingsPage.SPOTIFY },
+                settings.spotify.connected,
+            )
+        }
+        item {
             val connected = listOf(settings.scrobbling.lastFm, settings.scrobbling.listenBrainz)
                 .filter { it.status == ScrobbleConnectionStatus.CONNECTED }
                 .mapNotNull { it.username }
@@ -2833,6 +2851,7 @@ private fun pageTitle(page: SettingsPage) = when (page) {
     SettingsPage.CUSTOMIZATION -> "Customization"
     SettingsPage.YOUTUBE -> "YouTube Music account"
     SettingsPage.SOUNDCLOUD -> "SoundCloud account"
+    SettingsPage.SPOTIFY -> "Spotify library"
     SettingsPage.SCROBBLING -> "Scrobbling"
     SettingsPage.LYRICS -> "Lyrics providers"
     SettingsPage.DISCORD -> "Discord Rich Presence"
@@ -3896,6 +3915,179 @@ private fun AccountFact(text: String) {
     }
 }
 
+private fun spotifySummary(spotify: SpotifyConnectionState): String = when {
+    !spotify.configured -> "Read your playlists and liked songs"
+    spotify.connecting -> "Waiting for Spotify…"
+    spotify.connected && spotify.accountName.isNotBlank() -> "Reading ${spotify.accountName}'s library"
+    spotify.connected -> "Your Spotify library is connected"
+    else -> "Client id saved — connect your account"
+}
+
+/**
+ * Spotify, set up as a library.
+ *
+ * The panel says plainly what this is and is not, because it would otherwise be reasonable to expect that
+ * connecting Spotify means playing from Spotify. It does not, and it cannot: the Web API serves no audio,
+ * and only Spotify's own player is allowed to decode it. What connecting gives is the collection.
+ *
+ * The setup asks for a client id, which is a step the other services do not have. There is no way around
+ * it -- Spotify answers nothing without one, and its own web-player token endpoint is closed to requests
+ * from outside the site.
+ */
+@Composable
+private fun SpotifySettingsPanel(settings: SettingsState, state: AppState) {
+    val spotify = settings.spotify
+    var clientId by remember(settings.preferences.spotifyClientId) {
+        mutableStateOf(settings.preferences.spotifyClientId)
+    }
+    val redirect = remember { state.spotifyRedirectUri() }
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        SettingsPanelCard {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.LibraryMusic,
+                    null,
+                    Modifier.size(40.dp),
+                    tint = Color(0xFF1DB954),
+                )
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text(
+                        when {
+                            spotify.connected && spotify.accountName.isNotBlank() -> spotify.accountName
+                            spotify.connected -> "Spotify connected"
+                            else -> "Spotify not connected"
+                        },
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "Your playlists and liked songs, read into Spiceity",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 12.sp,
+                    )
+                }
+            }
+            Spacer(Modifier.height(9.dp))
+            AccountFact("Your Spotify playlists and Liked Songs appear in your library, in Spotify's order.")
+            AccountFact("Playback does not come from Spotify. Each song is matched on YouTube Music and played from there.")
+            AccountFact("Nothing is ever written to Spotify — not a like, not a playlist, not a listen.")
+            AccountFact("A song Spotify has that cannot be found elsewhere is reported rather than swapped for another.")
+        }
+
+        SettingsPanelCard {
+            Text("One-time setup", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Spotify answers nothing without a client id, and only issues them per application — so this " +
+                    "one is yours rather than Spiceity's. It takes a minute and never expires.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 12.sp,
+            )
+            Spacer(Modifier.height(13.dp))
+            SetupStep(1, "Open Spotify's developer dashboard and create an app. Any name will do.")
+            SetupStep(2, "Add this exact address to the app's Redirect URIs, and tick the Web API:")
+            Surface(
+                color = MaterialTheme.colorScheme.surface.copy(alpha = .7f),
+                shape = RoundedCornerShape(9.dp),
+                modifier = Modifier.padding(start = 26.dp, top = 4.dp, bottom = 8.dp),
+            ) {
+                Row(
+                    Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SelectionContainer { Text(redirect, fontSize = 11.sp, fontFamily = FontFamily.Monospace) }
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(state::copySpotifyRedirectUri, Modifier.size(26.dp)) {
+                        Icon(Icons.Default.ContentCopy, "Copy the redirect address", Modifier.size(15.dp))
+                    }
+                }
+            }
+            SetupStep(3, "Copy the app's Client ID from its settings and paste it below.")
+            Spacer(Modifier.height(11.dp))
+            OutlinedButton(state::openSpotifyDashboard) {
+                Icon(Icons.Default.OpenInNew, null, Modifier.size(17.dp))
+                Spacer(Modifier.width(7.dp))
+                Text("Open Spotify's dashboard")
+            }
+        }
+
+        SettingsPanelCard {
+            Text("Your Spotify client id", fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.height(10.dp))
+            OutlinedTextField(
+                clientId,
+                { clientId = it.trim().take(64) },
+                label = { Text("Client ID") },
+                placeholder = { Text("32 characters from the dashboard") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Spacer(Modifier.height(7.dp))
+            Text(
+                "This is an identifier and not a password, so it is kept in your settings file. The sign-in " +
+                    "itself is stored encrypted for your Windows account.",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontSize = 11.sp,
+            )
+            Spacer(Modifier.height(13.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                Button(
+                    { state.setSpotifyClientId(clientId) },
+                    enabled = clientId != settings.preferences.spotifyClientId,
+                ) {
+                    Icon(Icons.Default.Save, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text("Save client id")
+                }
+                Button(
+                    state::connectSpotify,
+                    enabled = spotify.configured && !spotify.connecting &&
+                        clientId == settings.preferences.spotifyClientId,
+                ) {
+                    Icon(Icons.Default.Link, null, Modifier.size(17.dp))
+                    Spacer(Modifier.width(7.dp))
+                    Text(if (spotify.connected) "Reconnect Spotify" else "Connect Spotify")
+                }
+                if (spotify.connected) {
+                    OutlinedButton(state::disconnectSpotify) { Text("Disconnect") }
+                }
+            }
+            spotify.message?.let { message ->
+                Spacer(Modifier.height(11.dp))
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = .6f),
+                    shape = RoundedCornerShape(10.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth().padding(11.dp), verticalAlignment = Alignment.CenterVertically) {
+                        SelectionContainer(Modifier.weight(1f)) { Text(message, fontSize = 11.sp) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** A numbered instruction, for the one part of Spiceity that asks somebody to go and do something else. */
+@Composable
+private fun SetupStep(number: Int, text: String) {
+    Row(Modifier.padding(vertical = 4.dp)) {
+        Text(
+            "$number.",
+            color = MaterialTheme.colorScheme.primary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.width(18.dp),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+    }
+}
+
 private fun accountSummary(source: CookieSource, connection: AccountConnectionState): String = when {
     !source.isConfigured -> "Public mode — connect a browser session"
     connection.status == AccountConnectionStatus.CHECKING -> "Checking ${source.describe()}…"
@@ -4477,11 +4669,19 @@ private fun LoadingSection() {
     }
 }
 
-/** Whether a playlist on this service can hold the given track: services do not take each other's music. */
-private fun ProviderType.acceptsTrack(track: Track): Boolean = when (this) {
-    ProviderType.SOUNDCLOUD -> track.provider == ProviderType.SOUNDCLOUD
-    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> track.provider != ProviderType.SOUNDCLOUD
-    ProviderType.LOCAL -> false
+/**
+ * Whether a playlist on this service can hold the given track: services do not take each other's music.
+ *
+ * A Spotify track is refused everywhere, in both directions. Its id means nothing to YouTube, and Spiceity
+ * never writes to Spotify at all — so neither service could be asked to store it. A Spiceity playlist takes
+ * it happily, which is where a mixed collection belongs.
+ */
+private fun ProviderType.acceptsTrack(track: Track): Boolean = when {
+    track.provider == ProviderType.SPOTIFY -> false
+    this == ProviderType.SOUNDCLOUD -> track.provider == ProviderType.SOUNDCLOUD
+    this == ProviderType.YOUTUBE_MUSIC || this == ProviderType.YOUTUBE_VIDEO ->
+        track.provider != ProviderType.SOUNDCLOUD
+    else -> false
 }
 
 /** Hours as something readable: a fresh account should not be told it has listened for "0.0" hours. */

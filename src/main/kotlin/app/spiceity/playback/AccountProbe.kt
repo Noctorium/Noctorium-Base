@@ -251,19 +251,20 @@ class AccountProbe internal constructor(
         fun probeTarget(provider: ProviderType): String = when (provider) {
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/feed/subscriptions"
             ProviderType.SOUNDCLOUD -> "scsearch1:spiceity session check"
-            ProviderType.LOCAL -> error("Local playback needs no account")
+            ProviderType.SPOTIFY, ProviderType.LOCAL -> error("Local playback needs no account")
         }
 
         fun cookieDomain(provider: ProviderType): String = when (provider) {
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "youtube.com"
             ProviderType.SOUNDCLOUD -> "soundcloud.com"
-            ProviderType.LOCAL -> error("Local playback needs no account")
+            ProviderType.SPOTIFY, ProviderType.LOCAL -> error("Local playback needs no account")
         }
 
         fun providerName(provider: ProviderType): String = when (provider) {
             ProviderType.YOUTUBE_MUSIC -> "YouTube Music"
             ProviderType.YOUTUBE_VIDEO -> "YouTube"
             ProviderType.SOUNDCLOUD -> "SoundCloud"
+            ProviderType.SPOTIFY -> "Spotify"
             ProviderType.LOCAL -> "Local files"
         }
 

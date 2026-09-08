@@ -160,6 +160,7 @@ internal fun ProviderType.presenceAssetKey(): String = when (this) {
     ProviderType.YOUTUBE_MUSIC -> "youtube_music"
     ProviderType.YOUTUBE_VIDEO -> "youtube"
     ProviderType.SOUNDCLOUD -> "soundcloud"
+    ProviderType.SPOTIFY -> "spotify"
     ProviderType.LOCAL -> "local"
 }
 

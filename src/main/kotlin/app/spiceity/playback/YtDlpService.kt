@@ -54,6 +54,9 @@ class YtDlpService(
             }
             ProviderType.YOUTUBE_VIDEO -> "ytsearch$limit:$query"
             ProviderType.SOUNDCLOUD -> "scsearch$limit:$query"
+            // Spotify is read through its own interface, not fetched; a track from it is searched for on
+            // the other services at the moment it is played.
+            ProviderType.SPOTIFY -> throw BackendException("Spotify is not searched through yt-dlp")
             ProviderType.LOCAL -> throw BackendException("Local search is not supported by yt-dlp")
         }
         val arguments = mutableListOf(
@@ -265,7 +268,7 @@ class YtDlpService(
                 ProviderType.YOUTUBE_MUSIC -> "https://music.youtube.com/watch?v=$raw"
                 ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/watch?v=$raw"
                 ProviderType.SOUNDCLOUD -> null
-                ProviderType.LOCAL -> null
+                ProviderType.SPOTIFY, ProviderType.LOCAL -> null
             }
         } ?: return null
         // Playlist stubs can arrive without a title; the page slug keeps the track playable and named until

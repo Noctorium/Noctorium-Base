@@ -29,7 +29,7 @@ class YtDlpMusicProvider(
                 "lofi remix" to ("Lo-fi and remixes" to "Uploads and edits"),
             )
             ProviderType.YOUTUBE_VIDEO -> return emptyList()
-            ProviderType.LOCAL -> return emptyList()
+            ProviderType.SPOTIFY, ProviderType.LOCAL -> return emptyList()
         }
         return searches.mapIndexed { index, (query, labels) ->
             val (title, subtitle) = labels
@@ -69,7 +69,7 @@ class YtDlpMusicProvider(
                     sourceUrl = "https://soundcloud.com/$username/likes",
                 )
         }
-        ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> emptyList()
+        ProviderType.YOUTUBE_VIDEO, ProviderType.SPOTIFY, ProviderType.LOCAL -> emptyList()
     }
 
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
