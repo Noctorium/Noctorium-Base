@@ -1168,6 +1168,19 @@ class AppState(
         }
     }
 
+    /**
+     * Whether a harvested session is one the provider actually accepts.
+     *
+     * The presence of a signing cookie is not a session. An old one sits in the browser's store looking
+     * exactly like a live one, which is how signing in came to report success while every request answered
+     * 401 — and why pressing sign-in again only harvested the same dead cookie and reported success again.
+     * One real request settles it, which is the same check the Check connection button makes.
+     */
+    suspend fun sessionIsAccepted(provider: ProviderType, cookieFile: Path): Boolean {
+        val slot = provider.accountSlot() ?: return false
+        return accountProbe.probe(probeRequest(slot, CookieSource.ofFile(cookieFile.toString()))).usable
+    }
+
     /** Re-checks the saved session, which is also how an expired browser login gets noticed. */
     fun verifyAccount(provider: ProviderType) {
         val slot = provider.accountSlot() ?: return

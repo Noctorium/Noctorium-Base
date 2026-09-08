@@ -15,6 +15,8 @@ import java.awt.Component
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.time.Instant
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -115,11 +117,38 @@ class EmbeddedBrowserSession(private val installDir: Path) {
         return collected.toList()
     }
 
+    /**
+     * Forgets the stored session for these addresses.
+     *
+     * The cookie store is on disk and outlives the application, which is what makes signing in stick. It is
+     * also what makes signing in again impossible: pressing sign-in while a dead session is still in the
+     * store sends the provider a session it recognises, so it skips the login form and returns straight to
+     * the signed-in page. Nothing is typed, nothing new is issued, and the same dead cookies are harvested
+     * again. Clearing first is what turns the button back into a login.
+     */
+    fun clearCookies(urls: List<String>): Boolean {
+        val manager = CefCookieManager.getGlobalManager() ?: return false
+        var cleared = false
+        urls.forEach { url ->
+            // An empty name means every cookie matching the address, including the ones set on the parent
+            // domain, which is where the signing cookies for both providers actually live.
+            runCatching { manager.deleteCookies(url, "") }.onSuccess { cleared = true }
+        }
+        return cleared
+    }
+
     fun dispose() {
-        runCatching { browser?.close(true) }
-        runCatching { client?.dispose() }
+        val closing = browser
+        val disposing = client
         browser = null
         client = null
+        // Off the caller's thread. Closing a CEF browser pumps Chromium's own message loop, and doing that
+        // on the thread drawing the interface freezes the very window that is trying to go away — which
+        // looks exactly like a close button that does nothing.
+        Thread({
+            runCatching { closing?.close(true) }
+            runCatching { disposing?.dispose() }
+        }, "spiceity-cef-dispose").apply { isDaemon = true }.start()
         // CefApp itself is process-wide and intentionally left alive; disposing it prevents a second sign-in
         // within the same run.
     }
@@ -155,9 +184,31 @@ fun writeCookieFile(cookies: List<HarvestedCookie>, destination: Path): Path {
     return destination
 }
 
+/**
+ * Whether a cookie is still worth anything.
+ *
+ * Presence alone is not a session. An expired cookie sits in the store looking exactly like a live one, and
+ * counting it is how sign-in came to report success while the service kept answering 401: the check said
+ * signed in, the API disagreed, and pressing sign-in again harvested the same dead cookie.
+ *
+ * An expiry of zero is a session cookie, which is live for as long as the browser holds it.
+ */
+fun HarvestedCookie.isLive(nowEpochSeconds: Long = Instant.now().epochSecond): Boolean =
+    value.isNotBlank() && (expiresEpochSeconds == 0L || expiresEpochSeconds > nowEpochSeconds)
+
 /** True once the browser has left the sign-in pages, which is how a completed SoundCloud login is detected. */
 fun isSoundCloudSignedIn(cookies: List<HarvestedCookie>): Boolean =
-    cookies.any { it.name == "oauth_token" && it.value.isNotBlank() }
+    cookies.any { it.name == "oauth_token" && it.isLive() }
+
+/** Where SoundCloud sign-in starts. */
+const val SOUNDCLOUD_SIGN_IN = "https://soundcloud.com/signin"
+
+/** The addresses whose cookies make up a SoundCloud session, for clearing before a fresh sign-in. */
+val SOUNDCLOUD_SESSION_URLS = listOf(
+    "https://soundcloud.com/",
+    "https://secure.soundcloud.com/",
+    "https://api-v2.soundcloud.com/",
+)
 
 /** The page SoundCloud sends a signed-in listener to, which lands on their own profile. */
 const val SOUNDCLOUD_OWN_LIKES = "https://soundcloud.com/you/likes"
@@ -191,5 +242,32 @@ const val YOUTUBE_MUSIC_HOME = "https://music.youtube.com/"
  * depending on how the account was signed in.
  */
 fun isYouTubeSignedIn(cookies: List<HarvestedCookie>): Boolean = cookies.any {
-    (it.name == "SAPISID" || it.name == "__Secure-3PAPISID") && it.value.isNotBlank()
+    (it.name == "SAPISID" || it.name == "__Secure-3PAPISID") && it.isLive()
+}
+
+/** The addresses whose cookies make up a Google session, for clearing before a fresh sign-in. */
+val YOUTUBE_SESSION_URLS = listOf(
+    "https://accounts.google.com/",
+    "https://google.com/",
+    "https://www.google.com/",
+    "https://youtube.com/",
+    "https://www.youtube.com/",
+    "https://music.youtube.com/",
+)
+
+/**
+ * Moves a session that has been accepted into the place the application reads it from.
+ *
+ * The check needs a real file to point at, so the harvested cookies are written beside the live session
+ * and only moved over it once the provider has said yes. Writing straight to the live file would destroy a
+ * working session every time an old cookie in the browser's store turned out to be dead — which is exactly
+ * the case this whole path exists to handle.
+ */
+fun adoptCookieFile(candidate: Path, destination: Path): Path {
+    Files.createDirectories(destination.parent)
+    return runCatching {
+        Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+    }.getOrElse {
+        Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING)
+    }
 }

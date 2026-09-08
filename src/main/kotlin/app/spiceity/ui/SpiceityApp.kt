@@ -66,12 +66,16 @@ import app.spiceity.playback.PlaybackState
 import app.spiceity.playback.PlaybackStatus
 import app.spiceity.playback.RepeatMode
 import app.spiceity.auth.EmbeddedBrowserSession
+import app.spiceity.auth.SOUNDCLOUD_SESSION_URLS
+import app.spiceity.auth.SOUNDCLOUD_SIGN_IN
+import app.spiceity.auth.YOUTUBE_SESSION_URLS
 import app.spiceity.auth.SOUNDCLOUD_OWN_LIKES
 import app.spiceity.auth.YOUTUBE_MUSIC_HOME
 import app.spiceity.auth.YOUTUBE_SIGN_IN
 import app.spiceity.auth.isYouTubeSignedIn
 import app.spiceity.auth.isSoundCloudSignedIn
 import app.spiceity.auth.permalinkFromBrowserUrl
+import app.spiceity.auth.adoptCookieFile
 import app.spiceity.auth.writeCookieFile
 import app.spiceity.playlists.LocalPlaylist
 import app.spiceity.playlists.PlaylistShareLink
@@ -3153,12 +3157,18 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
         }
         runCatching {
             session.start(
-                url = "https://soundcloud.com/signin",
+                url = SOUNDCLOUD_SIGN_IN,
                 onProgress = { progress -> status = "Preparing Chromium — $progress" },
                 onPageLoaded = { url -> currentUrl = url },
             )
         }.onSuccess { ui ->
             component = ui
+            // As with Google: the store outlives the application, so a dead session still in it is enough
+            // for SoundCloud to skip the form and return to the signed-in page, leaving the same dead
+            // cookies to be harvested again. Clearing turns the button back into a login.
+            if (session.clearCookies(SOUNDCLOUD_SESSION_URLS)) {
+                session.navigate(SOUNDCLOUD_SIGN_IN)
+            }
             status = "Sign in to SoundCloud below. Spiceity picks the session up on its own."
         }.onFailure { error ->
             status = "Could not start the embedded browser: ${error.message?.take(180)}"
@@ -3170,38 +3180,62 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
     LaunchedEffect(component) {
         val live = session ?: return@LaunchedEffect
         if (component == null) return@LaunchedEffect
+        // A token already found to be dead. Kept so the same one is not tested repeatedly: each test is a
+        // real request, and a stale store returns the same value every couple of seconds.
+        var rejected: String? = null
         while (true) {
             delay(2_500)
             val cookies = runCatching { live.harvestCookies("https://soundcloud.com") }.getOrDefault(emptyList())
-            if (isSoundCloudSignedIn(cookies)) {
-                finishing = true
-                status = "Signed in — finding your profile…"
-                // SoundCloud answers its own /you/ routes by moving to the real profile, so a short detour
-                // through the signed-in browser names the account with no request of Spiceity's own.
-                live.navigate(SOUNDCLOUD_OWN_LIKES)
-                var permalink: String? = null
-                repeat(8) {
-                    delay(1_000)
-                    permalink = permalinkFromBrowserUrl(live.currentUrl())
-                    if (permalink != null) return@repeat
-                }
-                status = "Signed in — saving the session…"
-                val destination = state.dataDirectory()?.resolve("soundcloud.cookies") ?: return@LaunchedEffect
-                val saved = runCatching { writeCookieFile(cookies, destination) }.getOrNull()
-                if (saved == null) {
-                    status = "Signed in, but the session could not be written to disk."
-                    finishing = false
-                } else {
-                    state.completeSoundCloudSignIn(
-                        saved.toString(),
-                        cookies.firstOrNull { it.name == "oauth_token" }?.value,
-                        permalink,
-                    )
-                    close()
-                }
-                return@LaunchedEffect
+            if (!isSoundCloudSignedIn(cookies)) continue
+
+            val token = cookies.firstOrNull { it.name == "oauth_token" }?.value
+            if (token != null && token == rejected) continue
+
+            finishing = true
+            status = "Checking the session with SoundCloud…"
+            val destination = state.dataDirectory()?.resolve("soundcloud.cookies") ?: return@LaunchedEffect
+            // Beside the real file, not over it: see the YouTube window for why.
+            val candidate = runCatching {
+                writeCookieFile(cookies, destination.resolveSibling("soundcloud.cookies.checking"))
+            }.getOrNull()
+            if (candidate == null) {
+                status = "Signed in, but the session could not be written to disk."
+                finishing = false
+                continue
             }
+
+            // Present is not the same as accepted; one real request is what tells them apart.
+            if (!state.sessionIsAccepted(ProviderType.SOUNDCLOUD, candidate)) {
+                runCatching { java.nio.file.Files.deleteIfExists(candidate) }
+                rejected = token
+                finishing = false
+                status = "That session has expired. Clearing it so SoundCloud asks you to sign in again…"
+                live.clearCookies(SOUNDCLOUD_SESSION_URLS)
+                live.navigate(SOUNDCLOUD_SIGN_IN)
+                continue
+            }
+            val saved = runCatching { adoptCookieFile(candidate, destination) }.getOrNull()
+            if (saved == null) {
+                status = "Signed in, but the session could not be saved."
+                finishing = false
+                continue
+            }
+
+            status = "Signed in — finding your profile…"
+            // SoundCloud answers its own /you/ routes by moving to the real profile, so a short detour
+            // through the signed-in browser names the account with no request of Spiceity's own.
+            live.navigate(SOUNDCLOUD_OWN_LIKES)
+            var permalink: String? = null
+            repeat(8) {
+                delay(1_000)
+                permalink = permalinkFromBrowserUrl(live.currentUrl())
+                if (permalink != null) return@repeat
+            }
+            state.completeSoundCloudSignIn(saved.toString(), token, permalink)
+            close()
+            return@LaunchedEffect
         }
+
     }
 
     DialogWindow(
@@ -3221,7 +3255,13 @@ private fun SoundCloudSignInWindow(state: AppState, close: () -> Unit) {
                         Text(currentUrl, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                OutlinedButton(close) { Text("Cancel") }
+                OutlinedButton({
+                    session?.clearCookies(SOUNDCLOUD_SESSION_URLS)
+                    session?.navigate(SOUNDCLOUD_SIGN_IN)
+                    status = "Starting over. Sign in to SoundCloud below."
+                }) { Text("Start over") }
+                Spacer(Modifier.width(8.dp))
+                Button(close) { Text("Done") }
             }
             HorizontalDivider()
             component?.let { ui ->
@@ -3271,6 +3311,13 @@ private fun YouTubeSignInWindow(state: AppState, close: () -> Unit) {
             )
         }.onSuccess { ui ->
             component = ui
+            // The store is on disk and outlives the application, so pressing sign-in while a dead session
+            // is still in it sends Google a session it recognises: it skips the form, returns to the
+            // signed-in page, and the same dead cookies get harvested again. Clearing turns the button
+            // back into a login. Done after the browser exists, because there is no cookie manager before.
+            if (session.clearCookies(YOUTUBE_SESSION_URLS)) {
+                session.navigate(YOUTUBE_SIGN_IN)
+            }
             status = "Sign in with Google below. Spiceity picks the session up on its own."
         }.onFailure { error ->
             status = "Could not start the embedded browser: ${error.message?.take(180)}"
@@ -3281,6 +3328,10 @@ private fun YouTubeSignInWindow(state: AppState, close: () -> Unit) {
         val live = session ?: return@LaunchedEffect
         if (component == null) return@LaunchedEffect
         var visitedMusic = false
+        // The signing cookie of a session already found to be dead. Kept so the same one is not tested
+        // over and over: each test is a real request, and a stale store hands back the same value every
+        // couple of seconds. Once a person actually signs in the value changes, and that is the signal.
+        var rejected: String? = null
         while (true) {
             delay(2_500)
             val cookies = runCatching { live.harvestCookies(YOUTUBE_MUSIC_HOME) }.getOrDefault(emptyList())
@@ -3293,20 +3344,52 @@ private fun YouTubeSignInWindow(state: AppState, close: () -> Unit) {
                 }
                 continue
             }
+            val signature = cookies.firstOrNull { it.name == "SAPISID" || it.name == "__Secure-3PAPISID" }?.value
+            if (signature != null && signature == rejected) continue
+
             finishing = true
-            status = "Signed in — saving the session…"
+            status = "Checking the session with YouTube…"
             val destination = state.dataDirectory()?.resolve("youtube.cookies") ?: return@LaunchedEffect
-            val saved = runCatching { writeCookieFile(cookies, destination) }.getOrNull()
-            if (saved == null) {
+            // Written beside the real file and only moved over it once the provider has accepted it. The
+            // check needs a file to point at, and writing that file over the working session first would
+            // destroy a good one every time an old cookie turned out to be dead.
+            val candidate = runCatching {
+                writeCookieFile(cookies, destination.resolveSibling("youtube.cookies.checking"))
+            }.getOrNull()
+            if (candidate == null) {
                 status = "Signed in, but the session could not be written to disk."
                 finishing = false
-            } else {
+                continue
+            }
+
+            // A cookie being present is not a session. One real request tells the two apart, and without
+            // it a dead session is saved, reported as success, and refused by everything afterwards.
+            if (state.sessionIsAccepted(ProviderType.YOUTUBE_MUSIC, candidate)) {
+                status = "Signed in — saving the session…"
+                val saved = runCatching { adoptCookieFile(candidate, destination) }.getOrNull()
+                if (saved == null) {
+                    status = "Signed in, but the session could not be saved."
+                    finishing = false
+                    continue
+                }
                 state.completeYouTubeSignIn(saved.toString())
                 close()
+                return@LaunchedEffect
             }
-            return@LaunchedEffect
+            runCatching { java.nio.file.Files.deleteIfExists(candidate) }
+
+
+            // Present but not accepted: the store is holding an old session, and Google will keep skipping
+            // the login form while it is there. Clearing it is what turns this window back into a login.
+            rejected = signature
+            finishing = false
+            status = "That session has expired. Clearing it so Google asks you to sign in again…"
+            live.clearCookies(YOUTUBE_SESSION_URLS)
+            live.navigate(YOUTUBE_SIGN_IN)
+            visitedMusic = false
         }
     }
+
 
     DialogWindow(
         onCloseRequest = close,
@@ -3331,9 +3414,19 @@ private fun YouTubeSignInWindow(state: AppState, close: () -> Unit) {
                         )
                     }
                 }
+                // Signing out at Google's end as well, for when it has decided you are still signed in
+                // and there is no form to type into.
+                OutlinedButton({
+                    session?.clearCookies(YOUTUBE_SESSION_URLS)
+                    session?.navigate(YOUTUBE_SIGN_IN)
+                    status = "Starting over. Sign in with Google below."
+                }) { Text("Start over") }
+                Spacer(Modifier.width(8.dp))
                 OutlinedButton({ session?.navigate(YOUTUBE_MUSIC_HOME) }) { Text("Go to YouTube Music") }
                 Spacer(Modifier.width(8.dp))
-                OutlinedButton(close) { Text("Cancel") }
+                // Named for what it does rather than Cancel, which after a successful sign-in reads as
+                // though it would undo one.
+                Button(close) { Text("Done") }
             }
             HorizontalDivider()
             component?.let { ui ->
