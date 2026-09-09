@@ -1,12 +1,17 @@
 package app.spiceity.providers
 
 import app.spiceity.domain.*
-import app.spiceity.playback.BackendException
-import app.spiceity.playback.YtDlpService
+import app.spiceity.playback.MusicBackend
 
-class YtDlpMusicProvider(
+/**
+ * Home, search and the library for one provider, read through whichever backend this platform has.
+ *
+ * Nothing here knows whether that backend is yt-dlp or NewPipeExtractor, which is why the phone and the
+ * desktop show the same rows in the same order from the same queries.
+ */
+class BackendMusicProvider(
     override val type: ProviderType,
-    private val ytDlp: YtDlpService,
+    private val backend: MusicBackend,
     /**
      * Searches YouTube Music through its own interface rather than through yt-dlp.
      *
@@ -51,16 +56,16 @@ class YtDlpMusicProvider(
             val songs = runCatching { search(query, limit) }.getOrDefault(emptyList())
             if (songs.isNotEmpty()) return songs
         }
-        return ytDlp.search(type, query, limit)
+        return backend.search(type, query, limit)
     }
     override suspend fun getTrack(id: String): Track? = null
 
     override suspend fun getLibraryPlaylists(): List<Playlist> = when (type) {
-        ProviderType.YOUTUBE_MUSIC -> ytDlp.listPlaylists(type, YOUTUBE_PLAYLISTS_FEED) + likedMusicPlaylist()
+        ProviderType.YOUTUBE_MUSIC -> backend.listPlaylists(type, YOUTUBE_PLAYLISTS_FEED) + likedMusicPlaylist()
         ProviderType.SOUNDCLOUD -> {
             // SoundCloud addresses a listener's own playlists by profile name; without one there is nowhere to look.
-            val username = ytDlp.soundCloudUsername().ifBlank { return emptyList() }
-            ytDlp.listPlaylists(type, "https://soundcloud.com/$username/sets") +
+            val username = backend.soundCloudProfile.ifBlank { return emptyList() }
+            backend.listPlaylists(type, "https://soundcloud.com/$username/sets") +
                 Playlist(
                     id = "likes",
                     title = "Liked tracks",
@@ -74,12 +79,12 @@ class YtDlpMusicProvider(
 
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
         val url = playlist.sourceUrl ?: return playlist.tracks
-        return ytDlp.listTracks(type, url)
+        return backend.listTracks(type, url)
     }
 
     override suspend fun resolvePlaylistTracks(playlist: Playlist, from: Int, to: Int): List<Track> {
         val url = playlist.sourceUrl ?: return emptyList()
-        return ytDlp.resolveTracks(type, url, from, to)
+        return backend.resolveTracks(type, url, from, to)
     }
 
     private fun likedMusicPlaylist() = listOf(
@@ -98,6 +103,6 @@ class YtDlpMusicProvider(
 
     override suspend fun getRecommendations(context: PlaybackContext): List<Track> {
         if (context.provider != type) return emptyList()
-        return ytDlp.search(type, context.seedTrackId ?: "recommended music", 8)
+        return backend.search(type, context.seedTrackId ?: "recommended music", 8)
     }
 }

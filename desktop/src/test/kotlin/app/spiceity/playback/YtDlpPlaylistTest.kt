@@ -120,9 +120,9 @@ class YtDlpPlaylistTest {
     fun `a pasted soundcloud profile link is reduced to the profile name`() {
         val service = YtDlpService()
 
-        service.setSoundCloudUsername("  https://soundcloud.com/yabosen/  ")
+        service.useSoundCloudProfile("  https://soundcloud.com/yabosen/  ")
 
-        assertEquals("yabosen", service.soundCloudUsername())
+        assertEquals("yabosen", service.soundCloudProfile)
     }
 }
 

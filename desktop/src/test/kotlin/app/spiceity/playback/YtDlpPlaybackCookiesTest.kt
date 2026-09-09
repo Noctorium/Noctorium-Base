@@ -15,9 +15,9 @@ import kotlin.test.assertTrue
  */
 class YtDlpPlaybackCookiesTest {
     private fun serviceWithBothSessions() = YtDlpService().apply {
-        setCookieArguments(ProviderType.YOUTUBE_MUSIC, CookieSource.ofFile("C:/spiceity/youtube.cookies").ytDlpArguments())
-        setCookieArguments(ProviderType.YOUTUBE_VIDEO, CookieSource.ofFile("C:/spiceity/youtube.cookies").ytDlpArguments())
-        setCookieArguments(ProviderType.SOUNDCLOUD, CookieSource.ofFile("C:/spiceity/soundcloud.cookies").ytDlpArguments())
+        useSession(ProviderType.YOUTUBE_MUSIC, CookieSource.ofFile("C:/spiceity/youtube.cookies"))
+        useSession(ProviderType.YOUTUBE_VIDEO, CookieSource.ofFile("C:/spiceity/youtube.cookies"))
+        useSession(ProviderType.SOUNDCLOUD, CookieSource.ofFile("C:/spiceity/soundcloud.cookies"))
     }
 
     @Test

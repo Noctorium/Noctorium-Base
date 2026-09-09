@@ -30,7 +30,7 @@ import app.spiceity.playlists.RecentTracksRepository
 import app.spiceity.playlists.recentWith
 import app.spiceity.playlists.shareableText
 import app.spiceity.providers.MusicProvider
-import app.spiceity.providers.YtDlpMusicProvider
+import app.spiceity.providers.BackendMusicProvider
 import app.spiceity.scrobble.ScrobbleLog
 import app.spiceity.scrobble.ScrobbleManager
 import app.spiceity.social.LikeOutcome
@@ -248,9 +248,9 @@ class AppState(
 
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
-        YtDlpMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp, ::youTubeSongSearch),
-        YtDlpMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
-        YtDlpMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
+        BackendMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp, ::youTubeSongSearch),
+        BackendMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
+        BackendMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -1517,11 +1517,12 @@ class AppState(
     }
 
     private fun applyAccountPreferences(preferences: SpiceityPreferences) {
-        val youtube = preferences.youtubeCookies.ytDlpArguments()
-        ytDlp.setCookieArguments(ProviderType.YOUTUBE_MUSIC, youtube)
-        ytDlp.setCookieArguments(ProviderType.YOUTUBE_VIDEO, youtube)
-        ytDlp.setCookieArguments(ProviderType.SOUNDCLOUD, preferences.soundCloudCookies.ytDlpArguments())
-        ytDlp.setSoundCloudUsername(preferences.soundCloudUsername)
+        // The session itself, not the flags one backend happens to want from it: turning a CookieSource
+        // into yt-dlp arguments is yt-dlp's own business, and the phone reads the same source differently.
+        ytDlp.useSession(ProviderType.YOUTUBE_MUSIC, preferences.youtubeCookies)
+        ytDlp.useSession(ProviderType.YOUTUBE_VIDEO, preferences.youtubeCookies)
+        ytDlp.useSession(ProviderType.SOUNDCLOUD, preferences.soundCloudCookies)
+        ytDlp.useSoundCloudProfile(preferences.soundCloudUsername)
     }
 
     /** A saved session is reported as configured, never as checked — only a probe can claim that. */

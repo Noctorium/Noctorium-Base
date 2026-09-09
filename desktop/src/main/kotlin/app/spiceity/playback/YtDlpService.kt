@@ -1,5 +1,6 @@
 package app.spiceity.playback
 
+import app.spiceity.settings.CookieSource
 import app.spiceity.domain.Album
 import app.spiceity.downloads.ExportFormat
 import app.spiceity.domain.Artist
@@ -18,20 +19,24 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
-class BackendException(message: String, cause: Throwable? = null) : Exception(message, cause)
-
 class YtDlpService(
     private val executable: () -> Path? = BackendLocator::ytDlp,
     /** Injected rather than looked up, so what happens without it can be exercised on a machine that has it. */
     private val ffmpeg: () -> Path? = BackendLocator::ffmpeg,
-) {
+) : MusicBackend {
     private val json = Json { ignoreUnknownKeys = true }
     private val cookieArguments = ConcurrentHashMap<ProviderType, List<String>>()
 
     @Volatile private var soundCloudUser: String = ""
 
-    /** Cookie arguments for one provider, already translated from the stored session by the caller. */
-    fun setCookieArguments(provider: ProviderType, arguments: List<String>) {
+    /**
+     * Turns a stored session into the flags yt-dlp reads a catalogue with.
+     *
+     * The translation belongs here rather than at the call site. A cookie file and
+     * `--cookies-from-browser` are yt-dlp's own vocabulary, and the phone has no use for either word.
+     */
+    override fun useSession(provider: ProviderType, source: CookieSource) {
+        val arguments = source.ytDlpArguments()
         if (arguments.isEmpty()) cookieArguments.remove(provider) else cookieArguments[provider] = arguments
     }
 
@@ -39,13 +44,13 @@ class YtDlpService(
      * SoundCloud addresses a listener's own playlists by profile name, and cookies do not reveal it, so the
      * name from Settings is kept here alongside the session it belongs to.
      */
-    fun setSoundCloudUsername(username: String) {
+    override fun useSoundCloudProfile(username: String) {
         soundCloudUser = username.trim().trim('/').substringAfterLast('/')
     }
 
-    internal fun soundCloudUsername(): String = soundCloudUser
+    override val soundCloudProfile: String get() = soundCloudUser
 
-    suspend fun search(provider: ProviderType, query: String, limit: Int = 8): List<Track> = withContext(Dispatchers.IO) {
+    override suspend fun search(provider: ProviderType, query: String, limit: Int): List<Track> = withContext(Dispatchers.IO) {
         require(query.isNotBlank()) { "Search query cannot be blank" }
         val target = when (provider) {
             ProviderType.YOUTUBE_MUSIC -> {
@@ -71,7 +76,7 @@ class YtDlpService(
     }
 
     /** Lists the playlists behind a collection page, such as a YouTube playlists feed or SoundCloud `/sets`. */
-    suspend fun listPlaylists(provider: ProviderType, url: String, limit: Int = 50): List<Playlist> =
+    override suspend fun listPlaylists(provider: ProviderType, url: String, limit: Int): List<Playlist> =
         withContext(Dispatchers.IO) {
             val output = run(
                 "--flat-playlist",
@@ -89,7 +94,7 @@ class YtDlpService(
      * Lists a playlist's tracks in one flat request. Fast, but SoundCloud answers with stubs that carry no
      * artwork and, inside a set, no title either — [resolveTracks] fills those in afterwards.
      */
-    suspend fun listTracks(provider: ProviderType, url: String, limit: Int = 200): List<Track> =
+    override suspend fun listTracks(provider: ProviderType, url: String, limit: Int): List<Track> =
         withContext(Dispatchers.IO) {
             val root = json.parseToJsonElement(
                 playlistJson(provider, listOf("--flat-playlist", "--playlist-end", limit.toString()), url, 90),
@@ -101,7 +106,7 @@ class YtDlpService(
      * Fully resolves a 1-based slice of a playlist, which costs one provider request per track but returns real
      * titles, durations and artwork. Slices keep the wait short enough to show results as they arrive.
      */
-    suspend fun resolveTracks(provider: ProviderType, url: String, from: Int, to: Int): List<Track> =
+    override suspend fun resolveTracks(provider: ProviderType, url: String, from: Int, to: Int): List<Track> =
         withContext(Dispatchers.IO) {
             require(from in 1..to) { "Playlist slice must be 1-based and ordered" }
             val root = json.parseToJsonElement(
@@ -145,7 +150,7 @@ class YtDlpService(
             )
         }
 
-    suspend fun resolveAudio(sourceUrl: String): String = withContext(Dispatchers.IO) {
+    override suspend fun resolveAudio(sourceUrl: String): String = withContext(Dispatchers.IO) {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
         }
@@ -182,7 +187,7 @@ class YtDlpService(
     }
 
 
-    suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
+    override suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
         if (!track.hasPlaceholderArtist()) return@withContext track
         val output = run(
             "--dump-single-json",
@@ -201,6 +206,9 @@ class YtDlpService(
 
     suspend fun version(): String = withContext(Dispatchers.IO) { run("--version").trim() }
 
+    override suspend fun describe(): String =
+        "yt-dlp " + runCatching { version() }.getOrDefault("(not found)")
+
     /**
      * Turns a numeric SoundCloud account id into its profile name.
      *
@@ -208,7 +216,7 @@ class YtDlpService(
      * lists lives under the account's own profile — so the first path segment of any item's link is the name
      * that addresses their playlists. Returns null for an account with nothing public to list.
      */
-    suspend fun resolveSoundCloudPermalink(userId: String): String? = withContext(Dispatchers.IO) {
+    override suspend fun resolveSoundCloudPermalink(userId: String): String? = withContext(Dispatchers.IO) {
         if (userId.isBlank() || !userId.all(Char::isDigit)) return@withContext null
         val output = runCatching {
             run(
@@ -238,7 +246,7 @@ class YtDlpService(
      * needs. yt-dlp dumps the jar it loaded when `--cookies` accompanies `--cookies-from-browser`; the caller
      * is responsible for deleting the file straight after reading it.
      */
-    suspend fun exportCookies(provider: ProviderType, destination: Path): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun exportCookies(provider: ProviderType, destination: Path): Boolean = withContext(Dispatchers.IO) {
         val cookieArgs = accountArguments(provider)
         if (cookieArgs.isEmpty()) return@withContext false
         runCatching {
@@ -367,10 +375,10 @@ class YtDlpService(
      * refuses those from a signed-in non-browser exactly as it refuses a stream. Sending cookies here would
      * make every YouTube download fail the way playback once did.
      */
-    suspend fun downloadAudio(
+    override suspend fun downloadAudio(
         sourceUrl: String,
         outputTemplate: String,
-        onProgress: (Float) -> Unit = {},
+        onProgress: (Float) -> Unit,
     ): Unit = withContext(Dispatchers.IO) {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
@@ -400,7 +408,7 @@ class YtDlpService(
     }
 
     /** Whether this machine can convert audio, which is the only thing standing between us and MP3. */
-    fun canConvertAudio(): Boolean = ffmpeg() != null
+    override fun canConvertAudio(): Boolean = ffmpeg() != null
 
     /**
      * Saves a track as a file for the listener to keep, rather than for Spiceity to play.
@@ -411,11 +419,11 @@ class YtDlpService(
      * re-encoding lossy audio into another lossy format only ever loses more, and what the services serve
      * is m4a, which phones play anyway.
      */
-    suspend fun exportAudio(
+    override suspend fun exportAudio(
         sourceUrl: String,
         outputTemplate: String,
         format: ExportFormat,
-        onProgress: (Float) -> Unit = {},
+        onProgress: (Float) -> Unit,
     ): Unit = withContext(Dispatchers.IO) {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"

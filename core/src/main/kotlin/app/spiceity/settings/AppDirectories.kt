@@ -16,8 +16,27 @@ import java.nio.file.Path
  * everything.
  */
 object AppDirectories {
+    /**
+     * Where a platform says its folder is, when it knows better than the search below.
+     *
+     * Android does: an app is handed a private directory and has no business writing anywhere else, and
+     * neither LOCALAPPDATA nor a writable `user.home` exists there to be found. The phone sets this before
+     * anything reads a path.
+     */
+    @Volatile private var override: Path? = null
+
+    /**
+     * Names the folder directly, instead of going looking for one.
+     *
+     * Must be called before the first path is resolved — after that the answer is fixed, and moving it
+     * halfway through a run would strand whatever had already been written to the old one.
+     */
+    fun useBase(path: Path) {
+        override = path
+    }
+
     /** Resolved once: the move is a one-time event and re-checking it on every path lookup is waste. */
-    private val root: Path? by lazy { locate() }
+    private val root: Path? by lazy { override ?: locate() }
 
     /** The folder itself, or null on a system that offers nowhere to put it. */
     fun base(): Path? = root
