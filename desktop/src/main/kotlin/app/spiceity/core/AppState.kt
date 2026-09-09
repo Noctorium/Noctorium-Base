@@ -213,13 +213,14 @@ class AppState(
     private val injectedProviders: List<MusicProvider>? = null,
     private val lyricsRepository: LyricsRepository = LyricsRepository(),
     private val settingsRepository: SettingsRepository = SettingsRepository(),
-    private val scrobbleManager: ScrobbleManager = ScrobbleManager(),
     private val accountProbe: AccountProbe = AccountProbe(),
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
     private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
     private val clipboard: (String) -> Unit = ::copyToSystemClipboard,
     private val likeClient: SoundCloudLikeClient = SoundCloudLikeClient(),
-    private val credentials: SecureCredentialStore = SecureCredentialStore(),
+    private val credentials: SecretStore = SecureCredentialStore(),
+    // Declared after the store it reads from: a default may only refer to a parameter before it.
+    private val scrobbleManager: ScrobbleManager = ScrobbleManager(credentials),
     private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
     private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
@@ -1533,17 +1534,22 @@ class AppState(
         }
     }
 
-    private fun savedAccountState(source: CookieSource): AccountConnectionState = when {
-        !source.isConfigured -> AccountConnectionState()
-        source.verifiedAtEpochSeconds != null -> AccountConnectionState(
-            AccountConnectionStatus.CONNECTED,
-            "Using ${source.describe()} — checked ${formatCheckTime(source.verifiedAtEpochSeconds)}",
-        )
-        else -> AccountConnectionState(
-            AccountConnectionStatus.WARNING,
-            "Using ${source.describe()} — never checked",
-            "Run Check connection so Spiceity can tell you whether this session really works.",
-        )
+    private fun savedAccountState(source: CookieSource): AccountConnectionState {
+        // Read once into a local: Kotlin will not smart-cast a public property from another module,
+        // because nothing stops that module from making it a computed one.
+        val checkedAt = source.verifiedAtEpochSeconds
+        return when {
+            !source.isConfigured -> AccountConnectionState()
+            checkedAt != null -> AccountConnectionState(
+                AccountConnectionStatus.CONNECTED,
+                "Using ${source.describe()} — checked ${formatCheckTime(checkedAt)}",
+            )
+            else -> AccountConnectionState(
+                AccountConnectionStatus.WARNING,
+                "Using ${source.describe()} — never checked",
+                "Run Check connection so Spiceity can tell you whether this session really works.",
+            )
+        }
     }
 
     private fun updateAccountState(provider: ProviderType, state: AccountConnectionState) {

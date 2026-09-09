@@ -2058,6 +2058,11 @@ private fun LyricsPanel(track: Track, state: AppState) {
         }
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = .18f))
 
+        // Read into a local before the branch below tests it. A public property from another module is
+        // never smart-cast — nothing there stops it becoming a computed one that answers differently on
+        // each read — so testing the property and then using it would leave it nullable.
+        val providerPage = selectedResult?.sourceUrl
+
         when {
             lyrics.loading && selectedResult == null -> {
                 Column(
@@ -2073,7 +2078,7 @@ private fun LyricsPanel(track: Track, state: AppState) {
             selectedResult != null && selectedResult.lines.isNotEmpty() -> {
                 LyricsContent(selectedOutcome, playback.positionMs, state)
             }
-            selectedResult != null && selectedResult.sourceUrl != null -> {
+            selectedResult != null && providerPage != null -> {
                 Column(
                     Modifier.fillMaxSize().padding(28.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -2090,7 +2095,7 @@ private fun LyricsPanel(track: Track, state: AppState) {
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     )
                     Spacer(Modifier.height(18.dp))
-                    FilledTonalButton({ state.openExternalUrl(selectedResult.sourceUrl) }) {
+                    FilledTonalButton({ state.openExternalUrl(providerPage) }) {
                         Icon(Icons.AutoMirrored.Filled.OpenInNew, null, Modifier.size(17.dp))
                         Spacer(Modifier.width(8.dp))
                         Text("Open ${selectedResult.provider.displayName}")

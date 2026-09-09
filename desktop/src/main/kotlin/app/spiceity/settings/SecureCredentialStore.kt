@@ -6,16 +6,23 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 
-/** Stores only DPAPI-encrypted ciphertext on Windows. Plaintext is never written to disk. */
+/**
+ * The Windows answer to [SecretStore]: only DPAPI ciphertext reaches the disk.
+ *
+ * DPAPI ties what it encrypts to the signed-in Windows account, so a credentials file copied to another
+ * machine — or read by another user on this one — decrypts to nothing. It is reached by running PowerShell
+ * rather than through JNA, because this happens a handful of times per session and a process is cheaper to
+ * be sure of than a hand-written binding to a security API.
+ */
 class SecureCredentialStore(
     private val credentialPath: Path? = SettingsRepository.defaultSettingsPath()?.resolveSibling("credentials.json"),
-) {
+) : SecretStore {
     private val json = Json { prettyPrint = true }
     private val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
 
     @Synchronized
-    fun put(key: String, secret: String) {
-        require(key.matches(Regex("[a-z0-9_.-]{1,80}"))) { "Invalid credential key" }
+    override fun put(key: String, secret: String) {
+        SecretStore.requireValidKey(key)
         require(secret.isNotBlank()) { "Credential cannot be blank" }
         check(isWindows) { "Secure credential storage is not available on this platform yet" }
         val encrypted = runPowerShell(ENCRYPT_SCRIPT, secret)
@@ -24,21 +31,19 @@ class SecureCredentialStore(
     }
 
     @Synchronized
-    fun get(key: String): String? {
-        val environmentName = "SPICEITY_${key.uppercase().replace(Regex("[^A-Z0-9]"), "_")}"
-        System.getenv(environmentName)?.takeIf(String::isNotBlank)?.let { return it }
+    override fun get(key: String): String? {
+        System.getenv(SecretStore.environmentNameFor(key))?.takeIf(String::isNotBlank)?.let { return it }
         if (!isWindows) return null
         val encrypted = readEncrypted()[key] ?: return null
         return runCatching { runPowerShell(DECRYPT_SCRIPT, encrypted).trimEnd('\r', '\n') }.getOrNull()
     }
 
     @Synchronized
-    fun remove(key: String) {
+    override fun remove(key: String) {
         val values = readEncrypted().toMutableMap()
         if (values.remove(key) != null) writeEncrypted(values)
     }
 
-    fun contains(key: String): Boolean = get(key)?.isNotBlank() == true
 
     private fun readEncrypted(): Map<String, String> = runCatching {
         val path = credentialPath ?: return@runCatching emptyMap()
