@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Spiceity's S, inside the 66dp safe zone of the 108dp canvas.
+
+  Drawn as a path rather than shipped as bitmaps at five densities, so there is one file to change and it
+  stays sharp on any screen. The shape is the same one the desktop icon draws.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M66.5,42.5c-0.8,-5.6 -5.6,-9.5 -12.8,-9.5c-7.4,0 -12.4,3.6 -12.4,8.8c0,4.2 3.1,6.6 9.8,8.1l8.4,1.9c9.6,2.2 14.9,7.1 14.9,15.2c0,10.4 -9.1,17.5 -22.2,17.5c-13.4,0 -22.4,-6.6 -23.4,-17.4l9.9,0c1,5.9 6.3,9.4 13.9,9.4c7.9,0 13.2,-3.6 13.2,-9c0,-4.3 -3.1,-6.8 -10.2,-8.4l-8.9,-2.1c-9.4,-2.2 -14.1,-7 -14.1,-14.9c0,-10 8.7,-17.1 21.3,-17.1c12.5,0 21.1,6.7 21.7,17.5z" />
+</vector>

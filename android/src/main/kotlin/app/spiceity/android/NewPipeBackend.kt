@@ -1,0 +1,337 @@
+package app.spiceity.android
+
+import app.spiceity.domain.Album
+import app.spiceity.domain.Artist
+import app.spiceity.domain.Playlist
+import app.spiceity.domain.ProviderType
+import app.spiceity.domain.Track
+import app.spiceity.downloads.ExportFormat
+import app.spiceity.playback.BackendException
+import app.spiceity.playback.MusicBackend
+import app.spiceity.settings.CookieSource
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import okhttp3.OkHttpClient
+import okhttp3.Request as OkRequest
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.schabi.newpipe.extractor.NewPipe
+import org.schabi.newpipe.extractor.ServiceList
+import org.schabi.newpipe.extractor.StreamingService
+import org.schabi.newpipe.extractor.downloader.Downloader
+import org.schabi.newpipe.extractor.downloader.Request
+import org.schabi.newpipe.extractor.downloader.Response
+import org.schabi.newpipe.extractor.playlist.PlaylistInfo
+import org.schabi.newpipe.extractor.search.SearchInfo
+import org.schabi.newpipe.extractor.stream.AudioStream
+import org.schabi.newpipe.extractor.stream.StreamInfo
+import org.schabi.newpipe.extractor.stream.StreamInfoItem
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * What a track is, and where its audio is, read the way NewPipe reads it.
+ *
+ * The phone's answer to [MusicBackend]. yt-dlp is not an option here — it is a Python program, and since
+ * Android 10 an app may not execute a binary out of its own data directory even if one were shipped — so
+ * this uses NewPipeExtractor, which does the same job as a library: it reads what a service's own web
+ * player reads and hands back a playable address, with no API key involved.
+ *
+ * The shapes it returns are not the same as yt-dlp's, so everything below is translation. Where NewPipe
+ * knows less than yt-dlp did, the field is left null rather than filled with a guess: a track carrying its
+ * provider's name where the artist belongs is a bug this project has already had once.
+ */
+class NewPipeBackend(
+    private val http: OkHttpClient,
+    /** Where a download is written. Handed in because only the platform knows the app's own directory. */
+    private val downloadDirectory: Path,
+) : MusicBackend {
+
+    /**
+     * Sessions, kept per provider.
+     *
+     * A phone has no other browser to borrow cookies from, so what arrives here is a jar the app's own
+     * WebView sign-in wrote. It is read into a `Cookie` header once, rather than per request.
+     */
+    private val sessions = ConcurrentHashMap<ProviderType, String>()
+
+    @Volatile private var soundCloudUser: String = ""
+
+    override fun useSession(provider: ProviderType, source: CookieSource) {
+        val header = source.cookieFile
+            .takeIf(String::isNotBlank)
+            ?.let { runCatching { cookieHeaderFrom(Path.of(it)) }.getOrNull() }
+            ?.takeIf(String::isNotBlank)
+        if (header == null) sessions.remove(provider) else sessions[provider] = header
+    }
+
+    override fun useSoundCloudProfile(username: String) {
+        soundCloudUser = username.trim().trim('/').substringAfterLast('/')
+    }
+
+    override val soundCloudProfile: String get() = soundCloudUser
+
+    override suspend fun search(provider: ProviderType, query: String, limit: Int): List<Track> =
+        withContext(Dispatchers.IO) {
+            require(query.isNotBlank()) { "Search query cannot be blank" }
+            val service = serviceFor(provider) ?: return@withContext emptyList()
+            val info = attempt("search $provider") {
+                SearchInfo.getInfo(service, service.searchQHFactory.fromQuery(query, songFilter(provider), ""))
+            }
+            info.relatedItems
+                .filterIsInstance<StreamInfoItem>()
+                .take(limit)
+                .map { trackOf(it, provider) }
+        }
+
+    override suspend fun listPlaylists(provider: ProviderType, url: String, limit: Int): List<Playlist> {
+        // NewPipe reads a named playlist, not an account's list of them. YouTube's playlists feed and
+        // SoundCloud's sets page are both signed-in surfaces it has no extractor for, so the library is
+        // assembled from the services' own APIs in core instead of from here.
+        return emptyList()
+    }
+
+    override suspend fun listTracks(provider: ProviderType, url: String, limit: Int): List<Track> =
+        withContext(Dispatchers.IO) {
+            val service = serviceFor(provider) ?: return@withContext emptyList()
+            val info = attempt("list $url") { PlaylistInfo.getInfo(service, url) }
+            info.relatedItems.take(limit).map { trackOf(it, provider) }
+        }
+
+    /**
+     * NewPipe returns a playlist whole, with artwork and lengths already on every row.
+     *
+     * yt-dlp needed a second pass because its fast listing carries an id and nothing else. There is nothing
+     * to fill in here, so the slice is answered from the listing rather than by fetching it again.
+     */
+    override suspend fun resolveTracks(
+        provider: ProviderType,
+        url: String,
+        from: Int,
+        to: Int,
+    ): List<Track> {
+        val all = listTracks(provider, url, limit = to)
+        // A 1-based, inclusive range, matching what the caller means by a slice.
+        return all.drop((from - 1).coerceAtLeast(0)).take((to - from + 1).coerceAtLeast(0))
+    }
+
+    override suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
+        val service = serviceFor(track.provider) ?: return@withContext track
+        val info = runCatching { StreamInfo.getInfo(service, track.sourceUrl) }.getOrNull()
+            ?: return@withContext track
+        track.copy(
+            title = info.name?.takeIf(String::isNotBlank) ?: track.title,
+            artists = track.artists.ifEmpty { artistsOf(info.uploaderName, track.provider) },
+            durationMs = info.duration.takeIf { it > 0 }?.times(1_000) ?: track.durationMs,
+            artworkUrl = track.artworkUrl ?: info.thumbnails?.lastOrNull()?.url,
+        )
+    }
+
+    /**
+     * An address the player can read audio from.
+     *
+     * The best audio-only stream is chosen by bitrate. Video streams are never considered: this is a music
+     * player, and fetching a video's pixels to throw them away would spend a phone's data for nothing.
+     */
+    override suspend fun resolveAudio(sourceUrl: String): String = withContext(Dispatchers.IO) {
+        require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
+            "Only HTTP media sources are accepted"
+        }
+        val provider = providerOf(sourceUrl)
+        val service = serviceFor(provider)
+            ?: throw BackendException("Spiceity cannot play this address on Android yet.")
+        val info = attempt("resolve $sourceUrl") { StreamInfo.getInfo(service, sourceUrl) }
+        val stream = info.audioStreams
+            .filter { !it.content.isNullOrBlank() }
+            .maxByOrNull(AudioStream::getAverageBitrate)
+            ?: throw BackendException(
+                "No audio stream came back for this track. It may be unavailable in your region.",
+            )
+        stream.content
+    }
+
+    /** SoundCloud's API answers by numeric id; its pages are addressed by profile name. */
+    override suspend fun resolveSoundCloudPermalink(userId: String): String? = null
+
+    override suspend fun downloadAudio(
+        sourceUrl: String,
+        outputTemplate: String,
+        onProgress: (Float) -> Unit,
+    ) = withContext(Dispatchers.IO) {
+        val address = resolveAudio(sourceUrl)
+        // The template is yt-dlp's vocabulary. Here the caller's chosen stem is all that is used, since
+        // nothing on this side substitutes fields into a file name.
+        val destination = downloadDirectory.resolve(
+            Path.of(outputTemplate).fileName.toString().replace("%(ext)s", "m4a"),
+        )
+        Files.createDirectories(destination.parent)
+        val candidate = destination.resolveSibling("${destination.fileName}.part")
+
+        val request = OkRequest.Builder().url(address).build()
+        http.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw BackendException("The service refused the download (HTTP ${response.code}).")
+            }
+            val total = response.body?.contentLength() ?: -1L
+            var written = 0L
+            response.body?.byteStream()?.use { input ->
+                Files.newOutputStream(candidate).use { output ->
+                    val buffer = ByteArray(64 * 1024)
+                    while (true) {
+                        val read = input.read(buffer)
+                        if (read < 0) break
+                        output.write(buffer, 0, read)
+                        written += read
+                        if (total > 0) onProgress((written.toFloat() / total).coerceIn(0f, 1f))
+                    }
+                }
+            } ?: throw BackendException("The service sent no audio.")
+        }
+        // Moved into place only once it is whole, so an interrupted download never leaves a file that
+        // looks playable and is not.
+        Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING)
+        onProgress(1f)
+    }
+
+    /**
+     * No, and it is not worth changing.
+     *
+     * Converting to MP3 would mean bundling an encoder, and the reason MP3 exists on the desktop is to put
+     * a file on a phone — which is this. What the services serve is m4a or opus, and Android plays both.
+     */
+    override fun canConvertAudio(): Boolean = false
+
+    override suspend fun exportAudio(
+        sourceUrl: String,
+        outputTemplate: String,
+        format: ExportFormat,
+        onProgress: (Float) -> Unit,
+    ) {
+        if (format == ExportFormat.MP3) {
+            throw BackendException(
+                "Spiceity on Android saves audio as it comes rather than converting it to MP3. Your phone " +
+                    "plays it either way.",
+            )
+        }
+        downloadAudio(sourceUrl, outputTemplate, onProgress)
+    }
+
+    override suspend fun describe(): String = "NewPipeExtractor ${NewPipe.getDownloader()?.let { "ready" } ?: "not started"}"
+
+    /** Turns whatever NewPipe threw into something a listener can read. */
+    private inline fun <T> attempt(what: String, block: () -> T): T = try {
+        block()
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (error: Exception) {
+        throw BackendException("Could not $what: ${error.message ?: error::class.simpleName}", error)
+    }
+
+    private fun serviceFor(provider: ProviderType): StreamingService? = when (provider) {
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> ServiceList.YouTube
+        ProviderType.SOUNDCLOUD -> ServiceList.SoundCloud
+        // Spotify hands out no audio, and a local file needs no extractor.
+        ProviderType.SPOTIFY, ProviderType.LOCAL -> null
+    }
+
+    /** NewPipe's filter names, so an album or an artist is not returned where a song was asked for. */
+    private fun songFilter(provider: ProviderType): List<String> = when (provider) {
+        ProviderType.YOUTUBE_MUSIC -> listOf("music_songs")
+        ProviderType.YOUTUBE_VIDEO -> listOf("videos")
+        ProviderType.SOUNDCLOUD -> listOf("tracks")
+        ProviderType.SPOTIFY, ProviderType.LOCAL -> emptyList()
+    }
+
+    private fun trackOf(item: StreamInfoItem, provider: ProviderType): Track = Track(
+        provider = provider,
+        id = idOf(item.url, provider),
+        title = item.name.orEmpty().ifBlank { "Unknown track" },
+        artists = artistsOf(item.uploaderName, provider),
+        album = null,
+        durationMs = item.duration.takeIf { it > 0 }?.times(1_000),
+        artworkUrl = item.thumbnails?.lastOrNull()?.url,
+        sourceUrl = item.url,
+    )
+
+    /**
+     * The artist, or nobody.
+     *
+     * An empty list where the uploader is unknown, deliberately. Falling back to the provider's own name is
+     * how a YouTube Music track once came to be credited to "YouTube Music", and an empty artist line reads
+     * as missing information, which is what it is.
+     */
+    private fun artistsOf(name: String?, provider: ProviderType): List<Artist> =
+        name?.trim()?.takeIf(String::isNotBlank)
+            ?.let { listOf(Artist("$provider:$it", it, provider)) }
+            .orEmpty()
+
+    /** The id the rest of Spiceity addresses a track by, which has to match what the desktop uses. */
+    private fun idOf(url: String, provider: ProviderType): String = when (provider) {
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO ->
+            Regex("""[?&]v=([\w-]{11})""").find(url)?.groupValues?.get(1)
+                ?: url.substringAfterLast('/').substringBefore('?')
+        else -> url.substringAfter("soundcloud.com/", url).trim('/')
+    }
+
+    private fun providerOf(sourceUrl: String): ProviderType = when {
+        "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
+        "youtube.com" in sourceUrl || "youtu.be" in sourceUrl -> ProviderType.YOUTUBE_VIDEO
+        "soundcloud.com" in sourceUrl -> ProviderType.SOUNDCLOUD
+        else -> ProviderType.LOCAL
+    }
+
+    /** Reads a Netscape cookie jar — the format the desktop writes — into one header. */
+    private fun cookieHeaderFrom(file: Path): String {
+        if (!Files.isRegularFile(file)) return ""
+        return Files.readAllLines(file)
+            .asSequence()
+            .filterNot { it.startsWith("#") || it.isBlank() }
+            .mapNotNull { line ->
+                val fields = line.split('\t')
+                if (fields.size >= 7 && fields[6].isNotBlank()) "${fields[5]}=${fields[6]}" else null
+            }
+            .joinToString("; ")
+    }
+}
+
+/**
+ * How NewPipeExtractor makes its requests: through the same OkHttp client as everything else.
+ *
+ * NewPipe requires this to be supplied and calls it synchronously, off whatever thread the extraction is
+ * running on. Sharing the client matters more than it looks — it is one connection pool for the whole
+ * application instead of two, on a device where opening a TLS connection costs battery.
+ */
+class OkHttpNewPipeDownloader(private val client: OkHttpClient) : Downloader() {
+    override fun execute(request: Request): Response {
+        val body = request.dataToSend()?.toRequestBody()
+        val builder = OkRequest.Builder()
+            .url(request.url())
+            .method(request.httpMethod(), body)
+        request.headers().forEach { (name, values) ->
+            builder.removeHeader(name)
+            values.forEach { value -> builder.addHeader(name, value) }
+        }
+        if (request.headers()["User-Agent"] == null) {
+            builder.header("User-Agent", app.spiceity.net.Http.DESKTOP_USER_AGENT)
+        }
+
+        return try {
+            client.newCall(builder.build()).execute().use { response ->
+                Response(
+                    response.code,
+                    response.message,
+                    response.headers.toMultimap(),
+                    response.body?.string(),
+                    response.request.url.toString(),
+                )
+            }
+        } catch (error: IOException) {
+            // NewPipe expects a Response or an IOException, so this is left as one rather than being
+            // wrapped into something it does not know how to report.
+            throw error
+        }
+    }
+}

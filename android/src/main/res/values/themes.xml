@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A dark theme applied before Compose starts, so the window behind the interface is not a white flash on
+  the way in. Everything after this point is Compose's own theming.
+-->
+<resources>
+    <style name="Theme.Spiceity" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#08070C</item>
+        <item name="android:statusBarColor">#08070C</item>
+        <item name="android:navigationBarColor">#08070C</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
+</resources>
