@@ -13,7 +13,11 @@ dependencyResolutionManagement {
         // NewPipeExtractor, which does on Android what yt-dlp does on the desktop. Published to JitPack
         // rather than Maven Central, and this is the only thing taken from there.
         maven("https://jitpack.io") {
-            content { includeGroupByRegex("com\\.github\\.(TeamNewPipe|teamnewpipe)") }
+            // The trailing .* matters. JitPack publishes a multi-module project under a group made of the
+            // user *and* the repository, so what is wanted here is
+            // com.github.TeamNewPipe.NewPipeExtractor:extractor — and a pattern that stops at
+            // com.github.TeamNewPipe does not match it, leaving the dependency simply not found.
+            content { includeGroupByRegex("com\\.github\\.TeamNewPipe.*") }
         }
     }
 }

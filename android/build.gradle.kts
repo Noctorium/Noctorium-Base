@@ -74,6 +74,12 @@ android {
 
 kotlin {
     jvmToolchain(21)
+    compilerOptions {
+        // Matched to compileOptions above. The toolchain is what compiles; this is what it targets, and
+        // AGP refuses the build outright when Java and Kotlin disagree rather than letting the mismatch
+        // surface later as a class-version error on a device.
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+    }
 }
 
 dependencies {
@@ -94,7 +100,10 @@ dependencies {
      * hand back a playable stream address without an API key. It is the only dependency here taken from
      * JitPack rather than Maven Central.
      */
-    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.24.3")
+    // Pinned to a version JitPack has actually built. Its maven-metadata lists newer releases — v0.26.5
+    // among them — whose artifacts 404, because JitPack only compiles a tag once somebody asks for it and
+    // records the tag either way. A version that resolves beats a version that is merely newer.
+    implementation("com.github.TeamNewPipe.NewPipeExtractor:extractor:v0.24.6")
 
     // Media3, for playing what the extractor found and for behaving like a music app while doing it.
     implementation("androidx.media3:media3-exoplayer:1.5.1")
