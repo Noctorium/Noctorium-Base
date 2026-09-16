@@ -104,6 +104,20 @@ class SpiceityAccountClient(
         return userFrom(parse(reply.second)?.get("user")?.jsonObject ?: return null)
     }
 
+    /**
+     * The key this account uses to recognise its own devices on a local network.
+     *
+     * Derived by the service from the same secret that signs tokens, so it is the same for every device
+     * on the account and is stored nowhere. Asked for once after signing in and then kept, because Connect
+     * is at its most useful when the internet is not working and would be worthless if it needed this
+     * every time.
+     */
+    suspend fun connectKey(token: String): String? {
+        val reply = send("GET", "/api/connect/key", token = token) ?: return null
+        if (reply.first !in 200..299) return null
+        return parse(reply.second)?.get("key")?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+    }
+
     suspend fun stats(token: String): ListeningStats? {
         val reply = send("GET", "/api/stats", token = token) ?: return null
         if (reply.first !in 200..299) return null

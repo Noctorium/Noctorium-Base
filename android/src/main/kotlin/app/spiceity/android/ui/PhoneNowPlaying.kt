@@ -144,6 +144,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
                     fontSize = 12.sp,
                 )
                 Spacer(Modifier.weight(1f))
+                ConnectButton(state, haptics)
                 SleepTimerButton(settings.preferences.phone.sleepTimerMinutes, haptics)
                 IconButton({ showLyrics = !showLyrics }) {
                     Text(if (showLyrics) "♪" else "Aa", fontSize = 15.sp, fontWeight = FontWeight.Bold)

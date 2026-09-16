@@ -121,6 +121,16 @@ class QueueManager(private val random: Random = Random.Default) {
 
     fun toggleShuffle() = shuffle(!mutableState.value.shuffleEnabled)
 
+    /**
+     * Set, rather than toggled.
+     *
+     * A remote control says what it wants to be true, not what it wants changed. Toggling from another
+     * device races: two taps that cross on the network leave shuffle wherever it started.
+     */
+    fun setShuffle(enabled: Boolean) = shuffle(enabled)
+
+    fun setRepeat(mode: RepeatMode) = mutableState.update { it.copy(repeatMode = mode) }
+
     private fun shuffle(enabled: Boolean) = mutableState.update { current ->
         if (current.tracks.isEmpty() || current.shuffleEnabled == enabled) return@update current.copy(shuffleEnabled = enabled)
         val playing = current.current

@@ -218,6 +218,8 @@ data class SpiceityPreferences(
      * a desktop reading these simply ignores them. Grouped so it stays obvious which is which.
      */
     val phone: PhonePreferences = PhonePreferences(),
+    /** Spiceity Connect: this device on the local network. */
+    val connect: ConnectPreferences = ConnectPreferences(),
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
@@ -252,6 +254,20 @@ data class SpiceityPreferences(
         if (cookieFile.isBlank()) this else copy(cookieFile = AppDirectories.rebase(cookieFile))
 }
 
+
+/**
+ * How this device presents itself to the listener other devices.
+ *
+ * The id is generated once and then kept for the life of the installation, because it is what a device
+ * is recognised as across restarts and across a changed name. The name is what a person actually picks
+ * from a list, and is left blank to mean whatever the platform calls this machine.
+ */
+@Serializable
+data class ConnectPreferences(
+    val enabled: Boolean = true,
+    val deviceId: String = "",
+    val deviceName: String = "",
+)
 
 /** The shape of the cover on the now playing screen. */
 @Serializable

@@ -1561,6 +1561,7 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 Spacer(Modifier.width(12.dp))
 
                 BadgedBox(badge = { if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) } }) {
+                    ConnectButton(state)
                     IconButton({ state.navigate(Destination.QUEUE) }, Modifier.size(34.dp)) {
                         Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue", Modifier.size(19.dp))
                     }
@@ -1702,6 +1703,7 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                             VolumeControl(playback, state)
                             Spacer(Modifier.width(4.dp))
                         }
+                        ConnectButton(state)
                         BadgedBox(
                             badge = {
                                 if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) }
@@ -4734,6 +4736,8 @@ private fun SpiceityAccountPanel(state: AppState) {
                 AccountFact("A song counts once you have heard 30 seconds of it, or half of it.")
                 AccountFact("The same figures are on the website, under your account.")
             }
+            Spacer(Modifier.height(14.dp))
+            SettingsPanelCard { ConnectSettingsRows(state) }
         } else {
             SettingsPanelCard {
                 Text(

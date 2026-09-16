@@ -1,5 +1,6 @@
 package app.spiceity
 
+import app.spiceity.connect.DeviceKind
 import app.spiceity.core.AppState
 import app.spiceity.discord.DiscordPresenceManager
 import app.spiceity.downloads.AudioConverter
@@ -30,5 +31,14 @@ fun desktopAppState(): AppState {
         playbackEngine = MpvPlaybackEngine(backend, downloadedFile = downloads::localFile),
         accountProbe = AccountProbe(),
         discordPresence = DiscordPresenceManager(),
+        // What this machine calls itself, which is what shows up in the list on the phone. The computer
+        // name is what somebody already recognises; the hostname is a fallback for when Windows has not
+        // set one in the environment.
+        deviceName = {
+            System.getenv("COMPUTERNAME")?.takeIf(String::isNotBlank)
+                ?: runCatching { java.net.InetAddress.getLocalHost().hostName }.getOrNull()
+                ?: "This computer"
+        },
+        deviceKind = DeviceKind.DESKTOP,
     )
 }

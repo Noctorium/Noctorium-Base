@@ -1,6 +1,7 @@
 package app.spiceity.android
 
 import android.app.Application
+import app.spiceity.connect.DeviceKind
 import app.spiceity.core.AppState
 import app.spiceity.discord.NoPresenceReporter
 import app.spiceity.downloads.DownloadManager
@@ -81,6 +82,16 @@ class SpiceityApplication : Application() {
             accountProbe = UncheckedSession,
             // Discord's presence arrives over a named pipe to its desktop app. There is neither here.
             discordPresence = NoPresenceReporter(),
+            // What the desktop shows in its device list. The marketing name is what somebody recognises;
+            // MODEL alone reads as a part number on a lot of phones.
+            deviceName = {
+                listOfNotNull(
+                    android.os.Build.MANUFACTURER?.replaceFirstChar(Char::uppercase),
+                    android.os.Build.MODEL,
+                ).distinct().joinToString(" ").ifBlank { "Phone" }
+            },
+            deviceKind = DeviceKind.PHONE,
+            networkPresence = WifiPresence(this),
         )
     }
 

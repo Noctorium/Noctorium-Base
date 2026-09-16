@@ -4,6 +4,12 @@
     <!-- Reading the services, and nothing else. Spiceity asks for no storage, no contacts, no location. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!--
+        Spiceity Connect listens for the listener other devices announcing themselves on the local
+        network. Without this, the wifi chip filters those broadcasts out before the application ever
+        sees them and the device list is silently always empty.
+    -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!--
       Music has to keep playing when the screen goes off, which on Android means a foreground service.

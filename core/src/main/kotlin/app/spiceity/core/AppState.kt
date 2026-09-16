@@ -13,6 +13,8 @@ import app.spiceity.lyrics.LyricsRepository
 import app.spiceity.lyrics.LyricsUiState
 import app.spiceity.playback.MusicBackend
 import app.spiceity.playback.QueueManager
+import app.spiceity.playback.RepeatMode
+import app.spiceity.playback.PlaybackLog
 import app.spiceity.playback.SessionProbe
 import app.spiceity.playback.UncheckedSession
 import app.spiceity.platform.SystemBridge
@@ -58,6 +60,16 @@ import app.spiceity.account.AccountResult
 import app.spiceity.account.ListeningStats
 import app.spiceity.account.PlayReport
 import app.spiceity.account.SpiceityAccountClient
+import app.spiceity.connect.Command
+import app.spiceity.connect.CommandType
+import app.spiceity.connect.ConnectHost
+import app.spiceity.connect.ConnectManager
+import app.spiceity.connect.ConnectPeer
+import app.spiceity.connect.ConnectState
+import app.spiceity.connect.DeviceKind
+import app.spiceity.connect.NetworkPresence
+import app.spiceity.connect.PlaybackSnapshot
+import app.spiceity.connect.toWire
 import app.spiceity.account.SpiceityUser
 import app.spiceity.settings.*
 import kotlinx.coroutines.CoroutineScope
@@ -242,6 +254,11 @@ class AppState(
     private val accountClient: SpiceityAccountClient = SpiceityAccountClient(),
     private val spotifyClient: SpotifyClient = SpotifyClient(),
     private val spotifyMatches: SpotifyMatchStore = SpotifyMatchStore(),
+    /** What this device calls itself on the network, when the listener has not renamed it. */
+    private val deviceName: () -> String = { "Spiceity" },
+    private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
+    /** Android has to hold a lock to hear broadcast traffic at all; a desktop does not. */
+    private val networkPresence: NetworkPresence = NetworkPresence.None,
 ) : AutoCloseable {
     /**
      * Spotify's tokens, read from and written to where the rest of Spiceity keeps such things.
@@ -286,6 +303,70 @@ class AppState(
     val likes: StateFlow<LikeState> = mutableLikes.asStateFlow()
     private val mutableAccount = MutableStateFlow(SpiceityAccountState())
     val account: StateFlow<SpiceityAccountState> = mutableAccount.asStateFlow()
+
+    /**
+     * This player, as another of the listener's devices is allowed to see and drive it.
+     *
+     * Everything Connect can do goes through here and nowhere else, which is what keeps a network
+     * protocol from reaching into the player: a command that arrives over the wire ends up calling the
+     * same methods a button does.
+     */
+    private val connectHost = object : ConnectHost {
+        override fun snapshot(): PlaybackSnapshot {
+            val now = playback.value
+            val queued = queue.state.value
+            return PlaybackSnapshot(
+                playing = now.isPlaying,
+                track = now.track?.toWire(),
+                positionMs = now.positionMs,
+                durationMs = now.durationMs,
+                volume = now.volume,
+                queueSize = queued.tracks.size,
+                queueIndex = queued.currentIndex,
+                shuffle = queued.shuffleEnabled,
+                repeat = queued.repeatMode.name,
+            )
+        }
+
+        override suspend fun takeOver(tracks: List<Track>, index: Int, positionMs: Long) {
+            if (tracks.isEmpty()) return
+            val start = index.coerceIn(0, tracks.lastIndex)
+            val track = tracks[start]
+            queue.playQueue(
+                tracks,
+                start,
+                PlaybackContext(track.provider, PlaybackOrigin.QUEUE, seedTrackId = track.id),
+            )
+            playEnriched(track)
+            if (positionMs > 1_000) seekAfterHandover(positionMs)
+        }
+
+        override suspend fun resume() = playbackEngine.resume()
+        override suspend fun pause() = playbackEngine.pause()
+        override suspend fun next() { queue.next()?.let { playEnriched(it) } }
+        override suspend fun previous() { queue.previous()?.let { playEnriched(it) } }
+        override suspend fun seekTo(positionMs: Long) = playbackEngine.seekTo(positionMs)
+        override suspend fun setVolume(value: Float) = playbackEngine.setVolume(value)
+        override suspend fun setShuffle(enabled: Boolean) = queue.setShuffle(enabled)
+        override suspend fun setRepeat(mode: String) {
+            queue.setRepeat(runCatching { RepeatMode.valueOf(mode) }.getOrDefault(RepeatMode.OFF))
+        }
+        override suspend fun standDown() = playbackEngine.stop()
+    }
+
+    private val connectManager = ConnectManager(
+        host = connectHost,
+        secrets = credentials,
+        accountClient = accountClient,
+        token = { runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull() },
+        kind = deviceKind,
+        defaultDeviceName = deviceName,
+        presence = networkPresence,
+        log = { PlaybackLog.event("connect", mapOf("message" to it)) },
+    )
+
+    /** The listener's other devices on this network, and whichever one is being driven. */
+    val connect: StateFlow<ConnectState> = connectManager.state
     /**
      * Listens the service has not taken yet.
      *
@@ -316,6 +397,10 @@ class AppState(
         observeTrackCompletion()
         observeDiscordPresence()
         restoreSpiceityAccount()
+        // Started from the stored key rather than waiting for the service to confirm it. Connect is
+        // most wanted when the internet is not working, and a device that could not find the speaker in
+        // the next room until Vercel answered would be useless exactly then.
+        startConnect()
         // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
         scope.launch(Dispatchers.IO) { publishSpotifyState() }
         scope.launch(Dispatchers.IO) {
@@ -1878,6 +1963,7 @@ class AppState(
                 return@launch
             }
             mutableAccount.update { it.copy(user = user, message = null) }
+            prepareConnect()
             refreshListeningStats()
         }
     }
@@ -1898,6 +1984,7 @@ class AppState(
                     mutableAccount.update {
                         it.copy(user = result.user, busy = false, message = "Signed in as ${result.user.displayName}.")
                     }
+                    prepareConnect()
                     reportPlays()
                     refreshListeningStats()
                 }
@@ -1909,11 +1996,104 @@ class AppState(
 
     fun signOutOfSpiceity() {
         scope.launch(Dispatchers.IO) { runCatching { credentials.remove(SPICEITY_TOKEN) } }
+        // The key goes with the account. Leaving it behind would keep this device answering commands
+        // from an account it is no longer signed in to.
+        connectManager.forgetKey()
         unreportedPlays.clear()
         mutableAccount.value = SpiceityAccountState(message = "Signed out of your Spiceity account.")
     }
 
     fun clearSpiceityMessage() = mutableAccount.update { it.copy(message = null) }
+
+    // --- Spiceity Connect ---
+
+    /**
+     * Announces this device, once there is an account key to announce under.
+     *
+     * The device id is made here on first use and then kept forever: it is what a device is recognised
+     * as across restarts and across being renamed, so generating a fresh one each launch would make
+     * every device look like a new device every time.
+     */
+    private fun startConnect() {
+        val preferences = mutableSettings.value.preferences
+        if (!preferences.connect.enabled) {
+            connectManager.stop()
+            return
+        }
+        val id = preferences.connect.deviceId.ifBlank {
+            java.util.UUID.randomUUID().toString().also { fresh ->
+                updatePreferences { copy(connect = this.connect.copy(deviceId = fresh)) }
+            }
+        }
+        connectManager.start(id, preferences.connect.deviceName)
+    }
+
+    /** Asks the service for the account's connect key, then starts with it. */
+    private fun prepareConnect() {
+        scope.launch {
+            connectManager.refreshKey()
+            startConnect()
+        }
+    }
+
+    /**
+     * Moves what is playing here to [peer], from the same second.
+     *
+     * The whole queue goes, not just the current track, so the next song is right as well as this one.
+     */
+    fun playOn(peer: ConnectPeer) {
+        val queued = queue.state.value
+        connectManager.transferTo(peer, queued.tracks, queued.currentIndex, playback.value.positionMs)
+    }
+
+    fun connectPlayPause() = connectManager.control {
+        Command(if (connect.value.remote?.playing == true) CommandType.PAUSE else CommandType.PLAY)
+    }
+
+    fun connectNext() = connectManager.control { Command(CommandType.NEXT) }
+    fun connectPrevious() = connectManager.control { Command(CommandType.PREVIOUS) }
+    fun connectSeekTo(positionMs: Long) = connectManager.control { Command(CommandType.SEEK, positionMs = positionMs) }
+    fun connectSetVolume(value: Float) = connectManager.control { Command(CommandType.VOLUME, volume = value) }
+    fun connectToggleShuffle() = connectManager.control {
+        Command(CommandType.SHUFFLE, enabled = connect.value.remote?.shuffle != true)
+    }
+
+    /** Stops driving the other device, and leaves it playing. */
+    fun stopControlling() = connectManager.release()
+
+    /** Takes the music back off the other device and carries on here. */
+    fun bringPlaybackBack() {
+        val resumed = connectManager.bringItBack() ?: return
+        scope.launch { connectHost.takeOver(resumed.first, 0, resumed.second) }
+    }
+
+    fun dismissConnectMessage() = connectManager.dismissMessage()
+
+    fun setConnectEnabled(enabled: Boolean) {
+        updatePreferences { copy(connect = this.connect.copy(enabled = enabled)) }
+        if (enabled) startConnect() else connectManager.stop()
+    }
+
+    /** Renames this device as the listener's other devices see it. Blank goes back to the machine's own name. */
+    fun renameThisDevice(name: String) {
+        updatePreferences { copy(connect = this.connect.copy(deviceName = name.trim().take(48))) }
+        startConnect()
+    }
+
+    /**
+     * Lands on the position that was handed over, even when the engine was not ready to be told yet.
+     *
+     * Some engines accept a seek before the file is open and quietly drop it. Carrying on from the same
+     * second is the whole promise of a handover, and starting again at 0:00 is the most visible way to
+     * break it, so the result is checked once rather than assumed.
+     */
+    private suspend fun seekAfterHandover(positionMs: Long) {
+        playbackEngine.seekTo(positionMs)
+        kotlinx.coroutines.delay(HANDOVER_SEEK_CHECK_MS)
+        if (kotlin.math.abs(playback.value.positionMs - positionMs) > HANDOVER_SEEK_TOLERANCE_MS) {
+            playbackEngine.seekTo(positionMs)
+        }
+    }
 
     fun refreshListeningStats() {
         scope.launch {
@@ -2074,6 +2254,7 @@ class AppState(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         playbackEngine.close()
+        connectManager.close()
         discordPresence.close()
         downloads.close()
         scope.cancel()
@@ -2174,6 +2355,12 @@ private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
 
 /** Credential-store key for the Spiceity account session. The password itself is never kept. */
 private const val SPICEITY_TOKEN = "spiceity.session_token"
+
+/** Long enough for an engine to have opened the file and reported a position of its own. */
+private const val HANDOVER_SEEK_CHECK_MS = 900L
+
+/** Allows for the seconds that legitimately pass between asking and checking. */
+private const val HANDOVER_SEEK_TOLERANCE_MS = 4_000L
 
 /**
  * Credential-store key for Spotify's refresh token.
