@@ -22,7 +22,18 @@ class PlaybackService : MediaSessionService() {
     override fun onCreate() {
         super.onCreate()
         val application = application as SpiceityApplication
-        session = MediaSession.Builder(this, application.player.mediaPlayer).build()
+        val state = application.state
+        // Wrapped, so that skipping from the lock screen reaches the queue that actually holds the tracks.
+        // See QueueAwarePlayer: the bare ExoPlayer only ever has one item and reports, correctly and
+        // uselessly, that there is nothing to skip to.
+        val player = QueueAwarePlayer(
+            player = application.player.mediaPlayer,
+            goNext = state::next,
+            goPrevious = state::previous,
+            canGoNext = { state.queue.state.value.hasNext },
+            canGoPrevious = { state.queue.state.value.hasPrevious },
+        )
+        session = MediaSession.Builder(this, player).build()
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session

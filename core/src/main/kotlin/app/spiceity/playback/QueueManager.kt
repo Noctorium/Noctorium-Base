@@ -19,6 +19,19 @@ data class QueueState(
     val originalOrder: List<Track> = tracks,
 ) {
     val current: Track? get() = tracks.getOrNull(currentIndex)
+
+    /**
+     * Whether next and previous would go anywhere.
+     *
+     * The same conditions next() and previous() decide by, said before the fact. The lock screen and a
+     * headset need to know this in advance: Android greys out a button it has been told leads nowhere,
+     * and it is told once, when the state is published.
+     */
+    val hasNext: Boolean
+        get() = tracks.isNotEmpty() && (currentIndex < tracks.lastIndex || repeatMode == RepeatMode.ALL)
+
+    val hasPrevious: Boolean
+        get() = tracks.isNotEmpty() && (currentIndex > 0 || repeatMode == RepeatMode.ALL)
 }
 
 class QueueManager(private val random: Random = Random.Default) {
