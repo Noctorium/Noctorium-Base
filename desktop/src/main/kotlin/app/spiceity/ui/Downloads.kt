@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.AppState
+import app.spiceity.domain.pluralTracks
 import androidx.compose.ui.unit.Dp
 import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
@@ -68,7 +69,7 @@ internal fun describeDownloads(downloads: DownloadsState): String = buildString 
         when (downloads.entries.size) {
             0 -> "Nothing kept yet"
             1 -> "1 track"
-            else -> "${downloads.entries.size} tracks"
+            else -> pluralTracks(downloads.entries.size)
         },
     )
     if (downloads.entries.isNotEmpty()) {

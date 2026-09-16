@@ -824,7 +824,7 @@ private fun PlaylistRow(playlist: Playlist, open: () -> Unit) {
                 Text(
                     listOfNotNull(
                         playlist.ownerName,
-                        playlist.trackCount?.let { "$it tracks" },
+                        playlist.trackCount?.let(::pluralTracks),
                     ).joinToString(" • ").ifBlank { playlist.provider.displayName },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp,
@@ -1346,7 +1346,7 @@ private fun AddToPlaylistDialog(
                             Column(Modifier.weight(1f)) {
                                 Text(playlist.title, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 Text(
-                                    "${playlist.trackCount} tracks",
+                                    pluralTracks(playlist.trackCount ?: 0),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 10.sp,
                                 )
@@ -2430,7 +2430,7 @@ private fun QueueScreen(queue: QueueState, state: AppState) {
             Column {
                 Text("Queue", fontSize = 32.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    if (queue.tracks.isEmpty()) "Nothing queued" else "${queue.tracks.size} tracks • ${queue.currentIndex + 1} playing",
+                    if (queue.tracks.isEmpty()) "Nothing queued" else "${pluralTracks(queue.tracks.size)} • ${queue.currentIndex + 1} playing",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp,
                 )

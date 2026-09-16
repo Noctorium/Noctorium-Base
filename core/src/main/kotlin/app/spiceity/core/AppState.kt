@@ -640,6 +640,15 @@ class AppState(
             // SoundCloud's own listing is preferred over the public page: it says whether each playlist is
             // public and it includes private ones, neither of which a page listing can show.
             val soundCloudOwn = soundCloudOwnPlaylists()
+            /*
+             * Only ask for the profile name when it would actually help.
+             *
+             * The name is a way to find somebody's public sets without a session. When the session
+             * itself answered -- which it just did, if this is not null -- the name buys nothing, and
+             * asking for it above a list of the very playlists it would have fetched reads as though
+             * the application cannot see what it is already showing.
+             */
+            val wantsSoundCloudName = needsSoundCloudName && soundCloudOwn == null
             val connected = providers.filter { provider ->
                 provider.type != ProviderType.YOUTUBE_MUSIC &&
                     preferences.canListLibrary(provider.type) &&
@@ -652,7 +661,7 @@ class AppState(
                         loaded = true,
                         loadedAtMillis = System.currentTimeMillis(),
                         playlists = emptyList(),
-                        needsSoundCloudUsername = needsSoundCloudName,
+                        needsSoundCloudUsername = wantsSoundCloudName,
                         errorMessage = if (needsSoundCloudName) {
                             null
                         } else {
@@ -678,7 +687,7 @@ class AppState(
                     loading = false,
                     loaded = true,
                     loadedAtMillis = System.currentTimeMillis(),
-                    needsSoundCloudUsername = needsSoundCloudName,
+                    needsSoundCloudUsername = wantsSoundCloudName,
                     errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() }
                         ?: "Connect Spotify under Settings › Spotify library to see your playlists here."
                             .takeIf { spotifyHalfWay && playlists.isEmpty() },
@@ -1369,7 +1378,7 @@ class AppState(
         if (playlist.tracks.isEmpty()) return libraryNotice("Add a track before sharing this playlist.")
         val link = PlaylistShareLink.encode(playlist.title, playlist.tracks)
         runCatching { system.copyToClipboard(link) }
-            .onSuccess { libraryNotice("Share link copied — ${playlist.trackCount} tracks, ${link.length} characters.") }
+            .onSuccess { libraryNotice("Share link copied — ${pluralTracks(playlist.trackCount)}, ${link.length} characters.") }
             .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
 
@@ -1389,7 +1398,7 @@ class AppState(
         }
         val imported = LocalPlaylist.create(shared.title).copy(tracks = shared.tracks)
         persistPlaylists(mutableLibrary.value.localPlaylists + imported)
-        libraryNotice("Imported \"${shared.title}\" with ${shared.tracks.size} tracks.")
+        libraryNotice("Imported \"${shared.title}\" with ${pluralTracks(shared.tracks.size)}.")
     }
 
     fun clearLibraryNotice() = mutableLibrary.update { it.copy(notice = null) }

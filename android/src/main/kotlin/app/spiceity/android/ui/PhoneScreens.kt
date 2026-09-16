@@ -73,19 +73,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.AppState
 import app.spiceity.domain.HomeSection
+import app.spiceity.domain.pluralTracks
 import app.spiceity.domain.Playlist
 import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
 import app.spiceity.settings.SpiceityPreferences
 import kotlin.math.roundToInt
 
-/**
- * One track is not "1 tracks".
- *
- * Small, and exactly the sort of thing that makes an application feel unfinished. Counts reach here from
- * three places and every one of them can be one.
- */
-internal fun pluralTracks(count: Int): String = if (count == 1) "1 track" else "$count tracks"
 
 /** A page title, sitting under the status bar. Every screen starts with one. */
 @Composable
