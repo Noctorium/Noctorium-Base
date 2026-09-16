@@ -21,15 +21,15 @@ import java.util.concurrent.TimeUnit
  */
 class AudioConverter(
     private val mpv: () -> Path? = BackendLocator::mpv,
-) {
+) : AudioTranscoder {
     /** Whether MP3 can be produced at all on this machine. */
-    fun canMakeMp3(): Boolean = mpv() != null
+    override fun canMakeMp3(): Boolean = mpv() != null
 
     /**
      * Writes [input] out as an MP3 at [output], carrying the title and artist so a phone has something to
      * show. The cover art is not carried: mpv will not embed a picture, and that wants ffmpeg.
      */
-    suspend fun toMp3(input: Path, output: Path, title: String, artist: String): Path =
+    override suspend fun toMp3(input: Path, output: Path, title: String, artist: String): Path =
         withContext(Dispatchers.IO) {
             val player = mpv() ?: throw BackendException(
                 "Making an MP3 needs mpv, which is missing. Install it in Spiceity Settings.",

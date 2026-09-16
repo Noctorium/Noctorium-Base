@@ -12,42 +12,6 @@ import java.util.concurrent.TimeUnit
 /** Raw result of one yt-dlp run, with the streams kept apart so cookie diagnostics stay readable. */
 internal data class ProcessOutput(val exitCode: Int, val stdout: String, val stderr: String)
 
-enum class AccountProbeOutcome {
-    /** Cookies were read and the provider served content that only a signed-in account can see. */
-    SIGNED_IN,
-
-    /** Cookies were read and accepted, but the provider offers no cheap way to confirm the account. */
-    COOKIES_READY,
-
-    /** Cookies were read, yet the provider still treats the request as anonymous. */
-    NOT_SIGNED_IN,
-
-    /** yt-dlp could not read cookies at all — locked database, encryption, wrong profile, bad file. */
-    COOKIES_UNREADABLE,
-
-    BACKEND_MISSING,
-    FAILED,
-}
-
-data class AccountProbeResult(
-    val outcome: AccountProbeOutcome,
-    val detail: String,
-    val hint: String? = null,
-    val cookieCount: Int? = null,
-) {
-    val usable: Boolean get() = outcome == AccountProbeOutcome.SIGNED_IN || outcome == AccountProbeOutcome.COOKIES_READY
-}
-
-data class AccountProbeRequest(
-    val provider: ProviderType,
-    val cookieArguments: List<String>,
-    val sourceLabel: String,
-    val browserProcessName: String? = null,
-    val chromiumBrowser: Boolean = false,
-    val cookieFile: Path? = null,
-    val profileNamed: Boolean = false,
-)
-
 /**
  * Checks a cookie source by making one real yt-dlp request instead of trusting that a browser name is enough.
  * YouTube is asked for the subscriptions feed, which is only served to a signed-in account; SoundCloud has no
@@ -56,8 +20,8 @@ data class AccountProbeRequest(
 class AccountProbe internal constructor(
     private val executable: () -> Path? = BackendLocator::ytDlp,
     private val runner: suspend (Path, List<String>) -> ProcessOutput = ::runYtDlp,
-) {
-    suspend fun probe(request: AccountProbeRequest): AccountProbeResult {
+) : SessionProbe {
+    override suspend fun probe(request: AccountProbeRequest): AccountProbeResult {
         if (request.cookieArguments.isEmpty()) {
             return AccountProbeResult(
                 AccountProbeOutcome.FAILED,

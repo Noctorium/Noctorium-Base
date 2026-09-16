@@ -18,7 +18,7 @@ fun main() = application {
     // Held here rather than inside the interface so it can be shut down before the process ends. Leaving
     // that to the composition being disposed is a race the player can lose, and losing it means mpv is
     // still playing after the window has gone.
-    val appState = remember { AppState() }
+    val appState = remember { desktopAppState() }
 
     Window(
         onCloseRequest = {

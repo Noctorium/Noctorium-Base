@@ -1,7 +1,10 @@
 package app.spiceity.playback
 
 import app.spiceity.settings.CookieSource
+import app.spiceity.settings.DiagnosticLevel
+import app.spiceity.settings.DiagnosticResult
 import app.spiceity.domain.Album
+import app.spiceity.downloads.AudioConverter
 import app.spiceity.downloads.ExportFormat
 import app.spiceity.domain.Artist
 import app.spiceity.domain.Playlist
@@ -206,6 +209,25 @@ class YtDlpService(
 
     suspend fun version(): String = withContext(Dispatchers.IO) { run("--version").trim() }
 
+    /**
+     * The three programs a desktop Spiceity depends on, each of which can genuinely be absent.
+     *
+     * This is the half of diagnostics that has no meaning on a phone, where the extractor is compiled into
+     * the APK — which is why the question belongs to the backend rather than to the screen asking it.
+     */
+    override suspend fun diagnostics(): List<DiagnosticResult> = listOf(
+        check("yt-dlp", executable(), "Required for search and streaming"),
+        check("mpv", BackendLocator.mpv(), "Required for playback"),
+        check("FFmpeg", ffmpeg(), "Used for media compatibility"),
+    )
+
+    private fun check(name: String, path: Path?, purpose: String): DiagnosticResult =
+        if (path == null) {
+            DiagnosticResult(name, "$purpose — not found", DiagnosticLevel.FAIL)
+        } else {
+            DiagnosticResult(name, "$purpose — $path", DiagnosticLevel.PASS)
+        }
+
     override suspend fun describe(): String =
         "yt-dlp " + runCatching { version() }.getOrDefault("(not found)")
 
@@ -408,7 +430,15 @@ class YtDlpService(
     }
 
     /** Whether this machine can convert audio, which is the only thing standing between us and MP3. */
-    override fun canConvertAudio(): Boolean = ffmpeg() != null
+    /**
+     * Whether this machine can make an MP3 at all, by either route.
+     *
+     * yt-dlp converts with ffmpeg, and mpv can encode one on its own — and mpv is always here, because
+     * nothing plays without it. Asking only about ffmpeg reported "no MP3" on a machine that could make
+     * one perfectly well, which is why the whole question is answered here rather than half here and half
+     * at the call site.
+     */
+    override fun canConvertAudio(): Boolean = ffmpeg() != null || AudioConverter().canMakeMp3()
 
     /**
      * Saves a track as a file for the listener to keep, rather than for Spiceity to play.

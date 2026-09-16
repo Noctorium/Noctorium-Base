@@ -1,7 +1,7 @@
 package app.spiceity.downloads
 
 import app.spiceity.domain.Track
-import app.spiceity.playback.YtDlpService
+import app.spiceity.playback.MusicBackend
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,9 +50,13 @@ data class DownloadsState(
  * closed midway.
  */
 class DownloadManager(
-    private val ytDlp: YtDlpService,
+    private val ytDlp: MusicBackend,
     private val store: DownloadStore = DownloadStore(),
-    private val converter: AudioConverter = AudioConverter(),
+    /**
+     * What can make an MP3 here, if anything. The desktop passes mpv; a phone passes nothing, because it
+     * has no encoder and wants none — Android plays the m4a and opus the services serve.
+     */
+    private val converter: AudioTranscoder = NoTranscoder,
 ) {
     private val mutableState = MutableStateFlow(DownloadsState())
     val state: StateFlow<DownloadsState> = mutableState.asStateFlow()

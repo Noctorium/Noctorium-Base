@@ -93,4 +93,19 @@ interface MusicBackend {
      * backend is compiled in and cannot be absent.
      */
     suspend fun describe(): String
+
+    /**
+     * What the diagnostics screen should say about this backend.
+     *
+     * Asked of the backend rather than assembled by the caller, because the questions are not the same:
+     * a desktop has three separate programs that can each be missing, and a phone has a library compiled
+     * into the APK that cannot be. The default is the honest answer for the second case.
+     */
+    suspend fun diagnostics(): List<app.spiceity.settings.DiagnosticResult> = listOf(
+        app.spiceity.settings.DiagnosticResult(
+            name = "Playback backend",
+            detail = describe(),
+            level = app.spiceity.settings.DiagnosticLevel.PASS,
+        ),
+    )
 }

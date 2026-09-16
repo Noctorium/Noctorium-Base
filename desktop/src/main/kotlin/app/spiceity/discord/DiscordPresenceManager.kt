@@ -13,15 +13,6 @@ import kotlinx.serialization.json.JsonObject
 import java.time.Instant
 import java.util.UUID
 
-data class DiscordPresenceStatus(
-    val connected: Boolean = false,
-    val lastMessage: String? = null,
-    /** What the card currently says, so the settings screen can show it back. */
-    val preview: DiscordPreview? = null,
-)
-
-data class DiscordPreview(val details: String, val state: String, val largeText: String, val buttons: List<String>)
-
 /**
  * Keeps Discord's card in step with playback.
  *
@@ -33,16 +24,16 @@ class DiscordPresenceManager internal constructor(
     private val client: DiscordIpcClient = DiscordIpcClient(),
     private val nowEpochSeconds: () -> Long = { Instant.now().epochSecond },
     private val elapsedMillis: () -> Long = { System.currentTimeMillis() },
-) {
+) : PresenceReporter {
     private val mutableStatus = MutableStateFlow(DiscordPresenceStatus())
-    val status: StateFlow<DiscordPresenceStatus> = mutableStatus.asStateFlow()
+    override val status: StateFlow<DiscordPresenceStatus> = mutableStatus.asStateFlow()
 
     private var settings = DiscordPresenceSettings()
     private var lastPayload: JsonObject? = null
     private var lastSentAt = 0L
     private var updateJob: Job? = null
 
-    fun apply(settings: DiscordPresenceSettings, playback: PlaybackState, scope: CoroutineScope) {
+    override fun apply(settings: DiscordPresenceSettings, playback: PlaybackState, scope: CoroutineScope) {
         val changed = this.settings != settings
         this.settings = settings
         if (changed) {
@@ -56,7 +47,7 @@ class DiscordPresenceManager internal constructor(
         publish(playback, scope)
     }
 
-    fun publish(playback: PlaybackState, scope: CoroutineScope) {
+    override fun publish(playback: PlaybackState, scope: CoroutineScope) {
         if (!settings.enabled) return
         val track = playback.track ?: return
         val playing = playback.status == PlaybackStatus.PLAYING
@@ -97,14 +88,14 @@ class DiscordPresenceManager internal constructor(
         }
     }
 
-    suspend fun clear() {
+    override suspend fun clear() {
         lastPayload = null
         if (client.connected) client.setActivity(null, UUID.randomUUID().toString())
         mutableStatus.value = DiscordPresenceStatus(connected = client.connected, lastMessage = "Activity hidden.")
     }
 
     /** Tries a connection right away so the settings screen can report whether Discord answered. */
-    suspend fun testConnection(applicationId: String): String {
+    override suspend fun testConnection(applicationId: String): String {
         client.disconnect()
         val connected = client.connect(applicationId)
         mutableStatus.value = mutableStatus.value.copy(connected = connected)
@@ -115,7 +106,7 @@ class DiscordPresenceManager internal constructor(
         }
     }
 
-    fun close() = client.disconnect()
+    override fun close() = client.disconnect()
 
     private companion object {
         /** Discord throttles activity writes; this keeps Spiceity well inside its limit. */

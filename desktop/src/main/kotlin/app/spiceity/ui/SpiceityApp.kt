@@ -50,6 +50,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.*
+import app.spiceity.desktopAppState
 import app.spiceity.discord.DiscordPreview
 import app.spiceity.discord.DiscordPresenceSettings
 import app.spiceity.discord.PausedBehaviour
@@ -86,7 +87,7 @@ import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 @Composable
-fun SpiceityApp(appState: AppState = remember { AppState() }, window: java.awt.Window? = null) {
+fun SpiceityApp(appState: AppState = remember { desktopAppState() }, window: java.awt.Window? = null) {
     val ui by appState.ui.collectAsState()
     val queue by appState.queue.state.collectAsState()
     val playback by appState.playback.collectAsState()
@@ -1076,7 +1077,7 @@ private fun SearchScreen(ui: AppUiState, state: AppState) {
                     "YouTube Music, YouTube videos, and SoundCloud results appear together."
                 else "Only ${ui.searchMode.displayName} results will appear.",
             )
-            ui.errorMessage != null -> PlaybackError(ui.errorMessage)
+            ui.errorMessage != null -> PlaybackError(ui.errorMessage.orEmpty())
             else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                 items(ui.searchResults.tracks, key = { it.queueKey }) { track ->
                     TrackRow(track, ui.searchResults.tracks, state)

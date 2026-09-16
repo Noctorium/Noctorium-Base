@@ -1,7 +1,5 @@
 package app.spiceity.core
 
-import app.spiceity.discord.DiscordPresenceManager
-import app.spiceity.downloads.AudioConverter
 import app.spiceity.downloads.DownloadManager
 import app.spiceity.downloads.MusicExport
 import app.spiceity.downloads.DownloadsState
@@ -13,16 +11,18 @@ import app.spiceity.lyrics.LyricsProviderOutcome
 import app.spiceity.lyrics.LyricsProviderStatus
 import app.spiceity.lyrics.LyricsRepository
 import app.spiceity.lyrics.LyricsUiState
+import app.spiceity.playback.MusicBackend
 import app.spiceity.playback.QueueManager
-import app.spiceity.playback.AccountProbe
+import app.spiceity.playback.SessionProbe
+import app.spiceity.playback.UncheckedSession
+import app.spiceity.platform.SystemBridge
+import app.spiceity.discord.PresenceReporter
+import app.spiceity.discord.NoPresenceReporter
 import app.spiceity.playback.AccountProbeOutcome
 import app.spiceity.playback.AccountProbeRequest
-import app.spiceity.playback.BackendLocator
-import app.spiceity.playback.MpvPlaybackEngine
 import app.spiceity.playback.PlaybackEngine
 import app.spiceity.playback.PlaybackState
 import app.spiceity.playback.PlaybackStatus
-import app.spiceity.playback.YtDlpService
 import app.spiceity.playlists.LocalPlaylist
 import app.spiceity.playlists.LocalPlaylistRepository
 import app.spiceity.playlists.PlaylistShareLink
@@ -71,9 +71,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
-import java.awt.Desktop
-import java.awt.Toolkit
-import java.awt.datatransfer.StringSelection
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -203,25 +200,40 @@ data class AppUiState(
     val errorMessage: String? = null,
 )
 
+/**
+ * Everything Spiceity does, above the line where the platforms differ.
+ *
+ * It lives in `core` and is the same object on a desktop and on a phone: the queue, the library, likes,
+ * playlists, downloads, settings, scrobbling, the Spiceity account and the Spotify matching are one
+ * implementation, not two that drift. What changes between them arrives through this constructor.
+ *
+ * Nothing here has a platform default any more. That is deliberate and slightly inconvenient: a default
+ * would silently be wrong on one of the two, and being made to say which backend, which secret store and
+ * which bridge is being used is a small price for never wondering.
+ */
 class AppState(
-    private val ytDlp: YtDlpService = YtDlpService(),
+    private val ytDlp: MusicBackend,
+    private val credentials: SecretStore,
+    /** Opening a page, the clipboard, showing a saved file — the few things only the platform can do. */
+    private val system: SystemBridge,
     private val downloads: DownloadManager = DownloadManager(ytDlp),
-    // Given the download library to consult, so a track kept on the disk plays from there and asks the
-    // network for nothing. Declared after it because a default may only refer to what precedes it.
-    private val playbackEngine: PlaybackEngine = MpvPlaybackEngine(ytDlp, downloadedFile = downloads::localFile),
+    private val playbackEngine: PlaybackEngine,
     /** Left null so the real set can be built below, where a provider can be handed one of these methods. */
     private val injectedProviders: List<MusicProvider>? = null,
     private val lyricsRepository: LyricsRepository = LyricsRepository(),
     private val settingsRepository: SettingsRepository = SettingsRepository(),
-    private val accountProbe: AccountProbe = AccountProbe(),
+    /**
+     * Checking a saved session by using it. Where a platform cannot, [UncheckedSession] says so rather
+     * than reporting a working account as broken.
+     */
+    private val accountProbe: SessionProbe = UncheckedSession,
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
     private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
-    private val clipboard: (String) -> Unit = ::copyToSystemClipboard,
     private val likeClient: SoundCloudLikeClient = SoundCloudLikeClient(),
-    private val credentials: SecretStore = SecureCredentialStore(),
     // Declared after the store it reads from: a default may only refer to a parameter before it.
     private val scrobbleManager: ScrobbleManager = ScrobbleManager(credentials),
-    private val discordPresence: DiscordPresenceManager = DiscordPresenceManager(),
+    /** Discord needs its desktop app on the same machine, so a phone passes [NoPresenceReporter]. */
+    private val discordPresence: PresenceReporter = NoPresenceReporter(),
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
     private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
     private val playlistClient: SoundCloudPlaylistClient = SoundCloudPlaylistClient(),
@@ -1246,14 +1258,14 @@ class AppState(
      * character adrift and the sign-in ends on Spotify's own error page rather than back here.
      */
     fun copySpotifyRedirectUri() {
-        runCatching { clipboard(SpotifyAuth.redirectUri()) }
+        runCatching { system.copyToClipboard(SpotifyAuth.redirectUri()) }
             .onSuccess { publishSpotifyState(message = "Redirect address copied. Paste it into your Spotify app.") }
             .onFailure { publishSpotifyState(message = "Could not reach the clipboard: ${it.message}") }
     }
 
     /** Copies the provider page for one track, which anyone can open with or without Spiceity. */
     fun copyTrackLink(track: Track) {
-        runCatching { clipboard(track.sourceUrl) }
+        runCatching { system.copyToClipboard(track.sourceUrl) }
             .onSuccess { libraryNotice("Link to ${track.title} copied.") }
             .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
@@ -1262,7 +1274,7 @@ class AppState(
     fun copyPlaylistShareLink(playlist: LocalPlaylist) {
         if (playlist.tracks.isEmpty()) return libraryNotice("Add a track before sharing this playlist.")
         val link = PlaylistShareLink.encode(playlist.title, playlist.tracks)
-        runCatching { clipboard(link) }
+        runCatching { system.copyToClipboard(link) }
             .onSuccess { libraryNotice("Share link copied — ${playlist.trackCount} tracks, ${link.length} characters.") }
             .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
@@ -1270,7 +1282,7 @@ class AppState(
     /** Copies a readable track listing for sharing with people who do not run Spiceity. */
     fun copyPlaylistAsText(playlist: LocalPlaylist) {
         if (playlist.tracks.isEmpty()) return libraryNotice("This playlist is empty.")
-        runCatching { clipboard(shareableText(playlist.title, playlist.tracks)) }
+        runCatching { system.copyToClipboard(shareableText(playlist.title, playlist.tracks)) }
             .onSuccess { libraryNotice("Track list copied as text.") }
             .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
@@ -1499,12 +1511,7 @@ class AppState(
         if (mutableSettings.value.diagnosticsRunning) return
         scope.launch {
             mutableSettings.update { it.copy(diagnosticsRunning = true, diagnostics = emptyList()) }
-            val results = listOf(
-                checkBackend("yt-dlp", BackendLocator.ytDlp(), "Required for search and streaming"),
-                checkBackend("mpv", BackendLocator.mpv(), "Required for playback"),
-                checkBackend("FFmpeg", BackendLocator.ffmpeg(), "Used for media compatibility"),
-                checkStorage(),
-            )
+            val results = ytDlp.diagnostics() + checkStorage()
             mutableSettings.update { it.copy(diagnosticsRunning = false, diagnostics = results) }
         }
     }
@@ -1639,11 +1646,7 @@ class AppState(
         }
     }
 
-    private fun browseSecureUrl(url: String) {
-        require(url.startsWith("https://")) { "Only secure links can be opened" }
-        check(Desktop.isDesktopSupported()) { "Opening links is not supported on this system" }
-        Desktop.getDesktop().browse(URI(url))
-    }
+    private fun browseSecureUrl(url: String) = system.openUrl(url)
 
     fun refreshHome() {
         scope.launch {
@@ -2007,29 +2010,19 @@ class AppState(
     }
 
     /** Whether this machine can make an MP3, which decides what saving actually produces. */
-    fun canSaveAsMp3(): Boolean = ytDlp.canConvertAudio() || AudioConverter().canMakeMp3()
+    fun canSaveAsMp3(): Boolean = ytDlp.canConvertAudio()
 
     /** Where saved music goes: the chosen folder, or the desktop when none has been chosen. */
     fun exportFolder(): Path? = mutableSettings.value.preferences.exportFolder
         .takeIf(String::isNotBlank)
         ?.let { runCatching { Path.of(it) }.getOrNull() }
-        ?: MusicExport.defaultFolder()
+        ?: system.defaultExportFolder()
 
     fun setExportFolder(folder: String) = updatePreferences { copy(exportFolder = folder.trim()) }
 
-    /** Opens the folder a file was saved into, with the file itself picked out. */
+    /** Shows the listener the file that was just written, in whatever way this platform shows things. */
     private fun revealInFileManager(file: Path) {
-        scope.launch(Dispatchers.IO) {
-            runCatching {
-                if (System.getProperty("os.name").orEmpty().startsWith("Windows", ignoreCase = true)) {
-                    // Explorer's own switch for "open the folder and select this", which saves the listener
-                    // hunting for a file among however many others are on their desktop.
-                    ProcessBuilder("explorer.exe", "/select,${file.toAbsolutePath()}").start()
-                } else {
-                    Desktop.getDesktop().open(file.parent.toFile())
-                }
-            }
-        }
+        scope.launch(Dispatchers.IO) { runCatching { system.revealFile(file) } }
     }
 
     fun cancelDownload(queueKey: String) = downloads.cancel(queueKey)
@@ -2141,10 +2134,6 @@ private fun formatCheckTime(epochSeconds: Long): String = runCatching {
  * covers appear in batches down the list instead of all at once at the end.
  */
 private const val ARTWORK_SLICE = 10
-
-private fun copyToSystemClipboard(text: String) {
-    Toolkit.getDefaultToolkit().systemClipboard.setContents(StringSelection(text), null)
-}
 
 /** Credential-store key for the SoundCloud session token that authorises writing likes. */
 private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
