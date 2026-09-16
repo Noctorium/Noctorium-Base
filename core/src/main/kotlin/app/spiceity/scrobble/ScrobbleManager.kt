@@ -5,6 +5,7 @@ import app.spiceity.playback.PlaybackStatus
 import app.spiceity.settings.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
@@ -49,7 +50,7 @@ class ScrobbleManager internal constructor(
         listenBrainzToken = credentials.get(LISTENBRAINZ_TOKEN)
         lastFmSessionKey = credentials.get(LASTFM_SESSION)
         pendingLastFmToken = credentials.get(LASTFM_PENDING)
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             lastFmConfigured = lastFm.configured,
             listenBrainz = if (listenBrainzToken != null) {
                 ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, listenBrainzUsername.ifBlank { null })
@@ -60,7 +61,7 @@ class ScrobbleManager internal constructor(
                 else -> ScrobbleServiceState()
             },
             pendingScrobbles = pendingRepository.list().size,
-        )
+        ) }
         flushPending()
     }
 
@@ -72,29 +73,29 @@ class ScrobbleManager internal constructor(
         credentials.put(LASTFM_API_KEY, cleanKey)
         credentials.put(LASTFM_SHARED_SECRET, cleanSecret)
         lastFm.updateCredentials(cleanKey, cleanSecret)
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             lastFmConfigured = true,
             lastFm = ScrobbleServiceState(message = "Application credentials saved securely"),
-        )
+        ) }
     }
 
     suspend fun connectListenBrainz(token: String): String {
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             listenBrainz = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTING, message = "Checking token…"),
-        )
+        ) }
         return runCatching {
             val username = listenBrainz.validateToken(token.trim())
             withContext(Dispatchers.IO) { credentials.put(LISTENBRAINZ_TOKEN, token.trim()) }
             listenBrainzToken = token.trim()
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 listenBrainz = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, username, "Ready to scrobble"),
-            )
+            ) }
             ScrobbleLog.event("listenbrainz_connected", mapOf("username" to username))
             username
         }.getOrElse { error ->
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 listenBrainz = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = safeMessage(error)),
-            )
+            ) }
             throw error
         }
     }
@@ -102,39 +103,39 @@ class ScrobbleManager internal constructor(
     fun disconnectListenBrainz() {
         credentials.remove(LISTENBRAINZ_TOKEN)
         listenBrainzToken = null
-        mutableState.value = mutableState.value.copy(listenBrainz = ScrobbleServiceState())
+        mutableState.update { it.copy(listenBrainz = ScrobbleServiceState()) }
         ScrobbleLog.event("listenbrainz_disconnected")
     }
 
     suspend fun beginLastFmAuthorization(): LastFmAuthorization {
         check(lastFm.configured) { "Last.fm application credentials are missing from this build" }
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTING, message = "Starting Last.fm authorization…"),
-        )
+        ) }
         return runCatching {
             val token = lastFm.beginAuthorization()
             withContext(Dispatchers.IO) { credentials.put(LASTFM_PENDING, token) }
             pendingLastFmToken = token
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 lastFm = ScrobbleServiceState(
                     ScrobbleConnectionStatus.AWAITING_APPROVAL,
                     message = "Approve Spiceity in the browser window that just opened.",
                 ),
-            )
+            ) }
             LastFmAuthorization(token, lastFm.authorizationUrl(token))
         }.getOrElse { error ->
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = safeMessage(error)),
-            )
+            ) }
             throw error
         }
     }
 
     suspend fun completeLastFmAuthorization(): String = runCatching { exchangePendingLastFmToken() }
         .getOrElse { error ->
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = safeMessage(error)),
-            )
+            ) }
             throw error
         }
 
@@ -154,12 +155,12 @@ class ScrobbleManager internal constructor(
             if (username != null) return username
         }
         if (pendingLastFmToken == token) {
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 lastFm = ScrobbleServiceState(
                     ScrobbleConnectionStatus.AWAITING_APPROVAL,
                     message = "Still waiting for approval — finish sign-in once you have allowed Spiceity.",
                 ),
-            )
+            ) }
         }
         return null
     }
@@ -174,9 +175,9 @@ class ScrobbleManager internal constructor(
         }
         lastFmSessionKey = session.key
         pendingLastFmToken = null
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, session.username, "Ready to scrobble"),
-        )
+        ) }
         ScrobbleLog.event("lastfm_connected", mapOf("username" to session.username))
         return session.username
     }
@@ -186,7 +187,7 @@ class ScrobbleManager internal constructor(
         credentials.remove(LASTFM_PENDING)
         lastFmSessionKey = null
         pendingLastFmToken = null
-        mutableState.value = mutableState.value.copy(lastFm = ScrobbleServiceState())
+        mutableState.update { it.copy(lastFm = ScrobbleServiceState()) }
         ScrobbleLog.event("lastfm_disconnected")
     }
 
@@ -244,7 +245,7 @@ class ScrobbleManager internal constructor(
         }.awaitAll()
         val successful = results.mapNotNull(Result<String>::getOrNull)
         if (successful.isNotEmpty()) {
-            mutableState.value = mutableState.value.copy(lastEvent = "Now playing sent to ${successful.joinToString()}")
+            mutableState.update { it.copy(lastEvent = "Now playing sent to ${successful.joinToString()}") }
             ScrobbleLog.event("now_playing_sent", mapOf("track" to track.queueKey, "services" to successful.joinToString()))
         }
         results.mapNotNull(Result<String>::exceptionOrNull).forEach { error ->
@@ -261,18 +262,18 @@ class ScrobbleManager internal constructor(
         val results = attempts.map { (target, deferred) -> target to deferred.await() }
         val successful = results.mapNotNull { (target, result) -> result.getOrNull()?.let { target.displayName } }
         if (successful.isNotEmpty()) {
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 lastEvent = "Scrobbled ${track.title} to ${successful.joinToString()}",
                 scrobblesThisSession = mutableState.value.scrobblesThisSession + 1,
-            )
+            ) }
             ScrobbleLog.event("scrobble_sent", mapOf("track" to track.queueKey, "services" to successful.joinToString()))
         }
         results.mapNotNull { (target, result) -> result.exceptionOrNull()?.let { target to it } }.forEach { (target, error) ->
             pendingRepository.enqueue(PendingScrobble(target, track, startedAt))
-            mutableState.value = mutableState.value.copy(lastEvent = "Scrobble failed: ${safeMessage(error)}")
+            mutableState.update { it.copy(lastEvent = "Scrobble failed: ${safeMessage(error)}") }
             ScrobbleLog.event("scrobble_queued", mapOf("track" to track.queueKey, "service" to target.name, "message" to safeMessage(error)))
         }
-        mutableState.value = mutableState.value.copy(pendingScrobbles = pendingRepository.list().size)
+        mutableState.update { it.copy(pendingScrobbles = pendingRepository.list().size) }
     }
 
     private suspend fun flushPending() {
@@ -291,7 +292,7 @@ class ScrobbleManager internal constructor(
             }
         }
         pendingRepository.replace(remaining)
-        mutableState.value = mutableState.value.copy(pendingScrobbles = remaining.size)
+        mutableState.update { it.copy(pendingScrobbles = remaining.size) }
     }
 
     internal companion object {

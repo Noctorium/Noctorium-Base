@@ -9,6 +9,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.getAndUpdate
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
@@ -185,7 +187,10 @@ class ConnectDiscovery(
             if (mutablePeers.value.none { it.id == peer.id }) {
                 log("Found ${peer.name} (${peer.kind}) at ${peer.address}:${peer.port}")
             }
-            mutablePeers.value = mutablePeers.value.filterNot { it.id == peer.id } + peer
+            // Atomically, because this runs in the listening loop while prune() below runs in the
+            // announcing one. Read-modify-write from two coroutines loses whichever update lands
+            // second: a device found at the wrong moment vanishes, or one that left comes back.
+            mutablePeers.update { peers -> peers.filterNot { it.id == peer.id } + peer }
         }
     }
 
@@ -201,11 +206,10 @@ class ConnectDiscovery(
     /** Devices that have stopped announcing are gone, whether they said goodbye or had their wifi turned off. */
     private fun prune() {
         val cutoff = clock() - PEER_FORGOTTEN_AFTER_MS
-        val alive = mutablePeers.value.filter { it.lastSeenAtMs >= cutoff }
-        if (alive.size != mutablePeers.value.size) {
-            mutablePeers.value.filterNot { it in alive }.forEach { log("Lost ${it.name}") }
-            mutablePeers.value = alive
-        }
+        // The swap is atomic and the logging happens after it. update{} re-runs its lambda when another
+        // coroutine got there first, so a log inside it would print the same departure twice.
+        val before = mutablePeers.getAndUpdate { peers -> peers.filter { it.lastSeenAtMs >= cutoff } }
+        before.filter { it.lastSeenAtMs < cutoff }.forEach { log("Lost ${it.name}") }
     }
 
     private fun currentlyActive(): Boolean = scope?.isActive == true && socket?.isClosed == false

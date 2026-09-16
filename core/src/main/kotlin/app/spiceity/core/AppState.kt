@@ -358,7 +358,7 @@ class AppState(
         host = connectHost,
         secrets = credentials,
         accountClient = accountClient,
-        token = { runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull() },
+        token = ::storedSpiceityToken,
         kind = deviceKind,
         defaultDeviceName = deviceName,
         presence = networkPresence,
@@ -1953,7 +1953,7 @@ class AppState(
     /** Picks a saved session back up, so signing in is something done once rather than every launch. */
     private fun restoreSpiceityAccount() {
         scope.launch {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull() }
+            val token = withContext(Dispatchers.IO) { storedSpiceityToken() }
             if (token.isNullOrBlank()) return@launch
             val user = accountClient.whoAmI(token)
             if (user == null) {
@@ -1995,7 +1995,12 @@ class AppState(
     }
 
     fun signOutOfSpiceity() {
-        scope.launch(Dispatchers.IO) { runCatching { credentials.remove(SPICEITY_TOKEN) } }
+        scope.launch(Dispatchers.IO) {
+            runCatching { credentials.remove(SPICEITY_TOKEN) }
+            // Both names. Clearing only the current one would leave the old session to be adopted
+            // again on the next launch, signing the listener back in after they asked to be out.
+            runCatching { credentials.remove(LEGACY_SPICEITY_TOKEN) }
+        }
         // The key goes with the account. Leaving it behind would keep this device answering commands
         // from an account it is no longer signed in to.
         connectManager.forgetKey()
@@ -2004,6 +2009,30 @@ class AppState(
     }
 
     fun clearSpiceityMessage() = mutableAccount.update { it.copy(message = null) }
+
+    /**
+     * The saved Spiceity session, including one saved under the name this application used to have.
+     *
+     * The rename from Spice moved the data folder across, deliberately and carefully, and left the
+     * secret store alone. So an account signed in before the rename went on being stored under
+     * `spicetify.session_token` while every read asked for `spiceity.session_token`, and the listener
+     * was quietly signed out: no message, no prompt, their listening simply stopped being counted. It
+     * took building Connect, which needs the account, to notice.
+     *
+     * Adopted on first read rather than migrated at startup, because reading a secret on Windows runs
+     * PowerShell and the launch path should not pay for that when there is nothing to move. Once
+     * adopted the old name is removed, so this costs one extra read exactly once.
+     */
+    private fun storedSpiceityToken(): String? {
+        runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull()?.takeIf(String::isNotBlank)?.let { return it }
+        val inherited = runCatching { credentials.get(LEGACY_SPICEITY_TOKEN) }
+            .getOrNull()?.takeIf(String::isNotBlank) ?: return null
+        runCatching {
+            credentials.put(SPICEITY_TOKEN, inherited)
+            credentials.remove(LEGACY_SPICEITY_TOKEN)
+        }.onFailure { SettingsLog.event("session_rename_failed", mapOf("error" to it.message)) }
+        return inherited
+    }
 
     // --- Spiceity Connect ---
 
@@ -2097,7 +2126,7 @@ class AppState(
 
     fun refreshListeningStats() {
         scope.launch {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull() }
+            val token = withContext(Dispatchers.IO) { storedSpiceityToken() }
                 ?: return@launch
             accountClient.stats(token)?.let { stats -> mutableAccount.update { it.copy(stats = stats) } }
         }
@@ -2129,7 +2158,7 @@ class AppState(
     /** Offers everything unreported. Anything the service does not take is put back for the next attempt. */
     private fun reportPlays() {
         scope.launch {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SPICEITY_TOKEN) }.getOrNull() }
+            val token = withContext(Dispatchers.IO) { storedSpiceityToken() }
             if (token.isNullOrBlank()) return@launch
             val batch = generateSequence { unreportedPlays.poll() }.take(MAX_UNREPORTED_PLAYS).toList()
             if (batch.isEmpty()) return@launch
@@ -2355,6 +2384,14 @@ private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
 
 /** Credential-store key for the Spiceity account session. The password itself is never kept. */
 private const val SPICEITY_TOKEN = "spiceity.session_token"
+
+/**
+ * What the session was called when the application was called Spice.
+ *
+ * Kept so that an account signed in before the rename is not thrown away. Nothing writes this any
+ * more; it is read once, moved to the current name, and deleted.
+ */
+private const val LEGACY_SPICEITY_TOKEN = "spicetify.session_token"
 
 /** Long enough for an engine to have opened the file and reported a position of its own. */
 private const val HANDOVER_SEEK_CHECK_MS = 900L
