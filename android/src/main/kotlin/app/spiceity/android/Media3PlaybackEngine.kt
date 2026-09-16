@@ -78,7 +78,13 @@ class Media3PlaybackEngine(
             addListener(object : Player.Listener {
                 override fun onPlaybackStateChanged(playbackState: Int) = publish()
 
-                override fun onIsPlayingChanged(isPlaying: Boolean) = publish()
+                override fun onIsPlayingChanged(isPlaying: Boolean) {
+                    publish()
+                    // Re-arm here, not only at play(). The ticker below stops when nothing is playing,
+                    // and "nothing is playing" is also true for the second after prepare() while the
+                    // first packets arrive — so starting it once left it dead before the track began.
+                    if (isPlaying) startTicking()
+                }
 
                 override fun onPlayerError(error: PlaybackException) {
                     mutableState.value = mutableState.value.copy(
@@ -226,7 +232,11 @@ class Media3PlaybackEngine(
         ticker = scope.launch {
             while (true) {
                 publish()
-                if (!player.isPlaying) break
+                // Buffering counts as still going. Stopping on it is what made the seek bar sit at 0:00
+                // for the whole track: the loop was started the instant after prepare(), found the player
+                // not yet playing, and ended before a single second had elapsed.
+                val moving = player.isPlaying || player.playbackState == Player.STATE_BUFFERING
+                if (!moving) break
                 delay(500)
             }
         }

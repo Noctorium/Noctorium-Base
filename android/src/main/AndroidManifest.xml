@@ -37,6 +37,20 @@
         </activity>
 
         <!--
+          Lets the share sheet read a file Spiceity saved, and nothing else — see file_paths.xml. Exported
+          false with per-URI grants is the shape that keeps the cookie jars beside it unreachable.
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!--
           Media3's session service, which is what makes the lock screen controls, the notification and the
           Bluetooth buttons work. Without it the player stops the moment the activity goes away.
         -->

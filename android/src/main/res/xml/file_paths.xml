@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  What the share sheet is allowed to hand to another app.
+
+  Only the two places Spiceity writes audio: its own downloads folder, and the shared Music folder an
+  export goes to. A provider that exposed the whole data directory would also be exposing the cookie jars
+  and the encrypted credentials file sitting beside them.
+-->
+<paths>
+    <files-path name="spiceity-downloads" path="spiceity/downloads/" />
+    <external-path name="music" path="Music/" />
+</paths>
