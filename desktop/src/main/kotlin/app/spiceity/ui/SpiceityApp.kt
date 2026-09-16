@@ -1560,8 +1560,11 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 )
                 Spacer(Modifier.width(12.dp))
 
+                // Outside the badge, not inside it. BadgedBox has one content slot: a second child in
+                // there is laid on top of the first, so this button was drawn over the queue button and
+                // every click on it went to the queue instead.
+                ConnectButton(state)
                 BadgedBox(badge = { if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) } }) {
-                    ConnectButton(state)
                     IconButton({ state.navigate(Destination.QUEUE) }, Modifier.size(34.dp)) {
                         Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue", Modifier.size(19.dp))
                     }

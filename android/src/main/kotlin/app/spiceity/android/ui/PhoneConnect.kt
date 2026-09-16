@@ -50,6 +50,7 @@ import app.spiceity.settings.SettingsState
 @Composable
 internal fun ConnectButton(state: AppState, haptics: Haptics) {
     val connect by state.connect.collectAsState()
+    val playback by state.playback.collectAsState()
     var open by remember { mutableStateOf(false) }
 
     if (!connect.available && connect.devices.isEmpty() && connect.target == null) return
@@ -85,7 +86,7 @@ internal fun ConnectButton(state: AppState, haptics: Haptics) {
 
                 DeviceRow(
                     name = connect.thisDevice.ifBlank { "This phone" },
-                    detail = if (connect.target == null) "Playing here" else "Idle",
+                    detail = localDetail(connect.target != null, playback.isPlaying),
                     kind = DeviceKind.PHONE,
                     current = connect.target == null,
                 ) {
@@ -231,6 +232,13 @@ internal fun ConnectCard(settings: SettingsState, state: AppState) {
             )
         }
     }
+}
+
+/** What this phone is doing, said accurately rather than optimistically. */
+private fun localDetail(elsewhere: Boolean, playing: Boolean): String = when {
+    elsewhere -> "Idle"
+    playing -> "Playing here"
+    else -> "Ready"
 }
 
 private fun pluralDevices(count: Int): String = if (count == 1) "1 device" else "$count devices"

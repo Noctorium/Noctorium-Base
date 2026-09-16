@@ -233,12 +233,14 @@ class ConnectManager(
                 ),
             )
             if (reply.ok) {
+                log("Handed ${tracks.size} track(s) to ${peer.name} at ${positionMs}ms")
                 host.standDown()
                 mutableState.update {
                     it.copy(busy = false, target = peer, remote = reply.state, message = "Playing on ${peer.name}.")
                 }
                 watch(peer)
             } else {
+                log("${peer.name} refused the handover: ${reply.message}")
                 mutableState.update { it.copy(busy = false, message = reply.message ?: "${peer.name} refused.") }
             }
         }
@@ -290,34 +292,72 @@ class ConnectManager(
 
     override suspend fun state(): RemoteState = snapshotAsRemote()
 
+    /**
+     * Takes the instruction, says so, and gets on with it.
+     *
+     * The reply confirms receipt, not completion, and that distinction is the whole of this method.
+     * Carrying out a handover means resolving a track through yt-dlp and starting a player, which takes
+     * seconds; answering only once that finished meant the sender's four second timeout expired first.
+     * The receiver would take the music and start playing while the sender concluded it had failed, so
+     * it never stopped its own playback and the same song came out of both machines at once -- the one
+     * thing a handover must never do.
+     *
+     * Nothing is lost by replying early. The sender polls state a second later and every second after,
+     * so a handover that fails on this end shows up there rather than in a reply nobody waited for.
+     */
     override suspend fun handle(command: Command): CommandReply {
         command.fromDeviceName?.let { driver = it to clock() }
-        runCatching {
-            when (command.type) {
-                CommandType.TAKE_OVER -> {
-                    // Whoever is driving us now, we are no longer driving anyone else.
-                    release()
-                    host.takeOver(command.tracks.map(WireTrack::toTrack), command.index, command.positionMs ?: 0)
-                }
-                CommandType.HAND_BACK -> {
-                    host.standDown()
-                    driver = null
-                }
-                CommandType.PLAY -> host.resume()
-                CommandType.PAUSE -> host.pause()
-                CommandType.NEXT -> host.next()
-                CommandType.PREVIOUS -> host.previous()
-                CommandType.SEEK -> host.seekTo(command.positionMs ?: 0)
-                CommandType.VOLUME -> host.setVolume(command.volume ?: 1f)
-                CommandType.SHUFFLE -> host.setShuffle(command.enabled ?: false)
-                CommandType.REPEAT -> host.setRepeat(command.repeat ?: "OFF")
-            }
-        }.onFailure {
-            log("Command ${command.type} failed: $it")
-            return CommandReply(ok = false, message = "That did not work here.")
+        if (command.type == CommandType.TAKE_OVER && command.tracks.isEmpty()) {
+            return CommandReply(ok = false, message = "There was nothing playing to send.")
         }
+
+        scope.launch {
+            runCatching {
+                when (command.type) {
+                    CommandType.TAKE_OVER -> {
+                        // Whoever is driving us now, we are no longer driving anyone else.
+                        release()
+                        host.takeOver(command.tracks.map(WireTrack::toTrack), command.index, command.positionMs ?: 0)
+                    }
+                    CommandType.HAND_BACK -> {
+                        host.standDown()
+                        driver = null
+                    }
+                    CommandType.PLAY -> host.resume()
+                    CommandType.PAUSE -> host.pause()
+                    CommandType.NEXT -> host.next()
+                    CommandType.PREVIOUS -> host.previous()
+                    CommandType.SEEK -> host.seekTo(command.positionMs ?: 0)
+                    CommandType.VOLUME -> host.setVolume(command.volume ?: 1f)
+                    CommandType.SHUFFLE -> host.setShuffle(command.enabled ?: false)
+                    CommandType.REPEAT -> host.setRepeat(command.repeat ?: "OFF")
+                }
+            }.onFailure { log("Command ${command.type} failed: $it") }
+        }
+
         mutableState.update { it.copy(controlledBy = currentDriver()) }
-        return CommandReply(ok = true, state = snapshotAsRemote())
+        return CommandReply(ok = true, state = expected(command))
+    }
+
+    /**
+     * What this device is about to be doing, for the reply that goes back before it is doing it.
+     *
+     * Only a handover needs anticipating: it is the one command that changes what is playing, and a
+     * remote control that drew the previous track for a second would look broken at the exact moment
+     * somebody was watching it.
+     */
+    private fun expected(command: Command): RemoteState {
+        val now = snapshotAsRemote()
+        if (command.type != CommandType.TAKE_OVER) return now
+        val track = command.tracks.getOrNull(command.index.coerceIn(0, command.tracks.lastIndex))
+        return now.copy(
+            playing = true,
+            track = track ?: now.track,
+            positionMs = command.positionMs ?: 0,
+            durationMs = track?.durationMs ?: now.durationMs,
+            queueSize = command.tracks.size,
+            queueIndex = command.index.coerceAtLeast(0),
+        )
     }
 
     private fun snapshotAsRemote(): RemoteState {

@@ -49,6 +49,7 @@ import app.spiceity.core.AppState
 @Composable
 internal fun ConnectButton(state: AppState) {
     val connect by state.connect.collectAsState()
+    val playback by state.playback.collectAsState()
     var open by remember { mutableStateOf(false) }
 
     // Nothing to offer and nothing to say, so nothing in the way.
@@ -80,7 +81,7 @@ internal fun ConnectButton(state: AppState) {
 
             DeviceLine(
                 name = connect.thisDevice.ifBlank { "This computer" },
-                detail = if (connect.target == null) "Playing here" else "Idle",
+                detail = localDetail(connect.target != null, playback.isPlaying),
                 kind = DeviceKind.DESKTOP,
                 current = connect.target == null,
                 enabled = connect.target != null,
@@ -162,6 +163,13 @@ private fun DeviceLine(
             }
         }
     }
+}
+
+/** What this device is doing, said accurately. "Playing here" with nothing playing reads as a fault. */
+private fun localDetail(elsewhere: Boolean, playing: Boolean): String = when {
+    elsewhere -> "Idle"
+    playing -> "Playing here"
+    else -> "Ready"
 }
 
 private fun connectSubtitle(target: String?, controlledBy: String?, others: Int): String = when {
