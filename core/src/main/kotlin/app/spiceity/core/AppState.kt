@@ -386,6 +386,15 @@ class AppState(
     fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
 
+    /**
+     * The phone-only settings, changed one field at a time through the block they live in.
+     *
+     * One entry point rather than seven setters: these are all the same shape, and the desktop has no
+     * reason to call any of them.
+     */
+    fun updatePhone(transform: PhonePreferences.() -> PhonePreferences) =
+        updatePreferences { copy(phone = phone.transform()) }
+
     // --- Spotify, which is read and never played from ---
 
     /**
@@ -1745,7 +1754,15 @@ class AppState(
     }
 
     fun search(query: String) {
-        mutableUi.update { it.copy(searchQuery = query) }
+        /*
+         * A pending search counts as a loading search.
+         *
+         * This flag used to be raised after the debounce, which left a third of a second where the
+         * query was new, the results were empty and nothing was in flight. The search screen drew that
+         * state exactly as it reads: "Nothing found", flashing it on every keystroke before a single
+         * request had been made.
+         */
+        mutableUi.update { it.copy(searchQuery = query, searchLoading = query.isNotBlank()) }
         searchJob?.cancel()
         searchJob = scope.launch {
             if (query.isBlank()) {
@@ -1754,7 +1771,7 @@ class AppState(
             }
             kotlinx.coroutines.delay(350)
             val mode = mutableUi.value.searchMode
-            mutableUi.update { it.copy(searchLoading = true, errorMessage = null) }
+            mutableUi.update { it.copy(errorMessage = null) }
             val selectedProviders = when (mode) {
                 SearchMode.HYBRID -> providers
                 SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }

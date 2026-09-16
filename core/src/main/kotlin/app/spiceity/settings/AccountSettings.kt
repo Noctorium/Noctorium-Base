@@ -211,6 +211,13 @@ data class SpiceityPreferences(
     val spotifyClientId: String = "",
     /** Name of the connected Spotify account, kept only so Settings can say whose library is showing. */
     val spotifyAccountName: String = "",
+    /**
+     * Choices that only mean something on a phone.
+     *
+     * Kept in the same file rather than a second one, because the settings file is per-device anyway and
+     * a desktop reading these simply ignores them. Grouped so it stays obvious which is which.
+     */
+    val phone: PhonePreferences = PhonePreferences(),
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
@@ -244,6 +251,64 @@ data class SpiceityPreferences(
     private fun CookieSource.rehomed(): CookieSource =
         if (cookieFile.isBlank()) this else copy(cookieFile = AppDirectories.rebase(cookieFile))
 }
+
+
+/** The shape of the cover on the now playing screen. */
+@Serializable
+enum class ArtworkShape(val displayName: String, val cornerPercent: Int) {
+    ROUNDED("Rounded", 6),
+    SQUARE("Square", 0),
+    CIRCLE("Circle", 50),
+}
+
+/**
+ * Settings a desktop has no use for.
+ *
+ * Every one is about something a phone has and a window does not: a touch screen, a battery, a metered
+ * connection, a screen that turns itself off.
+ */
+@Serializable
+data class PhonePreferences(
+    val artworkShape: ArtworkShape = ArtworkShape.ROUNDED,
+    /** Whether the tabs along the bottom are captioned, or icons alone. */
+    val navigationLabels: Boolean = true,
+    /**
+     * Holds the screen awake while something is playing.
+     *
+     * Off by default. It is genuinely wanted while a phone sits on a desk showing lyrics, and it is a
+     * straightforward way to flatten a battery the rest of the time.
+     */
+    val keepScreenOn: Boolean = false,
+    /**
+     * Refuses downloads on mobile data.
+     *
+     * On by default: a full album over a metered connection costs real money, and the only thing worse
+     * than a download that will not start is one that will not stop.
+     */
+    val downloadOnWifiOnly: Boolean = true,
+    /** A short tick under the finger when a control does something. */
+    val haptics: Boolean = true,
+    /** Swiping the player bar sideways moves through the queue. */
+    val swipeToChangeTrack: Boolean = true,
+    /**
+     * How far a double tap on the cover jumps, in seconds.
+     *
+     * A phone has no arrow keys, and the seek bar is a poor way to move ten seconds on a screen where
+     * the whole track is three hundred pixels wide.
+     */
+    val seekStepSeconds: Int = 10,
+    /**
+     * Playback rate.
+     *
+     * Worth having because a phone is where long uploads and sets get listened to, and kept out of the
+     * desktop settings until mpv is taught the same thing.
+     */
+    val playbackSpeed: Float = 1f,
+    /** Drops the silence out of gaps and long intros. */
+    val skipSilence: Boolean = false,
+    /** How long the sleep timer runs for when it is started, in minutes. */
+    val sleepTimerMinutes: Int = 30,
+)
 
 enum class ScrobbleConnectionStatus { DISCONNECTED, CONNECTING, AWAITING_APPROVAL, CONNECTED, ERROR }
 

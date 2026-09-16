@@ -9,6 +9,7 @@ import app.spiceity.playback.MusicBackend
 import app.spiceity.playback.UncheckedSession
 import app.spiceity.settings.AppDirectories
 import app.spiceity.settings.SecretStore
+import app.spiceity.settings.SettingsRepository
 import org.schabi.newpipe.extractor.NewPipe
 
 /**
@@ -48,16 +49,29 @@ class SpiceityApplication : Application() {
         // means one connection pool rather than two on a device where opening TLS costs battery.
         NewPipe.init(OkHttpNewPipeDownloader(Http.shared))
 
+        val settingsRepository = SettingsRepository()
         secrets = KeystoreSecretStore(this)
         backend = NewPipeBackend(
             http = Http.shared,
             downloadDirectory = filesDir.toPath().resolve("spiceity").resolve("downloads"),
+            refuseDownload = {
+                // Read at the moment of downloading, not once at startup: both the setting and the
+                // connection change while the application is running.
+                val wifiOnly = settingsRepository.load().phone.downloadOnWifiOnly
+                if (wifiOnly && isOnMeteredConnection()) {
+                    "Downloads are set to Wi-Fi only, and this is mobile data. " +
+                        "Change it under Settings, on this phone."
+                } else {
+                    null
+                }
+            },
         )
         val downloads = DownloadManager(backend)
         player = Media3PlaybackEngine(this, backend, downloadedFile = downloads::localFile)
 
         state = AppState(
             ytDlp = backend,
+            settingsRepository = settingsRepository,
             credentials = secrets,
             system = AndroidBridge(this),
             downloads = downloads,

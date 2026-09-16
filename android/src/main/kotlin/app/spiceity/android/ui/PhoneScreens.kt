@@ -4,6 +4,8 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -42,6 +44,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.SaveAlt
 import androidx.compose.material.icons.filled.Search
 import app.spiceity.core.ProviderFilter
+import app.spiceity.core.SearchMode
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -75,6 +78,14 @@ import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
 import app.spiceity.settings.SpiceityPreferences
 import kotlin.math.roundToInt
+
+/**
+ * One track is not "1 tracks".
+ *
+ * Small, and exactly the sort of thing that makes an application feel unfinished. Counts reach here from
+ * three places and every one of them can be one.
+ */
+internal fun pluralTracks(count: Int): String = if (count == 1) "1 track" else "$count tracks"
 
 /** A page title, sitting under the status bar. Every screen starts with one. */
 @Composable
@@ -247,6 +258,7 @@ private fun greeting(): String = when (java.time.LocalTime.now().hour) {
 
 // --- Search ---
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun SearchScreen(state: AppState) {
     val ui by state.ui.collectAsState()
@@ -265,6 +277,29 @@ internal fun SearchScreen(state: AppState) {
             singleLine = true,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         )
+        Spacer(Modifier.height(8.dp))
+
+        /*
+         * Which services get asked, rather than which answers get kept.
+         *
+         * This started as a phone-only setting that filtered the results after they arrived, which was
+         * worse in both directions: asking SoundCloud for twenty tracks and showing the four that came
+         * from it is not a SoundCloud search, and it cost a YouTube request nobody wanted. core already
+         * had a mode that aims the request, including YouTube videos, which the filter could not express
+         * at all.
+         */
+        FlowRow(
+            Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            SearchMode.entries.forEach { mode ->
+                FilterChip(
+                    selected = ui.searchMode == mode,
+                    onClick = { state.setSearchMode(mode) },
+                    label = { Text(mode.displayName, fontSize = 11.sp) },
+                )
+            }
+        }
         Spacer(Modifier.height(8.dp))
 
         val results = ui.searchResults.tracks
@@ -333,7 +368,7 @@ internal fun LibraryScreen(state: AppState) {
                 items(library.localPlaylists, key = { it.id }) { playlist ->
                     PlaylistRow(
                         title = playlist.title,
-                        detail = "${playlist.trackCount} tracks · made here",
+                        detail = pluralTracks(playlist.trackCount) + " · made here",
                         artworkUrl = null,
                     ) { state.openLocalPlaylist(playlist) }
                 }
@@ -359,7 +394,7 @@ internal fun LibraryScreen(state: AppState) {
                             title = playlist.title,
                             detail = listOfNotNull(
                                 playlist.provider.displayName,
-                                playlist.trackCount?.let { "$it tracks" },
+                                playlist.trackCount?.let(::pluralTracks),
                                 playlist.ownerName,
                             ).joinToString(" · "),
                             artworkUrl = playlist.artworkUrl,
@@ -467,7 +502,7 @@ private fun DownloadsCard(downloads: app.spiceity.downloads.DownloadsState, stat
                 Column(Modifier.weight(1f)) {
                     Text("Available offline", fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                     Text(
-                        "${downloads.entries.size} tracks" +
+                        pluralTracks(downloads.entries.size) +
                             if (downloads.active.isNotEmpty()) " · ${downloads.active.size} on the way" else "",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp,

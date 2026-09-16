@@ -51,6 +51,13 @@ class NewPipeBackend(
     private val http: OkHttpClient,
     /** Where a download is written. Handed in because only the platform knows the app's own directory. */
     private val downloadDirectory: Path,
+    /**
+     * Whether a download should be refused right now.
+     *
+     * Asked at the moment of downloading rather than read once, because the answer changes when somebody
+     * walks out of the house. Supplied as a function so this class keeps knowing nothing about settings.
+     */
+    private val refuseDownload: () -> String? = { null },
 ) : MusicBackend {
 
     /**
@@ -176,6 +183,8 @@ class NewPipeBackend(
         outputTemplate: String,
         onProgress: (Float) -> Unit,
     ) = withContext(Dispatchers.IO) {
+        // Asked before anything is fetched, so a refusal costs nothing and says why.
+        refuseDownload()?.let { throw BackendException(it) }
         val address = resolveAudio(sourceUrl)
         // The template is yt-dlp's vocabulary. Here the caller's chosen stem is all that is used, since
         // nothing on this side substitutes fields into a file name.

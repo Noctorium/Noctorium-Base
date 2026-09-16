@@ -2,11 +2,13 @@ package app.spiceity.android
 
 import android.content.ComponentName
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.media3.session.MediaController
@@ -65,6 +67,38 @@ class MainActivity : ComponentActivity() {
             // Read live, so changing the accent or the background in Settings repaints at once rather
             // than at the next launch.
             val settings by state.settings.collectAsState()
+            val playback by state.playback.collectAsState()
+
+            /*
+             * Holding the screen awake, but only while something is actually playing.
+             *
+             * Tying it to the setting alone would keep a phone lit in somebody pocket all afternoon. The
+             * flag is cleared again the moment playback stops, so the worst case is a bright screen for as
+             * long as the music lasts, which is what was asked for.
+             */
+            LaunchedEffect(settings.preferences.phone.keepScreenOn, playback.isPlaying) {
+                if (settings.preferences.phone.keepScreenOn && playback.isPlaying) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                } else {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                }
+            }
+            /*
+             * Rate and silence-skipping, applied when they change and once at startup.
+             *
+             * ExoPlayer keeps both across tracks, so this does not need to run per song; it does need to
+             * run on the first composition, or a rate chosen last week would sit in the settings file
+             * doing nothing until it was touched again.
+             */
+            LaunchedEffect(
+                settings.preferences.phone.playbackSpeed,
+                settings.preferences.phone.skipSilence,
+            ) {
+                (application as SpiceityApplication).player.applyAudioOptions(
+                    settings.preferences.phone.playbackSpeed,
+                    settings.preferences.phone.skipSilence,
+                )
+            }
             MaterialTheme(
                 colorScheme = spiceityColors(
                     settings.preferences.accent,

@@ -110,6 +110,7 @@ internal fun SettingsScreen(state: AppState, signIn: (ProviderType) -> Unit) {
         item { ServiceCard(ProviderType.SOUNDCLOUD, settings, likes, state, signIn) }
         item { SpotifyCard(settings, state) }
         item { CustomizationCard(settings, state) }
+        item { PhoneOptionsCard(settings, state) }
         item { ScrobblingCard(settings, state) }
         item { LyricsCard(state) }
         item { SavingCard(settings, state) }

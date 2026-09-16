@@ -1,6 +1,7 @@
 package app.spiceity.android
 
 import android.content.Context
+import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -29,6 +30,10 @@ import java.nio.file.Path
 /** The logcat tag playback failures are written under. */
 private const val PLAYER_LOG_TAG = "SpiceityPlayer"
 
+/** The range the rate is clamped to, past which speech stops being speech. */
+private const val MIN_SPEED = 0.5f
+private const val MAX_SPEED = 2f
+
 /**
  * Playing on Android, through Media3.
  *
@@ -52,6 +57,8 @@ class Media3PlaybackEngine(
     private val mutableState = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
     private var ticker: Job? = null
+    private val mutableSleepTimer = MutableStateFlow<Long?>(null)
+    private var sleepJob: Job? = null
 
     /**
      * Handed to the media session service, and to nothing else.
@@ -73,6 +80,13 @@ class Media3PlaybackEngine(
             /* handleAudioFocus = */ true,
         )
         .setHandleAudioBecomingNoisy(true)
+        // Holds the CPU and the wifi radio up while a track is streaming.
+        //
+        // Without this, playback survives the screen going off only until the device decides to doze,
+        // and then stops in the middle of a song with the notification still sitting there. The
+        // foreground service keeps the process alive; it does not keep the radio awake. WAKE_LOCK was
+        // already asked for in the manifest and, until now, never taken.
+        .setWakeMode(C.WAKE_MODE_NETWORK)
         .build()
         .apply {
             addListener(object : Player.Listener {
@@ -205,6 +219,56 @@ class Media3PlaybackEngine(
         publish()
     }
 
+    /**
+     * Rate and silence-skipping, as the listener set them.
+     *
+     * Pushed in from outside rather than read here, because the engine is handed no settings and there
+     * is no reason for it to grow a dependency on them. Called again whenever either changes.
+     */
+    fun applyAudioOptions(speed: Float, skipSilence: Boolean) {
+        scope.launch {
+            player.setPlaybackSpeed(speed.coerceIn(MIN_SPEED, MAX_SPEED))
+            player.skipSilenceEnabled = skipSilence
+        }
+    }
+
+    /**
+     * Milliseconds until the music stops, or null if nothing is counting.
+     *
+     * Kept here rather than in core because it has to survive the screen turning off, which makes it a
+     * property of the thing that is playing rather than of the thing that is drawing.
+     */
+    val sleepTimer: StateFlow<Long?> = mutableSleepTimer.asStateFlow()
+
+    /**
+     * Stops playing in a while.
+     *
+     * Counted against elapsedRealtime, which includes time spent asleep. A countdown built from
+     * repeated delays would stretch every time the device dozed, so a timer set for half an hour would
+     * quietly become an hour with the phone face down on a bedside table, which is the one situation it
+     * exists for.
+     */
+    fun startSleepTimer(minutes: Int) {
+        sleepJob?.cancel()
+        val endsAt = SystemClock.elapsedRealtime() + minutes * 60_000L
+        sleepJob = scope.launch {
+            while (true) {
+                val remaining = endsAt - SystemClock.elapsedRealtime()
+                if (remaining <= 0) break
+                mutableSleepTimer.value = remaining
+                delay(1_000)
+            }
+            mutableSleepTimer.value = null
+            player.pause()
+        }
+    }
+
+    fun cancelSleepTimer() {
+        sleepJob?.cancel()
+        sleepJob = null
+        mutableSleepTimer.value = null
+    }
+
     override suspend fun stop() = withContext(Dispatchers.Main) {
         ticker?.cancel()
         player.stop()
@@ -214,6 +278,7 @@ class Media3PlaybackEngine(
 
     override fun close() {
         ticker?.cancel()
+        sleepJob?.cancel()
         // Release has to happen on the thread the player was built on, and the process may be going away,
         // so this does not wait for a coroutine to be scheduled.
         player.release()

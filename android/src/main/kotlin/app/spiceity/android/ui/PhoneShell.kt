@@ -6,6 +6,8 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -115,7 +117,15 @@ fun SpiceityPhone(state: AppState) {
     val playback by state.playback.collectAsState()
     val library by state.library.collectAsState()
     val settings by state.settings.collectAsState()
-    var nowPlayingOpen by remember { mutableStateOf(false) }
+    /*
+     * Start page, including the one the phone was quietly dropping.
+     *
+     * core turns the setting into a destination, and the phone renders NOW_PLAYING as Home because the
+     * full screen here is an overlay rather than a page. So "Start on: Now playing" moved the
+     * destination and changed nothing anyone could see. Read once, at first composition, which is the
+     * only moment a start page means anything.
+     */
+    var nowPlayingOpen by remember { mutableStateOf(ui.destination == Destination.NOW_PLAYING) }
     var signingInTo by remember { mutableStateOf<ProviderType?>(null) }
 
     /*
@@ -159,11 +169,18 @@ fun SpiceityPhone(state: AppState) {
 
                 Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                     if (playback.track != null) {
-                        PlayerBar(playback, state, settings.preferences.progressBarStyle) {
-                            nowPlayingOpen = true
-                        }
+                        PlayerBar(
+                            playback,
+                            state,
+                            settings.preferences.progressBarStyle,
+                            settings.preferences.phone.swipeToChangeTrack,
+                        ) { nowPlayingOpen = true }
                     }
-                    PhoneNavigation(ui.destination, state::navigate)
+                    PhoneNavigation(
+                        ui.destination,
+                        settings.preferences.phone.navigationLabels,
+                        state::navigate,
+                    )
                 }
             }
 
@@ -187,7 +204,7 @@ fun SpiceityPhone(state: AppState) {
 }
 
 @Composable
-private fun PhoneNavigation(current: Destination, go: (Destination) -> Unit) {
+private fun PhoneNavigation(current: Destination, labels: Boolean, go: (Destination) -> Unit) {
     NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp) {
         listOf(
             Triple(Destination.HOME, Icons.Default.Home, "Home"),
@@ -202,7 +219,11 @@ private fun PhoneNavigation(current: Destination, go: (Destination) -> Unit) {
                     (destination == Destination.HOME && current == Destination.NOW_PLAYING),
                 onClick = { go(destination) },
                 icon = { Icon(icon, label) },
-                label = { Text(label, fontSize = 10.sp) },
+                label = if (labels) {
+                    { Text(label, fontSize = 10.sp) }
+                } else {
+                    null
+                },
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
@@ -224,11 +245,30 @@ private fun PlayerBar(
     playback: PlaybackState,
     state: AppState,
     style: ProgressBarStyle,
+    swipeToChangeTrack: Boolean,
     open: () -> Unit,
 ) {
     val track = playback.track ?: return
+    val haptics = rememberHaptics(state)
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
-        Column(Modifier.clickable(onClick = open)) {
+        Column(
+            Modifier
+                .clickable(onClick = open)
+                // Swiping the bar walks the queue. A drag threshold rather than a tap target, so it
+                // cannot be triggered by the small movement that comes with an ordinary press.
+                .then(
+                    if (!swipeToChangeTrack) {
+                        Modifier
+                    } else {
+                        Modifier.pointerInput(Unit) {
+                            detectHorizontalDragGestures { _, drag ->
+                                if (drag < -SWIPE_THRESHOLD) { haptics.tick(); state.next() }
+                                if (drag > SWIPE_THRESHOLD) { haptics.tick(); state.previous() }
+                            }
+                        }
+                    },
+                ),
+        ) {
             PlaybackLine(playback, style)
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -257,7 +297,9 @@ private fun PlayerBar(
                     )
                 }
                 PlayPauseButton(playback, state)
-                IconButton(state::next) { Icon(Icons.Default.SkipNext, "Next track") }
+                IconButton({ haptics.tick(); state.next() }) {
+                    Icon(Icons.Default.SkipNext, "Next track")
+                }
             }
         }
     }
@@ -305,6 +347,14 @@ internal fun trailingTimeFor(positionMs: Long, durationMs: Long, display: TimeDi
     display == TimeDisplay.REMAINING -> "-" + formatDuration((durationMs - positionMs).coerceAtLeast(0))
     else -> formatDuration(durationMs)
 }
+
+/**
+ * How far a finger has to travel before it counts as a swipe rather than a press.
+ *
+ * Per drag event rather than cumulative, so a deliberate flick clears it and a thumb resting on the bar
+ * never does.
+ */
+private const val SWIPE_THRESHOLD = 28f
 
 internal fun playbackFraction(positionMs: Long, durationMs: Long): Float =
     if (durationMs > 0) (positionMs.toFloat() / durationMs).coerceIn(0f, 1f) else 0f

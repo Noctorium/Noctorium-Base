@@ -1,6 +1,7 @@
 package app.spiceity.android.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -44,14 +46,18 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.spiceity.android.SpiceityApplication
 import app.spiceity.core.AppState
 import app.spiceity.playback.RepeatMode
 import app.spiceity.settings.TimeDisplay
@@ -67,6 +73,41 @@ import coil.compose.AsyncImage
  * interface and goes away again, which is also why the only way out is the chevron rather than a tab —
  * leaving by tapping something else would lose the track you were looking at.
  */
+/**
+ * Stops the music in a while, or stops counting.
+ *
+ * One button doing both, because there is nowhere on this screen for a menu and the only two things
+ * anyone wants from a sleep timer are to start it and to change their mind. How long it runs for is a
+ * setting rather than a prompt, so the common case is a single tap in the dark.
+ */
+@Composable
+private fun SleepTimerButton(minutes: Int, haptics: Haptics) {
+    val player = (LocalContext.current.applicationContext as SpiceityApplication).player
+    val remaining by player.sleepTimer.collectAsState()
+    val left = remaining
+    IconButton({
+        haptics.tick()
+        if (left == null) player.startSleepTimer(minutes) else player.cancelSleepTimer()
+    }) {
+        if (left == null) {
+            Icon(Icons.Default.Bedtime, "Sleep timer")
+        } else {
+            Text(
+                sleepLabel(left),
+                color = MaterialTheme.colorScheme.primary,
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+/** Minutes while there are minutes left, then seconds, so the last stretch visibly moves. */
+internal fun sleepLabel(remainingMs: Long): String {
+    val seconds = remainingMs / 1_000
+    return if (seconds >= 60) "${seconds / 60}m" else "${seconds}s"
+}
+
 @Composable
 internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
     val playback by state.playback.collectAsState()
@@ -77,6 +118,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
     val track = playback.track ?: return
 
     var showLyrics by remember { mutableStateOf(false) }
+    val haptics = rememberHaptics(state)
 
     // Lyrics are fetched only when asked for. Eight providers get queried, and doing that for a track
     // nobody is reading along to is somebody's data spent on nothing.
@@ -102,16 +144,54 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
                     fontSize = 12.sp,
                 )
                 Spacer(Modifier.weight(1f))
+                SleepTimerButton(settings.preferences.phone.sleepTimerMinutes, haptics)
                 IconButton({ showLyrics = !showLyrics }) {
                     Text(if (showLyrics) "♪" else "Aa", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+            /*
+             * fillMaxWidth is what makes the centring mean anything.
+             *
+             * A Column child is as wide as its content unless told otherwise, so this Box was exactly as
+             * wide as the 300dp cover inside it and had nothing to centre it in. The Column then laid the
+             * Box out at its default Start, and the cover sat hard against the left margin while the
+             * title, the seek bar and the controls all ran the full width.
+             */
+            Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (showLyrics) {
                     LyricsPane(lyrics, playback.positionMs)
                 } else {
-                    Artwork(track.artworkUrl, 300.dp, corner = 16.dp)
+                    /*
+                     * Double tapping the left or right of the cover jumps back or forward.
+                     *
+                     * The alternative on a phone is dragging a seek bar three hundred pixels wide across
+                     * a whole track, which cannot express ten seconds. The current position is read
+                     * through rememberUpdatedState rather than captured: the gesture handler is built
+                     * once and would otherwise seek relative to wherever the track was when this screen
+                     * opened.
+                     */
+                    val live by rememberUpdatedState(playback)
+                    val step = settings.preferences.phone.seekStepSeconds * 1_000L
+                    Box(
+                        Modifier.size(300.dp).pointerInput(step) {
+                            detectTapGestures(onDoubleTap = { at ->
+                                val forward = at.x > size.width / 2
+                                haptics.tick()
+                                state.seekTo(
+                                    (live.positionMs + if (forward) step else -step)
+                                        .coerceIn(0L, live.durationMs.coerceAtLeast(0L)),
+                                )
+                            })
+                        },
+                    ) {
+                        Artwork(
+                            track.artworkUrl,
+                            300.dp,
+                            // A percentage of the side, not a fixed radius, so Circle really is one.
+                            corner = 300.dp * settings.preferences.phone.artworkShape.cornerPercent / 100,
+                        )
+                    }
                 }
             }
 
