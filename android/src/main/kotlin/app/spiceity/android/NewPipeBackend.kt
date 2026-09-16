@@ -32,6 +32,9 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
+/** The logcat tag every extraction failure is written under. */
+private const val LOG_TAG = "SpiceityBackend"
+
 /**
  * What a track is, and where its audio is, read the way NewPipe reads it.
  *
@@ -221,13 +224,49 @@ class NewPipeBackend(
 
     override suspend fun describe(): String = "NewPipeExtractor ${NewPipe.getDownloader()?.let { "ready" } ?: "not started"}"
 
-    /** Turns whatever NewPipe threw into something a listener can read. */
+    /**
+     * Turns whatever NewPipe threw into something a listener can read, and writes down what it really was.
+     *
+     * The log line matters as much as the message. Extraction breaks for reasons invisible from the
+     * outside — a service changed its page, a signature could not be solved, a stream needs a token this
+     * version cannot mint — and the exception type together with its cause chain is the only thing that
+     * says which. What reaches the screen has room for a line; this has room for the truth.
+     */
     private inline fun <T> attempt(what: String, block: () -> T): T = try {
         block()
     } catch (cancelled: CancellationException) {
         throw cancelled
     } catch (error: Exception) {
-        throw BackendException("Could not $what: ${error.message ?: error::class.simpleName}", error)
+        val chain = generateSequence(error as Throwable) { it.cause }
+            .take(5)
+            .joinToString(" <- ") { link ->
+                link::class.java.simpleName + ": " + link.message?.take(200)
+            }
+        android.util.Log.w(LOG_TAG, "Could not $what -- $chain", error)
+        // The reason, not the address. What reaches the player bar has room for a few words, and leading
+        // with the URL spent all of them before saying anything: a Go+ track reported itself as
+        // "Could not resolve https://soundcloud.com/nir…", which names neither the problem nor the fix.
+        throw BackendException(explain(error), error)
+    }
+
+    /**
+     * Why a track will not play, in a sentence.
+     *
+     * NewPipe's own messages are written for whoever is debugging the extractor. Three of them are common
+     * enough to be worth translating, and everything else is passed through as it came rather than
+     * flattened into a shrug — an unfamiliar message is still a lead, where "something went wrong" is not.
+     */
+    private fun explain(error: Throwable): String = when {
+        error is org.schabi.newpipe.extractor.exceptions.SoundCloudGoPlusContentException ->
+            "This is a SoundCloud Go+ track, so only subscribers can hear it."
+        error is org.schabi.newpipe.extractor.exceptions.GeographicRestrictionException ->
+            "This track is not available in your country."
+        error is org.schabi.newpipe.extractor.exceptions.AgeRestrictedContentException ->
+            "This track is age-restricted, which needs a signed-in account."
+        error is org.schabi.newpipe.extractor.exceptions.PrivateContentException ->
+            "This track is private."
+        error.message.isNullOrBlank() -> "This track could not be played (${error::class.java.simpleName})."
+        else -> error.message!!.take(160)
     }
 
     private fun serviceFor(provider: ProviderType): StreamingService? = when (provider) {

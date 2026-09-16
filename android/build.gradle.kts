@@ -100,13 +100,30 @@ dependencies {
      * hand back a playable stream address without an API key. It is the only dependency here taken from
      * JitPack rather than Maven Central.
      */
-    // Pinned to a version JitPack has actually built. Its maven-metadata lists newer releases — v0.26.5
-    // among them — whose artifacts 404, because JitPack only compiles a tag once somebody asks for it and
-    // records the tag either way. A version that resolves beats a version that is merely newer.
-    implementation("com.github.TeamNewPipe.NewPipeExtractor:extractor:v0.24.6")
+    /*
+     * The coordinate changed shape between releases, and the old one is a trap.
+     *
+     * Up to v0.24.x this was a multi-module build, so JitPack published it under a group made of the user
+     * and the repository: com.github.TeamNewPipe.NewPipeExtractor:extractor. From v0.25 it is one artifact
+     * under com.github.TeamNewPipe:NewPipeExtractor. The old group still resolves, and still serves a
+     * two-year-old extractor — which is worse than failing, because it builds and then cannot play a single
+     * YouTube track: v0.24.6 answers every stream request with "The page needs to be reloaded", YouTube not
+     * accepting that version of its HTML5 client any more.
+     */
+    implementation("com.github.TeamNewPipe:NewPipeExtractor:v0.26.5")
 
     // Media3, for playing what the extractor found and for behaving like a music app while doing it.
     implementation("androidx.media3:media3-exoplayer:1.5.1")
+    /**
+     * The streaming formats, which are separate artifacts and are NOT optional.
+     *
+     * SoundCloud serves HLS. Media3 loads the matching source factory reflectively, by class name, so a
+     * missing one is not a compile error and not a warning — it is a ClassNotFoundException thrown from
+     * inside setMediaItem at the moment somebody presses play. DASH is here for the same reason before it
+     * is the one that bites.
+     */
+    implementation("androidx.media3:media3-exoplayer-hls:1.5.1")
+    implementation("androidx.media3:media3-exoplayer-dash:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
     implementation("androidx.media3:media3-ui:1.5.1")
 

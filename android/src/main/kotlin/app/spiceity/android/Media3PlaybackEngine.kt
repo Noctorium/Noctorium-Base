@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -24,6 +25,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.nio.file.Path
+
+/** The logcat tag playback failures are written under. */
+private const val PLAYER_LOG_TAG = "SpiceityPlayer"
 
 /**
  * Playing on Android, through Media3.
@@ -103,6 +107,10 @@ class Media3PlaybackEngine(
 
         val source = downloadedFile(track)?.toUri()?.toString()
             ?: runCatching { backend.resolveAudio(track.sourceUrl) }.getOrElse { error ->
+                // Silence first. Without this the previous track keeps playing while the bar reports that
+                // a different one failed, which reads as the error being wrong rather than the track being
+                // unplayable.
+                withContext(Dispatchers.Main) { runCatching { player.stop() } }
                 mutableState.value = mutableState.value.copy(
                     status = PlaybackStatus.ERROR,
                     errorMessage = error.message ?: "Could not find an audio stream for this track.",
@@ -110,13 +118,52 @@ class Media3PlaybackEngine(
                 return
             }
 
-        withContext(Dispatchers.Main) {
-            player.setMediaItem(MediaItem.fromUri(source))
-            player.prepare()
-            player.play()
+        // Handing the address to the player can throw, and an exception escaping here kills the process:
+        // this runs on the main looper, and nothing above it is catching. It happened — SoundCloud serves
+        // HLS, Media3 loads that source factory reflectively by class name, and the artifact was missing,
+        // so pressing play on a SoundCloud track took the whole application down. A track that cannot be
+        // played has to be a message in the player bar, never an exit.
+        val started = withContext(Dispatchers.Main) {
+            runCatching {
+                player.setMediaItem(mediaItemFor(track, source))
+                player.prepare()
+                player.play()
+            }
+        }
+        started.onFailure { error ->
+            android.util.Log.w(PLAYER_LOG_TAG, "Could not start $source", error)
+            mutableState.value = mutableState.value.copy(
+                status = PlaybackStatus.ERROR,
+                errorMessage = "This track could not be played: " +
+                    (error.message?.take(160) ?: error::class.java.simpleName),
+            )
+            return
         }
         startTicking()
     }
+
+    /**
+     * The track as the rest of the phone will see it.
+     *
+     * Media3 builds the notification, the lock screen and whatever a car or a watch shows from the
+     * metadata on the item — not from anything the app draws. Without this it had the address and nothing
+     * else, so the notification read "Spiceity is running" while a named song with cover art was playing
+     * three centimetres above it.
+     */
+    private fun mediaItemFor(track: Track, source: String): MediaItem = MediaItem.Builder()
+        .setUri(source)
+        .setMediaId(track.queueKey)
+        .setMediaMetadata(
+            MediaMetadata.Builder()
+                .setTitle(track.title)
+                .setArtist(track.artistLine.takeIf(String::isNotBlank) ?: track.provider.displayName)
+                .setAlbumTitle(track.album?.title)
+                .setArtworkUri(track.artworkUrl?.let(android.net.Uri::parse))
+                .setIsBrowsable(false)
+                .setIsPlayable(true)
+                .build(),
+        )
+        .build()
 
     override suspend fun pause() = withContext(Dispatchers.Main) { player.pause() }
 
