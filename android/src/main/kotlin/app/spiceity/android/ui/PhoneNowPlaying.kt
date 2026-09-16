@@ -54,6 +54,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.AppState
 import app.spiceity.playback.RepeatMode
+import app.spiceity.settings.TimeDisplay
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 
 /**
  * One track, filling the screen.
@@ -68,6 +73,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
     val queue by state.queue.state.collectAsState()
     val likes by state.likes.collectAsState()
     val lyrics by state.lyrics.collectAsState()
+    val settings by state.settings.collectAsState()
     val track = playback.track ?: return
 
     var showLyrics by remember { mutableStateOf(false) }
@@ -79,6 +85,8 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
     }
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
+      Box(Modifier.fillMaxSize()) {
+        if (settings.preferences.ambientBackdrop) AmbientBackdrop(track.artworkUrl)
         Column(
             Modifier
                 .fillMaxSize()
@@ -127,7 +135,12 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
             }
 
             Spacer(Modifier.height(14.dp))
-            Seekbar(playback.positionMs, playback.durationMs, state::seekTo)
+            Seekbar(
+                playback.positionMs,
+                playback.durationMs,
+                settings.preferences.timeDisplay,
+                state::seekTo,
+            )
 
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 8.dp),
@@ -179,6 +192,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
                 TrackMenuButton(track, state)
             }
         }
+      }
     }
 }
 
@@ -189,7 +203,12 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
  * would be fought by the position ticker underneath it.
  */
 @Composable
-private fun Seekbar(positionMs: Long, durationMs: Long, seekTo: (Long) -> Unit) {
+private fun Seekbar(
+    positionMs: Long,
+    durationMs: Long,
+    display: TimeDisplay,
+    seekTo: (Long) -> Unit,
+) {
     var dragging by remember { mutableStateOf<Float?>(null) }
     val fraction = dragging ?: playbackFraction(positionMs, durationMs)
 
@@ -210,7 +229,7 @@ private fun Seekbar(positionMs: Long, durationMs: Long, seekTo: (Long) -> Unit) 
                 fontSize = 11.sp,
             )
             Text(
-                if (durationMs > 0) formatDuration(durationMs) else "--:--",
+                trailingTimeFor((fraction * durationMs).toLong(), durationMs, display),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 fontSize = 11.sp,
             )
@@ -253,5 +272,47 @@ private fun LyricsPane(lyrics: app.spiceity.lyrics.LyricsUiState, positionMs: Lo
                 }
             }
         }
+    }
+}
+
+/**
+ * The artwork, blurred and dimmed, behind the track it belongs to.
+ *
+ * The desktop's ambient backdrop, which on a phone matters more: the screen is almost entirely this one
+ * view, and a flat black rectangle behind a square of cover art is a lot of nothing. Blur needs API 31, so
+ * below that it is scale and a heavy scrim — still ambient, just softer by a different means.
+ *
+ * The scrim is not optional at either version. Text over an unmuted photograph is unreadable about a third
+ * of the time, and which third depends on the album.
+ */
+@Composable
+private fun AmbientBackdrop(artworkUrl: String?) {
+    if (artworkUrl == null) return
+    val background = MaterialTheme.colorScheme.background
+    Box(Modifier.fillMaxSize()) {
+        AsyncImage(
+            model = artworkUrl,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            alpha = .5f,
+            modifier = Modifier
+                .fillMaxSize()
+                .then(
+                    if (android.os.Build.VERSION.SDK_INT >= 31) Modifier.blur(48.dp) else Modifier,
+                ),
+        )
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            background.copy(alpha = .72f),
+                            background.copy(alpha = .88f),
+                            background,
+                        ),
+                    ),
+                ),
+        )
     }
 }

@@ -59,7 +59,7 @@ import app.spiceity.domain.ProviderType
  * goes, and what is on the machine.
  */
 @Composable
-internal fun SettingsScreen(state: AppState) {
+internal fun SettingsScreen(state: AppState, signIn: (ProviderType) -> Unit) {
     val settings by state.settings.collectAsState()
     val likes by state.likes.collectAsState()
     val account by state.account.collectAsState()
@@ -74,7 +74,7 @@ internal fun SettingsScreen(state: AppState) {
 
         settings.message?.let { message ->
             item {
-                Card {
+                SettingsCardShell {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(message, Modifier.weight(1f), fontSize = 12.sp)
                         TextButton(state::clearSettingsMessage) { Text("OK") }
@@ -84,8 +84,8 @@ internal fun SettingsScreen(state: AppState) {
         }
 
         item {
-            Card {
-                Heading(Icons.Default.Insights, "Spiceity account")
+            SettingsCardShell {
+                CardHeading(Icons.Default.Insights, "Spiceity account")
                 Spacer(Modifier.height(6.dp))
                 if (account.signedIn) {
                     Text(account.user?.displayName.orEmpty(), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
@@ -106,16 +106,20 @@ internal fun SettingsScreen(state: AppState) {
             }
         }
 
-        item { ServiceCard(ProviderType.YOUTUBE_MUSIC, settings, likes, state) }
-        item { ServiceCard(ProviderType.SOUNDCLOUD, settings, likes, state) }
+        item { ServiceCard(ProviderType.YOUTUBE_MUSIC, settings, likes, state, signIn) }
+        item { ServiceCard(ProviderType.SOUNDCLOUD, settings, likes, state, signIn) }
         item { SpotifyCard(settings, state) }
+        item { CustomizationCard(settings, state) }
+        item { ScrobblingCard(settings, state) }
+        item { LyricsCard(state) }
         item { SavingCard(settings, state) }
         item { DiagnosticsCard(settings, state) }
     }
 }
 
+/** The card every settings section sits in. Shared with the customization cards next door. */
 @Composable
-private fun Card(content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsCardShell(content: @Composable ColumnScope.() -> Unit) {
     Surface(
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .4f),
         shape = RoundedCornerShape(14.dp),
@@ -125,10 +129,10 @@ private fun Card(content: @Composable ColumnScope.() -> Unit) {
     }
 }
 
-private typealias ColumnScope = androidx.compose.foundation.layout.ColumnScope
+internal typealias ColumnScope = androidx.compose.foundation.layout.ColumnScope
 
 @Composable
-private fun Heading(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, tint: Color? = null) {
+internal fun CardHeading(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, tint: Color? = null) {
     Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(icon, null, Modifier.size(20.dp), tint = tint ?: MaterialTheme.colorScheme.primary)
         Spacer(Modifier.width(9.dp))
@@ -189,13 +193,14 @@ private fun ServiceCard(
     settings: app.spiceity.settings.SettingsState,
     likes: app.spiceity.core.LikeState,
     state: AppState,
+    signIn: (ProviderType) -> Unit,
 ) {
     val isSoundCloud = provider == ProviderType.SOUNDCLOUD
     val source = if (isSoundCloud) settings.preferences.soundCloudCookies else settings.preferences.youtubeCookies
     val connected = if (isSoundCloud) likes.soundCloudReady else likes.youTubeReady
 
-    Card {
-        Heading(if (isSoundCloud) Icons.Default.Cloud else Icons.Default.PlayCircle, provider.displayName)
+    SettingsCardShell {
+        CardHeading(if (isSoundCloud) Icons.Default.Cloud else Icons.Default.PlayCircle, provider.displayName)
         Spacer(Modifier.height(6.dp))
         Text(
             when {
@@ -210,10 +215,19 @@ private fun ServiceCard(
             Spacer(Modifier.height(10.dp))
             SoundCloudProfileField(settings.preferences.soundCloudUsername, state)
         }
+        Spacer(Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button({ signIn(provider) }) {
+                Text(if (source.isConfigured) "Sign in again" else "Sign in")
+            }
+            if (source.isConfigured) {
+                OutlinedButton({ state.disconnectAccount(provider) }) { Text("Disconnect") }
+            }
+        }
         Spacer(Modifier.height(8.dp))
         Text(
-            "Signing in on the phone is not built yet — it needs a browser inside the app. Until then, " +
-                "connect this account on the desktop.",
+            "Your password goes to the service's own page inside Spiceity, never to a form of ours, " +
+                "and only the session is kept.",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 11.sp,
         )
@@ -246,8 +260,8 @@ private fun SpotifyCard(settings: app.spiceity.settings.SettingsState, state: Ap
         mutableStateOf(settings.preferences.spotifyClientId)
     }
 
-    Card {
-        Heading(Icons.Default.LibraryMusic, "Spotify library", tint = Color(0xFF1DB954))
+    SettingsCardShell {
+        CardHeading(Icons.Default.LibraryMusic, "Spotify library", tint = Color(0xFF1DB954))
         Spacer(Modifier.height(6.dp))
         Text(
             when {
@@ -314,8 +328,8 @@ private fun SpotifyCard(settings: app.spiceity.settings.SettingsState, state: Ap
 @Composable
 private fun SavingCard(settings: app.spiceity.settings.SettingsState, state: AppState) {
     var folder by remember(settings.preferences.exportFolder) { mutableStateOf(settings.preferences.exportFolder) }
-    Card {
-        Heading(Icons.Default.Save, "Saving music")
+    SettingsCardShell {
+        CardHeading(Icons.Default.Save, "Saving music")
         Spacer(Modifier.height(6.dp))
         OutlinedTextField(
             folder,
@@ -344,9 +358,9 @@ private fun SavingCard(settings: app.spiceity.settings.SettingsState, state: App
 
 @Composable
 private fun DiagnosticsCard(settings: app.spiceity.settings.SettingsState, state: AppState) {
-    Card {
+    SettingsCardShell {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Heading(Icons.Default.History, "Diagnostics")
+            CardHeading(Icons.Default.History, "Diagnostics")
             Spacer(Modifier.weight(1f))
             TextButton(state::runDiagnostics, enabled = !settings.diagnosticsRunning) {
                 Text(if (settings.diagnosticsRunning) "Checking…" else "Check")

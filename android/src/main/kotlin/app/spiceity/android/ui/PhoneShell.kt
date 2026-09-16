@@ -61,6 +61,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.spiceity.core.AppState
 import app.spiceity.core.Destination
+import app.spiceity.settings.AccentPreset
+import app.spiceity.settings.BackgroundDepth
+import app.spiceity.settings.ProgressBarStyle
+import app.spiceity.settings.TimeDisplay
+import app.spiceity.domain.ProviderType
 import app.spiceity.domain.Track
 import app.spiceity.playback.PlaybackState
 import app.spiceity.playback.PlaybackStatus
@@ -73,14 +78,25 @@ import coil.compose.AsyncImage
  * application rather than as a phone app that happens to share a name. On an OLED screen the background is
  * also the cheapest thing there is to draw.
  */
-val SpiceityDark = darkColorScheme(
-    primary = Color(0xFFB794F6),
+val SpiceityDark = spiceityColors(AccentPreset.VIOLET, BackgroundDepth.AMOLED)
+
+/**
+ * The palette, built from the two choices that decide it.
+ *
+ * Both come from the shared preferences, so an accent picked on the desktop is the accent here. "Match the
+ * artwork" has no colour of its own — the desktop derives it from the cover being shown — so it falls back
+ * to violet rather than to nothing.
+ */
+fun spiceityColors(accent: AccentPreset, depth: BackgroundDepth) = darkColorScheme(
+    primary = Color((accent.argb ?: AccentPreset.VIOLET.argb!!).toInt()),
     onPrimary = Color(0xFF1A0B2E),
-    background = Color(0xFF08070C),
+    // Pure black is genuinely cheaper to draw on the OLED panel in this phone, so it is the default; the
+    // soft variant is for reading in a lit room.
+    background = if (depth == BackgroundDepth.AMOLED) Color(0xFF08070C) else Color(0xFF13121A),
     onBackground = Color(0xFFF3F1F8),
-    surface = Color(0xFF12111A),
+    surface = if (depth == BackgroundDepth.AMOLED) Color(0xFF12111A) else Color(0xFF1C1B24),
     onSurface = Color(0xFFF3F1F8),
-    surfaceVariant = Color(0xFF1B1926),
+    surfaceVariant = if (depth == BackgroundDepth.AMOLED) Color(0xFF1B1926) else Color(0xFF262430),
     onSurfaceVariant = Color(0xFFA7A2B8),
     error = Color(0xFFFF8A8A),
 )
@@ -98,7 +114,9 @@ fun SpiceityPhone(state: AppState) {
     val ui by state.ui.collectAsState()
     val playback by state.playback.collectAsState()
     val library by state.library.collectAsState()
+    val settings by state.settings.collectAsState()
     var nowPlayingOpen by remember { mutableStateOf(false) }
+    var signingInTo by remember { mutableStateOf<ProviderType?>(null) }
 
     /*
      * Back means "up one level", in the order things were opened.
@@ -107,11 +125,18 @@ fun SpiceityPhone(state: AppState) {
      * playing screen, mid-track. A phone treats back as the primary way out of anything, so every layer
      * that can be opened has to be able to answer it.
      */
-    BackHandler(enabled = nowPlayingOpen) { nowPlayingOpen = false }
-    BackHandler(enabled = !nowPlayingOpen && library.openPlaylist != null) { state.closePlaylist() }
-    BackHandler(enabled = !nowPlayingOpen && library.openLocalPlaylist != null) { state.closeLocalPlaylist() }
+    // Sign-in handles its own back, since the page inside it has history of its own to walk first.
+    val overlaid = signingInTo != null
+    BackHandler(enabled = !overlaid && nowPlayingOpen) { nowPlayingOpen = false }
+    BackHandler(enabled = !overlaid && !nowPlayingOpen && library.openPlaylist != null) {
+        state.closePlaylist()
+    }
+    BackHandler(enabled = !overlaid && !nowPlayingOpen && library.openLocalPlaylist != null) {
+        state.closeLocalPlaylist()
+    }
     BackHandler(
-        enabled = !nowPlayingOpen &&
+        enabled = !overlaid &&
+            !nowPlayingOpen &&
             library.openPlaylist == null &&
             library.openLocalPlaylist == null &&
             ui.destination != Destination.HOME,
@@ -124,7 +149,7 @@ fun SpiceityPhone(state: AppState) {
                     when (ui.destination) {
                         Destination.SEARCH -> SearchScreen(state)
                         Destination.LIBRARY -> LibraryScreen(state)
-                        Destination.SETTINGS -> SettingsScreen(state)
+                        Destination.SETTINGS -> SettingsScreen(state) { signingInTo = it }
                         Destination.QUEUE -> QueueScreen(state)
                         // Now playing is a sheet here rather than a destination, so anything that asks for
                         // it lands on Home with the sheet open instead of on an empty screen.
@@ -134,16 +159,24 @@ fun SpiceityPhone(state: AppState) {
 
                 Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
                     if (playback.track != null) {
-                        PlayerBar(playback, state) { nowPlayingOpen = true }
+                        PlayerBar(playback, state, settings.preferences.progressBarStyle) {
+                            nowPlayingOpen = true
+                        }
                     }
                     PhoneNavigation(ui.destination, state::navigate)
                 }
             }
 
-            // Over everything, including the navigation bar: while a track is open it is the only thing
-            // being looked at, and a row of tabs underneath it is just somewhere to lose your place.
+            // The service's own sign-in page, over everything including the tabs. A half-finished login
+            // that can be tabbed away from leaves a session nobody knows the state of.
+            signingInTo?.let { provider ->
+                SignInScreen(provider, state) { signingInTo = null }
+            }
+
+            // Over everything too: while a track is open it is the only thing being looked at, and a row
+            // of tabs underneath it is just somewhere to lose your place.
             AnimatedVisibility(
-                visible = nowPlayingOpen && playback.track != null,
+                visible = signingInTo == null && nowPlayingOpen && playback.track != null,
                 enter = slideInVertically { it },
                 exit = slideOutVertically { it },
             ) {
@@ -187,11 +220,16 @@ private fun PhoneNavigation(current: Destination, go: (Destination) -> Unit) {
  * room for two icons at this size, and next is the one people reach for.
  */
 @Composable
-private fun PlayerBar(playback: PlaybackState, state: AppState, open: () -> Unit) {
+private fun PlayerBar(
+    playback: PlaybackState,
+    state: AppState,
+    style: ProgressBarStyle,
+    open: () -> Unit,
+) {
     val track = playback.track ?: return
     Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 3.dp) {
         Column(Modifier.clickable(onClick = open)) {
-            PlaybackLine(playback)
+            PlaybackLine(playback, style)
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -244,12 +282,28 @@ internal fun PlayPauseButton(playback: PlaybackState, state: AppState, size: Dp 
  * length reads as a track that has already finished.
  */
 @Composable
-internal fun PlaybackLine(playback: PlaybackState, height: Dp = 2.dp) {
+internal fun PlaybackLine(playback: PlaybackState, style: ProgressBarStyle = ProgressBarStyle.MINIMAL) {
     LinearProgressIndicator(
         progress = { playbackFraction(playback.positionMs, playback.durationMs) },
-        modifier = Modifier.fillMaxWidth().height(height),
+        // The desktop's two styles, meaning the same thing here: a hairline that stays out of the way, or
+        // a track thick enough to see across a room.
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(if (style == ProgressBarStyle.MATERIAL) 5.dp else 2.dp),
         trackColor = MaterialTheme.colorScheme.surfaceVariant,
     )
+}
+
+/**
+ * The elapsed and total readouts, as the listener asked for them.
+ *
+ * "Time remaining" counts down and carries a minus, which is the convention everywhere it appears and the
+ * only thing that tells it apart from elapsed at a glance.
+ */
+internal fun trailingTimeFor(positionMs: Long, durationMs: Long, display: TimeDisplay): String = when {
+    durationMs <= 0 -> "--:--"
+    display == TimeDisplay.REMAINING -> "-" + formatDuration((durationMs - positionMs).coerceAtLeast(0))
+    else -> formatDuration(durationMs)
 }
 
 internal fun playbackFraction(positionMs: Long, durationMs: Long): Float =

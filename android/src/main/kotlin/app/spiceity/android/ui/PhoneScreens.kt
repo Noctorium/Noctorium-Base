@@ -73,6 +73,7 @@ import app.spiceity.domain.HomeSection
 import app.spiceity.domain.Playlist
 import app.spiceity.domain.Track
 import app.spiceity.downloads.DownloadStage
+import app.spiceity.settings.SpiceityPreferences
 import kotlin.math.roundToInt
 
 /** A page title, sitting under the status bar. Every screen starts with one. */
@@ -102,7 +103,8 @@ private fun ScreenScaffold(content: @Composable () -> Unit) {
 @Composable
 internal fun HomeScreen(state: AppState) {
     val ui by state.ui.collectAsState()
-    val playback by state.playback.collectAsState()
+    val settings by state.settings.collectAsState()
+    val preferences = settings.preferences
 
     ScreenScaffold {
         ScreenTitle(greeting(), "What is on, and what you were listening to") {
@@ -137,7 +139,7 @@ internal fun HomeScreen(state: AppState) {
             }
 
             if (ui.recentTracks.isNotEmpty()) {
-                item { TrackCarousel("Jump back in", "Where you left off", ui.recentTracks, state) }
+                item { TrackCarousel("Jump back in", "Where you left off", ui.recentTracks, state, preferences) }
             }
 
             if (ui.homeLoading && ui.homeSections.isEmpty()) {
@@ -149,7 +151,7 @@ internal fun HomeScreen(state: AppState) {
             }
 
             items(ui.homeSections.filter { it.matches(ui.providerFilter) }, key = HomeSection::id) { section ->
-                TrackCarousel(section.title, section.subtitle, section.tracks, state)
+                TrackCarousel(section.title, section.subtitle, section.tracks, state, preferences)
             }
 
             if (!ui.homeLoading && ui.homeSections.isEmpty() && ui.recentTracks.isEmpty()) {
@@ -171,8 +173,16 @@ internal fun HomeScreen(state: AppState) {
  * phone shows "here are some things" without spending the whole screen on six of them.
  */
 @Composable
-private fun TrackCarousel(title: String, subtitle: String?, tracks: List<Track>, state: AppState) {
+private fun TrackCarousel(
+    title: String,
+    subtitle: String?,
+    tracks: List<Track>,
+    state: AppState,
+    preferences: SpiceityPreferences,
+) {
     if (tracks.isEmpty()) return
+    val width = preferences.cardSize.phoneWidth()
+    val showBadges = preferences.badgePolicy.showsFor(tracks)
     Column(Modifier.padding(top = 14.dp)) {
         Column(Modifier.padding(horizontal = 20.dp)) {
             Text(title, fontWeight = FontWeight.Bold, fontSize = 17.sp)
@@ -188,10 +198,13 @@ private fun TrackCarousel(title: String, subtitle: String?, tracks: List<Track>,
             items(tracks, key = { it.queueKey }) { track ->
                 Column(
                     Modifier
-                        .width(132.dp)
+                        .width(width)
                         .clickable { state.play(track, sourceQueue = tracks) },
                 ) {
-                    Artwork(track.artworkUrl, 132.dp, corner = 10.dp)
+                    Box {
+                        Artwork(track.artworkUrl, width, corner = 10.dp)
+                        if (showBadges) ProviderBadge(track, Modifier.padding(6.dp))
+                    }
                     Spacer(Modifier.height(6.dp))
                     Text(
                         track.title,

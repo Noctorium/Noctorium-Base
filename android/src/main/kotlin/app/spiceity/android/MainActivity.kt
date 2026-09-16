@@ -7,9 +7,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
-import app.spiceity.android.ui.SpiceityDark
+import app.spiceity.android.ui.spiceityColors
 import app.spiceity.android.ui.SpiceityPhone
 import com.google.common.util.concurrent.ListenableFuture
 
@@ -60,7 +62,15 @@ class MainActivity : ComponentActivity() {
 
         val state = (application as SpiceityApplication).state
         setContent {
-            MaterialTheme(colorScheme = SpiceityDark) { SpiceityPhone(state) }
+            // Read live, so changing the accent or the background in Settings repaints at once rather
+            // than at the next launch.
+            val settings by state.settings.collectAsState()
+            MaterialTheme(
+                colorScheme = spiceityColors(
+                    settings.preferences.accent,
+                    settings.preferences.backgroundDepth,
+                ),
+            ) { SpiceityPhone(state) }
         }
     }
 
