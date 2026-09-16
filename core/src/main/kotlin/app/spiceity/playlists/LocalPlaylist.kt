@@ -1,5 +1,7 @@
 package app.spiceity.playlists
 
+import app.spiceity.platform.TextFiles
+
 import app.spiceity.domain.Track
 import app.spiceity.settings.SettingsRepository
 import kotlinx.serialization.Serializable
@@ -40,7 +42,7 @@ class LocalPlaylistRepository(
     fun load(): List<LocalPlaylist> = runCatching {
         val path = storePath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) emptyList()
-        else json.decodeFromString<List<LocalPlaylist>>(Files.readString(path))
+        else json.decodeFromString<List<LocalPlaylist>>(TextFiles.read(path).orEmpty())
     }.getOrDefault(emptyList())
 
     @Synchronized
@@ -48,7 +50,7 @@ class LocalPlaylistRepository(
         val path = storePath ?: return
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
-        Files.writeString(temporary, json.encodeToString(playlists))
+        TextFiles.write(temporary, json.encodeToString(playlists))
         runCatching {
             Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }.getOrElse {

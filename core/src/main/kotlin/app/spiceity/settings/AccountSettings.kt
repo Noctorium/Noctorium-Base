@@ -1,5 +1,7 @@
 package app.spiceity.settings
 
+import app.spiceity.platform.TextFiles
+
 import app.spiceity.discord.DiscordPresenceSettings
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -305,14 +307,14 @@ class SettingsRepository(
     fun load(): SpiceityPreferences = runCatching {
         val path = settingsPath ?: return@runCatching SpiceityPreferences()
         if (!Files.isRegularFile(path)) SpiceityPreferences()
-        else json.decodeFromString<SpiceityPreferences>(Files.readString(path)).migrated()
+        else json.decodeFromString<SpiceityPreferences>(TextFiles.read(path).orEmpty()).migrated()
     }.getOrDefault(SpiceityPreferences())
 
     fun save(preferences: SpiceityPreferences) {
         val path = settingsPath ?: return
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
-        Files.writeString(temporary, json.encodeToString(preferences))
+        TextFiles.write(temporary, json.encodeToString(preferences))
         runCatching {
             Files.move(
                 temporary,

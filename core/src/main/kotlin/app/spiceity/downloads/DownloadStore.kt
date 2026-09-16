@@ -1,5 +1,7 @@
 package app.spiceity.downloads
 
+import app.spiceity.platform.TextFiles
+
 import app.spiceity.domain.Artist
 import app.spiceity.domain.ProviderType
 import app.spiceity.domain.Track
@@ -84,7 +86,7 @@ class DownloadStore(
     fun all(): List<DownloadedTrack> = runCatching {
         val path = indexPath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) return@runCatching emptyList()
-        json.decodeFromString<List<DownloadedTrack>>(Files.readString(path))
+        json.decodeFromString<List<DownloadedTrack>>(TextFiles.read(path).orEmpty())
             .filter { entry -> fileFor(entry)?.let(Files::isRegularFile) == true }
             .sortedByDescending { it.downloadedAtEpochSeconds }
     }.getOrDefault(emptyList())
@@ -159,7 +161,7 @@ class DownloadStore(
     private fun readRaw(): List<DownloadedTrack> = runCatching {
         val path = indexPath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) emptyList()
-        else json.decodeFromString<List<DownloadedTrack>>(Files.readString(path))
+        else json.decodeFromString<List<DownloadedTrack>>(TextFiles.read(path).orEmpty())
     }.getOrDefault(emptyList())
 
     private fun write(entries: List<DownloadedTrack>) {
@@ -167,7 +169,7 @@ class DownloadStore(
         runCatching {
             Files.createDirectories(path.parent)
             val temporary = path.resolveSibling("${path.fileName}.tmp")
-            Files.writeString(temporary, json.encodeToString(entries))
+            TextFiles.write(temporary, json.encodeToString(entries))
             runCatching {
                 Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             }.getOrElse {

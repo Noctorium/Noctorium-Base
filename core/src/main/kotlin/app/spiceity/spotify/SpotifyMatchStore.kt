@@ -1,5 +1,7 @@
 package app.spiceity.spotify
 
+import app.spiceity.platform.TextFiles
+
 import app.spiceity.domain.Track
 import app.spiceity.settings.AppDirectories
 import kotlinx.serialization.json.Json
@@ -57,7 +59,7 @@ class SpotifyMatchStore(
         // A file that cannot be read is treated as an empty one. It holds nothing that cannot be worked out
         // again, so refusing to start over a corrupt cache would be the wrong trade.
         val stored = runCatching {
-            json.decodeFromString<Map<String, Track>>(Files.readString(file))
+            json.decodeFromString<Map<String, Track>>(TextFiles.read(file).orEmpty())
         }.getOrDefault(emptyMap())
         matches.putAll(stored)
     }
@@ -68,7 +70,7 @@ class SpotifyMatchStore(
         runCatching {
             Files.createDirectories(file.parent)
             val temporary = file.resolveSibling("${file.fileName}.tmp")
-            Files.writeString(temporary, json.encodeToString(matches.toMap()))
+            TextFiles.write(temporary, json.encodeToString(matches.toMap()))
             runCatching {
                 Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             }.getOrElse { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING) }

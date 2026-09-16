@@ -1520,7 +1520,17 @@ class AppState(
         val updated = mutableSettings.value.preferences.transform()
         mutableSettings.update { it.copy(preferences = updated) }
         applyAccountPreferences(updated)
-        scope.launch(Dispatchers.IO) { runCatching { settingsRepository.save(updated) } }
+        scope.launch(Dispatchers.IO) {
+            runCatching { settingsRepository.save(updated) }
+                .onFailure { error ->
+                // Settings that quietly fail to save are the worst kind of failure: everything works, and
+                // then the next launch has forgotten every choice with no clue as to why.
+                SettingsLog.event("settings_save_failed", mapOf("error" to describeFailure(error)))
+                mutableSettings.update {
+                    it.copy(message = "Could not save your settings: " + describeFailure(error))
+                }
+            }
+        }
     }
 
     private fun applyAccountPreferences(preferences: SpiceityPreferences) {
@@ -2134,6 +2144,13 @@ private fun formatCheckTime(epochSeconds: Long): String = runCatching {
  * covers appear in batches down the list instead of all at once at the end.
  */
 private const val ARTWORK_SLICE = 10
+
+/** The exception and its cause, since the outer message is often the less useful of the two. */
+private fun describeFailure(error: Throwable): String =
+    generateSequence(error) { it.cause }
+        .take(3)
+        .joinToString(" <- ") { it::class.java.simpleName + ": " + (it.message ?: "") }
+        .take(200)
 
 /** Credential-store key for the SoundCloud session token that authorises writing likes. */
 private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"

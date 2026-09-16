@@ -1,5 +1,7 @@
 package app.spiceity.scrobble
 
+import app.spiceity.platform.TextFiles
+
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -41,14 +43,14 @@ internal class PendingScrobbleRepository(
 
     private fun read(): List<PendingScrobble> = runCatching {
         val path = queuePath ?: return@runCatching emptyList()
-        if (!Files.isRegularFile(path)) emptyList() else json.decodeFromString<List<PendingScrobble>>(Files.readString(path))
+        if (!Files.isRegularFile(path)) emptyList() else json.decodeFromString<List<PendingScrobble>>(TextFiles.read(path).orEmpty())
     }.getOrDefault(emptyList())
 
     private fun write(items: List<PendingScrobble>) {
         val path = queuePath ?: return
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
-        Files.writeString(temporary, json.encodeToString(items))
+        TextFiles.write(temporary, json.encodeToString(items))
         runCatching {
             Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
         }.getOrElse {

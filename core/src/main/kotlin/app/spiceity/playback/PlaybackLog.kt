@@ -1,5 +1,7 @@
 package app.spiceity.playback
 
+import app.spiceity.platform.TextFiles
+
 import app.spiceity.settings.AppDirectories
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,12 +35,7 @@ object PlaybackLog {
                     )
                 }
             }
-            Files.writeString(
-                target,
-                JsonObject(values).toString() + System.lineSeparator(),
-                StandardOpenOption.CREATE,
-                StandardOpenOption.APPEND,
-            )
+            TextFiles.append(target, JsonObject(values).toString() + System.lineSeparator())
         }
     }
 }

@@ -1,5 +1,7 @@
 package app.spiceity.social
 
+import app.spiceity.platform.TextFiles
+
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.Dispatchers
@@ -253,7 +255,7 @@ object SoundCloudToken {
     }
 
     fun fromCookieFile(path: Path): String? = runCatching {
-        fromCookieJar(Files.readString(path))
+        fromCookieJar(TextFiles.read(path).orEmpty())
     }.getOrNull()
 
     fun fromCookieJar(text: String): String? = text.lineSequence()
