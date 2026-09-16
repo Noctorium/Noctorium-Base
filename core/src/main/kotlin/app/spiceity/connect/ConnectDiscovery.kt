@@ -77,16 +77,9 @@ class ConnectDiscovery(
      */
     fun start(announcement: () -> DeviceAnnouncement?, key: () -> String?) {
         if (running) return
-        val bound = runCatching {
-            // Reuse matters: without it, a second Spiceity on the same machine cannot bind, and neither
-            // can this one after a crash until the kernel lets the port go.
-            DatagramSocket(null).apply {
-                reuseAddress = true
-                broadcast = true
-                bind(java.net.InetSocketAddress(ConnectProtocol.DISCOVERY_PORT))
-            }
-        }.getOrElse {
-            log("Discovery could not bind ${ConnectProtocol.DISCOVERY_PORT}: ${it.message}")
+        val bound = bindSomething()
+        if (bound == null) {
+            log("Discovery could not bind any of ${ConnectProtocol.DISCOVERY_PORTS}.")
             return
         }
 
@@ -98,7 +91,7 @@ class ConnectDiscovery(
             started.launch { announce(bound, announcement) },
             started.launch { listen(bound, announcement, key) },
         )
-        log("Discovery started on ${ConnectProtocol.DISCOVERY_PORT}")
+        log("Discovery listening on ${bound.localPort}, announcing to ${ConnectProtocol.DISCOVERY_PORTS}")
     }
 
     fun stop() {
@@ -114,14 +107,39 @@ class ConnectDiscovery(
         presence.release()
     }
 
+    /**
+     * The first candidate port this machine will actually hand over.
+     *
+     * Reuse is asked for on every attempt: without it, a second Spiceity on the same machine cannot bind
+     * at all, and neither can this one after a crash until the kernel lets the port go.
+     */
+    private fun bindSomething(): DatagramSocket? {
+        for (port in ConnectProtocol.DISCOVERY_PORTS) {
+            val attempt = runCatching {
+                DatagramSocket(null).apply {
+                    reuseAddress = true
+                    broadcast = true
+                    bind(java.net.InetSocketAddress(port))
+                }
+            }.getOrNull()
+            if (attempt != null) return attempt
+            log("Discovery could not bind $port, trying the next.")
+        }
+        return null
+    }
+
     private suspend fun announce(socket: DatagramSocket, announcement: () -> DeviceAnnouncement?) {
         while (currentlyActive()) {
             val mine = announcement()
             if (mine != null) {
                 val bytes = ConnectProtocol.json.encodeToString(DeviceAnnouncement.serializer(), mine)
                     .toByteArray(Charsets.UTF_8)
+                // Every candidate port, on every interface: a device that lost the first port is still
+                // reached, and nobody has to know which one anybody else settled on.
                 for (target in broadcastAddresses()) {
-                    runCatching { socket.send(DatagramPacket(bytes, bytes.size, target, ConnectProtocol.DISCOVERY_PORT)) }
+                    for (port in ConnectProtocol.DISCOVERY_PORTS) {
+                        runCatching { socket.send(DatagramPacket(bytes, bytes.size, target, port)) }
+                    }
                 }
             }
             prune()
@@ -161,6 +179,12 @@ class ConnectDiscovery(
                 port = heard.port,
                 lastSeenAtMs = clock(),
             )
+            // Logged the first time only. "Found" on every beat would be three lines a second, and the
+            // one thing anybody debugging Connect wants to know is whether the other device was ever
+            // seen at all.
+            if (mutablePeers.value.none { it.id == peer.id }) {
+                log("Found ${peer.name} (${peer.kind}) at ${peer.address}:${peer.port}")
+            }
             mutablePeers.value = mutablePeers.value.filterNot { it.id == peer.id } + peer
         }
     }
@@ -178,7 +202,10 @@ class ConnectDiscovery(
     private fun prune() {
         val cutoff = clock() - PEER_FORGOTTEN_AFTER_MS
         val alive = mutablePeers.value.filter { it.lastSeenAtMs >= cutoff }
-        if (alive.size != mutablePeers.value.size) mutablePeers.value = alive
+        if (alive.size != mutablePeers.value.size) {
+            mutablePeers.value.filterNot { it in alive }.forEach { log("Lost ${it.name}") }
+            mutablePeers.value = alive
+        }
     }
 
     private fun currentlyActive(): Boolean = scope?.isActive == true && socket?.isClosed == false

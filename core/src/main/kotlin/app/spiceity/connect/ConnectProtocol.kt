@@ -25,13 +25,22 @@ import javax.crypto.spec.SecretKeySpec
  */
 object ConnectProtocol {
     /**
-     * The port the announcements go to.
+     * The ports announcements go to.
      *
-     * Fixed, because discovery has to start somewhere and both ends need to agree without being told. The
-     * control channel is not fixed -- each device binds an ephemeral port and says which one it got, so
-     * two Spiceitys on one machine never fight over it.
+     * Fixed, because discovery has to start somewhere and both ends must agree without being told. A
+     * list rather than one number, for two reasons learned from a real machine.
+     *
+     * Windows reserves blocks of UDP ports for Hyper-V, WSL and Docker, out of the dynamic range above
+     * 49152. A bind inside a reserved block fails with "address already in use" while nothing whatsoever
+     * is listening on it, and the block moves between reboots -- so no single port up there is safe to
+     * depend on. The first choice here, 57633, turned out to sit inside 57621-57720 on the machine this
+     * was written on. These are all below the dynamic range, where Windows does not help itself.
+     *
+     * A device binds the first of these it can get, and announces to all of them. So a machine that
+     * loses the first port still receives on the second, and the devices looking for it still reach it
+     * without either side having to be told which one it settled on.
      */
-    const val DISCOVERY_PORT = 57633
+    val DISCOVERY_PORTS = listOf(45633, 45634, 45635)
 
     /** The wire format version, so a future change can be recognised rather than misread. */
     const val VERSION = 1

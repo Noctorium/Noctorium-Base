@@ -150,11 +150,16 @@ class ConnectManager(
         this.deviceName = deviceName.ifBlank { defaultDeviceName() }
         loadKey()
         if (key() == null) {
+            // Said out loud. Without an account key there is nothing to announce and nothing that could
+            // be trusted if it answered, so this is a legitimate stop -- but a silent one leaves somebody
+            // looking at an empty device list with nothing anywhere telling them why.
+            log("Not starting: no connect key stored yet. Sign in to Spiceity, or check the service.")
             mutableState.update {
                 it.copy(available = false, listening = false, thisDevice = this.deviceName)
             }
             return
         }
+        log("Starting as \"${this.deviceName}\" (${this.deviceId})")
         val port = server.start()
         if (port == 0) {
             mutableState.update { it.copy(available = false, message = "Could not open a port for Connect.") }
