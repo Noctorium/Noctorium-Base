@@ -159,6 +159,18 @@ class NewPipeBackend(
     /** SoundCloud's API answers by numeric id; its pages are addressed by profile name. */
     override suspend fun resolveSoundCloudPermalink(userId: String): String? = null
 
+    /**
+     * Fetches the audio in ranged chunks rather than as one long read.
+     *
+     * This is not an optimisation, it is the difference between finishing and not. Google's media servers
+     * throttle a single open GET hard after the first few megabytes — a download would reach roughly half
+     * a track and then crawl, with no error, forever. Asking for a few megabytes at a time and coming back
+     * for the next range is what yt-dlp and NewPipe both do, and it keeps each request short enough to
+     * stay off the throttle and inside a sane read timeout.
+     *
+     * A server that ignores Range answers 200 with the whole body instead of 206, which is handled by
+     * writing what arrives and stopping.
+     */
     override suspend fun downloadAudio(
         sourceUrl: String,
         outputTemplate: String,
@@ -173,30 +185,62 @@ class NewPipeBackend(
         Files.createDirectories(destination.parent)
         val candidate = destination.resolveSibling("${destination.fileName}.part")
 
-        val request = OkRequest.Builder().url(address).build()
-        http.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw BackendException("The service refused the download (HTTP ${response.code}).")
-            }
-            val total = response.body?.contentLength() ?: -1L
-            var written = 0L
-            response.body?.byteStream()?.use { input ->
-                Files.newOutputStream(candidate).use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val read = input.read(buffer)
-                        if (read < 0) break
-                        output.write(buffer, 0, read)
-                        written += read
-                        if (total > 0) onProgress((written.toFloat() / total).coerceIn(0f, 1f))
+        var written = 0L
+        var total = -1L
+        Files.newOutputStream(candidate).use { output ->
+            while (true) {
+                val end = written + CHUNK_BYTES - 1
+                val request = OkRequest.Builder()
+                    .url(address)
+                    .header("Range", "bytes=$written-$end")
+                    .build()
+
+                val finished = http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        // 416 means the last chunk asked for a range past the end, which is simply done.
+                        if (response.code == 416 && written > 0) return@use true
+                        throw BackendException("The service refused the download (HTTP ${response.code}).")
                     }
+                    if (total < 0) total = response.totalLength()
+
+                    val body = response.body ?: throw BackendException("The service sent no audio.")
+                    var chunk = 0L
+                    body.byteStream().use { input ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            chunk += read
+                            written += read
+                            if (total > 0) onProgress((written.toFloat() / total).coerceIn(0f, 1f))
+                        }
+                    }
+
+                    // Nothing came back, or the server sent the whole thing at once and ignored the range.
+                    chunk == 0L || response.code == 200 || (total > 0 && written >= total)
                 }
-            } ?: throw BackendException("The service sent no audio.")
+                if (finished) break
+            }
         }
+
+        if (written == 0L) throw BackendException("The service sent no audio.")
         // Moved into place only once it is whole, so an interrupted download never leaves a file that
         // looks playable and is not.
         Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING)
         onProgress(1f)
+    }
+
+    /**
+     * How long the whole file is, from whichever header the answer came in.
+     *
+     * A ranged reply states the total after the slash in Content-Range; an unranged one states it in
+     * Content-Length. Taking the second for the first would make a 2 MB chunk read as the entire track and
+     * the progress bar finish eight times over.
+     */
+    private fun okhttp3.Response.totalLength(): Long {
+        header("Content-Range")?.substringAfter('/', "")?.toLongOrNull()?.let { return it }
+        return body?.contentLength() ?: -1L
     }
 
     /**
@@ -314,6 +358,12 @@ class NewPipeBackend(
                 ?: url.substringAfterLast('/').substringBefore('?')
         else -> url.substringAfter("soundcloud.com/", url).trim('/')
     }
+
+    /**
+     * Four megabytes: long enough that the per-request overhead is nothing, short enough that Google's
+     * throttle never engages and a stalled chunk fails fast instead of hanging the whole download.
+     */
+    private val CHUNK_BYTES = 4L * 1024 * 1024
 
     private fun providerOf(sourceUrl: String): ProviderType = when {
         "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
