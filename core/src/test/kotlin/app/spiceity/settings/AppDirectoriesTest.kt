@@ -166,6 +166,10 @@ class CookiePathRehomingTest {
     fun `a jar named under the old folder is followed into the new one`() {
         val base = AppDirectories.base()
         if (base == null) return
+        // Made rather than assumed. On a machine where Spiceity has run this folder is already there, so
+        // on Windows the omission never showed; on a fresh Linux checkout nothing has ever created it and
+        // the probe below fails with NoSuchFileException before the test reaches anything it means to try.
+        Files.createDirectories(base)
         val jar = base.resolve("rehoming-probe.cookies")
         jar.writeText("netscape jar")
         try {
@@ -184,6 +188,7 @@ class CookiePathRehomingTest {
     @Test
     fun `a jar that is still where it says stays exactly where it says`() {
         val base = AppDirectories.base() ?: return
+        Files.createDirectories(base)
         val jar = base.resolve("present-probe.cookies")
         jar.writeText("still here")
         try {
