@@ -63,12 +63,26 @@ object AppIcon {
     /** Every size at once, for handing to a window that will choose between them itself. */
     fun images(): List<BufferedImage> = SIZES.map(::image)
 
+    /** The face the committed icon files were drawn with. */
+    const val LETTER_FACE = "Segoe UI Black"
+
+    /**
+     * Whether this machine has the face the icon is meant to be set in.
+     *
+     * The drawing deliberately falls back to the platform's own sans without it, so the very same code
+     * produces different pixels on a machine that has the face and one that does not. That is right for
+     * a window, and it is the reason the committed files can only be compared byte for byte on a machine
+     * that could have drawn them.
+     */
+    val hasPreferredFace: Boolean
+        get() = Font(LETTER_FACE, Font.BOLD, 12).family.equals(LETTER_FACE, ignoreCase = true)
+
     private fun letterFont(size: Int): Font {
         val points = (size * LETTER_RATIO).toInt().coerceAtLeast(6)
         // Segoe UI is the face the rest of Windows is set in; anywhere without it falls back to the
         // platform's own sans, which is the same choice the interface makes.
-        val segoe = Font("Segoe UI Black", Font.BOLD, points)
-        return if (segoe.family.equals("Segoe UI Black", ignoreCase = true)) {
+        val segoe = Font(LETTER_FACE, Font.BOLD, points)
+        return if (segoe.family.equals(LETTER_FACE, ignoreCase = true)) {
             segoe
         } else {
             Font(Font.SANS_SERIF, Font.BOLD, points)

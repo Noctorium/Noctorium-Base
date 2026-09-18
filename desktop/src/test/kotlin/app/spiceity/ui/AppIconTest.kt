@@ -171,16 +171,37 @@ class AppIconTest {
      * The icon shipped with the build is a file on disk, while the one in the running window is drawn.
      * If the two drift, the taskbar and the installed application stop looking like each other.
      */
+    /**
+     * Compared byte for byte only where the drawing would come out the same.
+     *
+     * The letter is set in Segoe UI Black where that exists and in the platform's own sans everywhere
+     * else, on purpose, so the same code draws different pixels on a machine without the face. A
+     * Linux CI runner is one such machine, and comparing bytes there fails for a reason that is not a
+     * defect. Where the face is present -- which includes every machine these files are regenerated on
+     * -- the guard is exact, which is where it earns its keep.
+     */
     @Test
     fun `the committed icon file matches what the code draws`() {
         val committed = File("src/main/resources/spiceity.ico")
-
         assertTrue(committed.isFile, "src/main/resources/spiceity.ico is missing")
-        assertContentEquals(
-            AppIcon.icoBytes(),
-            committed.readBytes(),
-            "the committed icon is out of date; regenerate it from AppIcon.icoBytes()",
-        )
+
+        if (AppIcon.hasPreferredFace) {
+            assertContentEquals(
+                AppIcon.icoBytes(),
+                committed.readBytes(),
+                "the committed icon is out of date; regenerate it with -Dspiceity.writeIcons=true",
+            )
+        } else {
+            // Still worth checking it is an icon at all, and has every size, which does not depend
+            // on which face drew the letter.
+            val bytes = committed.readBytes()
+            assertEquals(1, bytes[2].toInt(), "the committed file is not an icon")
+            assertEquals(
+                AppIcon.SIZES.size,
+                bytes[4].toInt() or (bytes[5].toInt() shl 8),
+                "the committed icon has the wrong number of sizes",
+            )
+        }
     }
 
     private fun brightness(argb: Int): Int =

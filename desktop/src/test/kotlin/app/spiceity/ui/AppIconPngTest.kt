@@ -17,13 +17,15 @@ class AppIconPngTest {
 
     private val committed = File("src/main/resources/spiceity.png")
 
+    /** Exact only where the face that drew it exists; see the same note in AppIconTest. */
     @Test
     fun `the committed png matches what the code draws`() {
         assertTrue(committed.isFile, "src/main/resources/spiceity.png is missing")
+        if (!AppIcon.hasPreferredFace) return
         assertContentEquals(
             AppIcon.pngBytes(),
             committed.readBytes(),
-            "the committed png is out of date; regenerate it from AppIcon.pngBytes()",
+            "the committed png is out of date; regenerate it with -Dspiceity.writeIcons=true",
         )
     }
 
