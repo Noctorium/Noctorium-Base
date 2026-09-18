@@ -1,6 +1,7 @@
 package app.spiceity
 
 import app.spiceity.connect.DeviceKind
+import app.spiceity.update.DesktopUpdateInstaller
 import app.spiceity.core.AppState
 import app.spiceity.discord.DiscordPresenceManager
 import app.spiceity.downloads.AudioConverter
@@ -40,5 +41,6 @@ fun desktopAppState(): AppState {
                 ?: "This computer"
         },
         deviceKind = DeviceKind.DESKTOP,
+        updateInstaller = DesktopUpdateInstaller(),
     )
 }

@@ -70,6 +70,12 @@ import app.spiceity.connect.DeviceKind
 import app.spiceity.connect.NetworkPresence
 import app.spiceity.connect.PlaybackSnapshot
 import app.spiceity.connect.toWire
+import app.spiceity.update.AvailableUpdate
+import app.spiceity.update.UpdateCheck
+import app.spiceity.update.UpdateChecker
+import app.spiceity.update.UpdateDownloader
+import app.spiceity.update.UpdateInstaller
+import app.spiceity.update.UpdateState
 import app.spiceity.account.SpiceityUser
 import app.spiceity.settings.*
 import kotlinx.coroutines.CoroutineScope
@@ -259,6 +265,8 @@ class AppState(
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
     /** Android has to hold a lock to hear broadcast traffic at all; a desktop does not. */
     private val networkPresence: NetworkPresence = NetworkPresence.None,
+    /** What this platform can do about a new version, which on some of them is nothing. */
+    private val updateInstaller: UpdateInstaller = UpdateInstaller.none(),
 ) : AutoCloseable {
     /**
      * Spotify's tokens, read from and written to where the rest of Spiceity keeps such things.
@@ -367,6 +375,20 @@ class AppState(
 
     /** The listener's other devices on this network, and whichever one is being driven. */
     val connect: StateFlow<ConnectState> = connectManager.state
+
+    private val mutableUpdates = MutableStateFlow(
+        UpdateState(
+            currentVersion = updateInstaller.currentVersion?.toString().orEmpty(),
+            canInstall = updateInstaller.channel.canInstallItself,
+        ),
+    )
+
+    /** Whether there is a newer Spiceity, and how far along getting it is. */
+    val updates: StateFlow<UpdateState> = mutableUpdates.asStateFlow()
+
+    private val updateChecker = UpdateChecker(updateInstaller.currentVersion, updateInstaller.channel)
+    private val updateDownloader = UpdateDownloader()
+    private var updateJob: Job? = null
     /**
      * Listens the service has not taken yet.
      *
@@ -401,6 +423,9 @@ class AppState(
         // most wanted when the internet is not working, and a device that could not find the speaker in
         // the next room until Vercel answered would be useless exactly then.
         startConnect()
+        // One quiet request, and only when it has been left switched on. Nothing is said unless there is
+        // something to say.
+        if (storedPreferences.updates.checkOnLaunch) checkForUpdates(quietly = true)
         // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
         scope.launch(Dispatchers.IO) { publishSpotifyState() }
         scope.launch(Dispatchers.IO) {
@@ -2019,6 +2044,98 @@ class AppState(
 
     fun clearSpiceityMessage() = mutableAccount.update { it.copy(message = null) }
 
+    // --- Updating ---
+
+    /**
+     * Looks for a newer Spiceity.
+     *
+     * [quietly] is for the check at launch: nothing is said when there is nothing to say, and a check
+     * that could not reach GitHub is not worth a message on a screen nobody asked to see. Pressing the
+     * button in settings is not quiet, because somebody who asked deserves an answer either way.
+     */
+    fun checkForUpdates(quietly: Boolean = false) {
+        if (mutableUpdates.value.busy) return
+        updateJob?.cancel()
+        updateJob = scope.launch {
+            mutableUpdates.update { it.copy(checking = true, message = null) }
+            when (val result = updateChecker.check()) {
+                is UpdateCheck.Available -> mutableUpdates.update {
+                    it.copy(checking = false, available = result.update, message = null)
+                }
+                UpdateCheck.UpToDate -> mutableUpdates.update {
+                    it.copy(
+                        checking = false,
+                        available = null,
+                        message = if (quietly) null else "This is the newest Spiceity.",
+                    )
+                }
+                is UpdateCheck.Failed -> mutableUpdates.update {
+                    it.copy(checking = false, message = if (quietly) null else result.message)
+                }
+            }
+        }
+    }
+
+    /**
+     * Fetches the update and hands it to whatever installs things here.
+     *
+     * Nothing is run that was not checked against the checksum the release published, and nothing is
+     * installed by this application itself -- the last word belongs to the platform's own installer,
+     * which asks again.
+     */
+    fun installUpdate() {
+        val update = mutableUpdates.value.available ?: return
+        val file = update.file
+        if (file == null || !updateInstaller.channel.canInstallItself) {
+            mutableUpdates.update { it.copy(message = "Open the release page to get this one.") }
+            return
+        }
+        if (mutableUpdates.value.busy) return
+        updateJob?.cancel()
+        updateJob = scope.launch {
+            mutableUpdates.update { it.copy(downloading = 0f, message = null) }
+            val target = updateInstaller.downloadDirectory().resolve(file.name)
+            val outcome = updateDownloader.fetch(file, update.sha256, target) { fraction ->
+                mutableUpdates.update { it.copy(downloading = fraction) }
+            }
+            when (outcome) {
+                is UpdateDownloader.Outcome.Failed -> mutableUpdates.update {
+                    it.copy(downloading = null, message = outcome.message)
+                }
+                is UpdateDownloader.Outcome.Ready -> {
+                    val refusal = updateInstaller.install(outcome.file)
+                    mutableUpdates.update {
+                        it.copy(
+                            downloading = null,
+                            message = refusal ?: "Installing. Spiceity will close.",
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Opens the release in a browser.
+     *
+     * The way out of every case Spiceity cannot handle: an unzipped copy, a release with no file for
+     * this platform, one with no checksum. Somebody looking at the page can decide for themselves,
+     * which is more than a greyed-out button offers.
+     */
+    fun openReleasePage() {
+        val url = mutableUpdates.value.available?.pageUrl?.takeIf(String::isNotBlank) ?: RELEASES_PAGE
+        runCatching { system.openUrl(url) }
+            .onFailure { mutableUpdates.update { state -> state.copy(message = "Could not open $url") } }
+    }
+
+    /** Puts the notice away until the next check finds it again. */
+    fun dismissUpdate() = mutableUpdates.update { it.copy(available = null, message = null) }
+
+    fun clearUpdateMessage() = mutableUpdates.update { it.copy(message = null) }
+
+    fun setUpdateCheckOnLaunch(enabled: Boolean) =
+        updatePreferences { copy(updates = this.updates.copy(checkOnLaunch = enabled)) }
+
     /**
      * The saved Spiceity session, including one saved under the name this application used to have.
      *
@@ -2392,6 +2509,9 @@ private fun describeFailure(error: Throwable): String =
 private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
 
 /** Credential-store key for the Spiceity account session. The password itself is never kept. */
+/** Where somebody is sent when Spiceity cannot fetch the update for them. */
+private const val RELEASES_PAGE = "https://github.com/Spice-Production/Spiceity/releases/latest"
+
 private const val SPICEITY_TOKEN = "spiceity.session_token"
 
 /**

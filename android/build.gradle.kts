@@ -98,6 +98,9 @@ android {
 
     buildFeatures {
         compose = true
+        // So the application can read its own versionName, which the updater compares against the
+        // latest release. Without it nothing in the running app knows what it is.
+        buildConfig = true
     }
 
     packaging {

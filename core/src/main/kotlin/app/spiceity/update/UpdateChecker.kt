@@ -142,10 +142,19 @@ class UpdateChecker(
     }
 }
 
-/** Which file out of a release belongs to this kind of installation. */
-internal fun UpdateChannel.matches(fileName: String): Boolean {
+/**
+ * Which file out of a release belongs to this kind of installation, on this machine.
+ *
+ * The architecture check is not theoretical. Run against a project that publishes for several at once,
+ * the extension alone picks whichever .deb happens to be listed first -- which on a real release turned
+ * out to be an arm64 musl build that an ordinary desktop cannot install. Spiceity currently ships one
+ * package per platform, so the bare rule works today and would quietly stop working the day it does not.
+ *
+ * A name that mentions no architecture at all is taken as universal, which is what a lone .apk is.
+ */
+internal fun UpdateChannel.matches(fileName: String, architecture: String = hostArchitecture()): Boolean {
     val name = fileName.lowercase()
-    return when (this) {
+    val extensionFits = when (this) {
         // The exe is preferred over the msi: it is what the workflow builds for people to run, and the
         // msi is there for deployment, where an updater is not what does the updating.
         UpdateChannel.WINDOWS_INSTALLER -> name.endsWith("-setup.exe")
@@ -154,7 +163,27 @@ internal fun UpdateChannel.matches(fileName: String): Boolean {
         UpdateChannel.ANDROID_APK -> name.endsWith(".apk")
         UpdateChannel.UNMANAGED -> false
     }
+    if (!extensionFits) return false
+
+    val mine = ARCHITECTURE_ALIASES[architecture].orEmpty()
+    if (mine.any { name.contains(it) }) return true
+    // Mentions somebody else's architecture, so it is not ours however well the extension fits.
+    val someoneElses = ARCHITECTURE_ALIASES.filterKeys { it != architecture }.values.flatten()
+    return someoneElses.none { name.contains(it) }
 }
+
+/** The names the same architecture goes by across the three packaging worlds. */
+private val ARCHITECTURE_ALIASES: Map<String, List<String>> = mapOf(
+    "x64" to listOf("x86_64", "amd64", "x64"),
+    "arm64" to listOf("aarch64", "arm64"),
+)
+
+/** What this machine is, in the vocabulary above. */
+internal fun hostArchitecture(): String =
+    when (System.getProperty("os.arch").orEmpty().lowercase()) {
+        "aarch64", "arm64" -> "arm64"
+        else -> "x64"
+    }
 
 /*
  * Named exactly as GitHub sends them.

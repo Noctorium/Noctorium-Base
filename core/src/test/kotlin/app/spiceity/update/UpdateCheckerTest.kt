@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -174,5 +175,54 @@ class ChecksumParsingTest {
     fun `nonsense produces nothing rather than a wrong answer`() {
         assertTrue(UpdateChecker.parseChecksums("").isEmpty())
         assertTrue(UpdateChecker.parseChecksums("<html>404</html>").isEmpty())
+    }
+}
+
+/**
+ * Choosing between several files for the same platform.
+ *
+ * A release that publishes one package per platform makes this look unnecessary. Run against a project
+ * that publishes for several architectures at once, matching on the extension alone picked an arm64 musl
+ * .deb for an ordinary desktop -- which installs onto nothing.
+ */
+class AssetArchitectureTest {
+
+    private val release = listOf(
+        "bat-musl_0.26.1_arm64.deb",
+        "bat-musl_0.26.1_amd64.deb",
+        "bat_0.26.1_arm64.deb",
+        "bat_0.26.1_amd64.deb",
+        "bat-0.26.1-1.x86_64.rpm",
+        "bat-0.26.1-1.aarch64.rpm",
+    )
+
+    @Test
+    fun `an x64 machine is never offered an arm64 package`() {
+        val chosen = release.filter { UpdateChannel.DEBIAN_PACKAGE.matches(it, "x64") }
+        assertTrue(chosen.isNotEmpty(), "nothing matched at all")
+        assertTrue(chosen.none { it.contains("arm64") }, "an arm64 package was offered to x64: $chosen")
+    }
+
+    @Test
+    fun `and an arm64 machine is never offered an x64 one`() {
+        val chosen = release.filter { UpdateChannel.FEDORA_PACKAGE.matches(it, "arm64") }
+        assertTrue(chosen.isNotEmpty())
+        assertTrue(chosen.all { it.contains("aarch64") }, "wrong architecture offered to arm64: $chosen")
+    }
+
+    @Test
+    fun `a file that names no architecture suits everyone`() {
+        // Spiceity's own APK is one of these, and so is anything published without an arch in the name.
+        assertTrue(UpdateChannel.ANDROID_APK.matches("Spiceity-1.2.3.apk", "x64"))
+        assertTrue(UpdateChannel.ANDROID_APK.matches("Spiceity-1.2.3.apk", "arm64"))
+    }
+
+    @Test
+    fun `Spiceity's own release still matches on both platforms`() {
+        assertTrue(UpdateChannel.WINDOWS_INSTALLER.matches("Spiceity-1.2.3-windows-x64-setup.exe", "x64"))
+        assertTrue(UpdateChannel.DEBIAN_PACKAGE.matches("spiceity_1.2.3_amd64.deb", "x64"))
+        assertTrue(UpdateChannel.FEDORA_PACKAGE.matches("spiceity-1.2.3.x86_64.rpm", "x64"))
+        // And the msi is still not what an updater reaches for.
+        assertFalse(UpdateChannel.WINDOWS_INSTALLER.matches("Spiceity-1.2.3-windows-x64.msi", "x64"))
     }
 }

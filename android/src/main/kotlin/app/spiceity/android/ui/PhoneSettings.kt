@@ -112,6 +112,7 @@ internal fun SettingsScreen(state: AppState, signIn: (ProviderType) -> Unit) {
         item { CustomizationCard(settings, state) }
         item { PhoneOptionsCard(settings, state) }
         item { ConnectCard(settings, state) }
+        item { UpdateCard(settings, state) }
         item { ScrobblingCard(settings, state) }
         item { LyricsCard(state) }
         item { SavingCard(settings, state) }

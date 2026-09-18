@@ -9,4 +9,10 @@
 <paths>
     <files-path name="spiceity-downloads" path="spiceity/downloads/" />
     <external-path name="music" path="Music/" />
+    <!--
+      And the downloaded update, which the system package installer has to be able to read.
+      Its own folder rather than the downloads one: what goes here is an APK about to be run, and it
+      has no business sitting among the listener's music where the share sheet could reach it.
+    -->
+    <files-path name="spiceity-updates" path="updates/" />
 </paths>

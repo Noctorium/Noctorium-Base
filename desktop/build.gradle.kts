@@ -150,6 +150,22 @@ compose.desktop {
     }
 }
 
+/**
+ * The version, where the running application can read it.
+ *
+ * Nothing in the built application knew what version it was -- the scrobbler reported a hardcoded
+ * 0.1.0 and the updater would have had nothing to compare against. A jar manifest would do for a jar,
+ * but jpackage builds a runtime image and the manifest is not where it ends up, so this is a plain
+ * properties file written at build time from the same value the installers are named after.
+ */
+tasks.named<ProcessResources>("processResources") {
+    val version = appVersion
+    inputs.property("appVersion", version)
+    from(resources.text.fromString("version=$version\n")) {
+        rename { "spiceity-version.properties" }
+    }
+}
+
 tasks.test {
     useJUnitPlatform()
     // Lets -Dspiceity.writeIcons=true reach the test JVM, which is how the committed icon files are

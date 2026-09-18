@@ -92,6 +92,7 @@ class SpiceityApplication : Application() {
             },
             deviceKind = DeviceKind.PHONE,
             networkPresence = WifiPresence(this),
+            updateInstaller = AndroidUpdateInstaller(this),
         )
     }
 

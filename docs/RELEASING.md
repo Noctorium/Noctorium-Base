@@ -17,6 +17,33 @@ on purpose — read it, check the files are the sizes you expect, and publish it
 To build the packages without releasing anything, run the workflow by hand from the Actions tab and give
 it a version. The artifacts are attached to the run for two weeks and no release is created.
 
+## Updating, and why the draft matters
+
+Spiceity checks GitHub once at launch and offers what it finds. It asks `/releases/latest`, which
+**ignores drafts and pre-releases** — so nothing is offered to anybody until you publish the draft the
+workflow opened. That is the intended safety catch: a release exists for you to look at before it
+exists for everyone.
+
+What each platform does with an update:
+
+| Installed as | What happens |
+| --- | --- |
+| Windows installer | Downloads the `.exe`, checks it, runs it, and closes so its files can be replaced |
+| `.deb` / `.rpm` | Downloads the package and hands it to the package manager through a `pkexec` prompt |
+| Android | Downloads the APK and hands it to Android's package installer, which asks again |
+| Unzipped folder, or Gradle | Told there is an update, and sent to the release page |
+
+That last row is the one worth knowing. A copy running from the zip was never installed by anything, so
+running an installer over it would put a second copy in Program Files and leave the folder you are
+actually running untouched. Detection errs that way deliberately: being told to update by hand is a
+smaller problem than two copies.
+
+**Nothing is installed that was not verified.** The download is checked against `SHA256SUMS.txt` from
+the same release, and a release without one is refused with a link to the page instead. If you publish
+a release by hand, publish the checksums with it or the updater will not touch it.
+
+The check can be switched off in Settings → Updates, and it is one request to GitHub either way.
+
 ## Why a job per platform
 
 `jpackage` cannot cross-build. It reads the JDK it is running on and produces a package for that machine

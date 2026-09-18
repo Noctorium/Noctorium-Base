@@ -220,6 +220,7 @@ data class SpiceityPreferences(
     val phone: PhonePreferences = PhonePreferences(),
     /** Spiceity Connect: this device on the local network. */
     val connect: ConnectPreferences = ConnectPreferences(),
+    val updates: UpdatePreferences = UpdatePreferences(),
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
@@ -268,6 +269,16 @@ data class ConnectPreferences(
     val deviceId: String = "",
     val deviceName: String = "",
 )
+
+/**
+ * Whether Spiceity looks for a new version of itself.
+ *
+ * On by default, and a single quiet request to GitHub at launch. Off is a real choice: somebody on a
+ * metered connection, or who would simply rather nothing reached out on its own, should be able to say
+ * so and have it mean it -- nothing else in the application checks.
+ */
+@Serializable
+data class UpdatePreferences(val checkOnLaunch: Boolean = true)
 
 /** The shape of the cover on the now playing screen. */
 @Serializable

@@ -2717,7 +2717,8 @@ private fun PlaybackError(message: String) {
 }
 
 private enum class SettingsPage {
-    ACCOUNT, PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SPOTIFY, SCROBBLING, LYRICS, DISCORD, DIAGNOSTICS
+    ACCOUNT, PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SPOTIFY, SCROBBLING, LYRICS, DISCORD, UPDATES,
+    DIAGNOSTICS
 }
 
 @Composable
@@ -2742,6 +2743,7 @@ private fun SettingsScreen(state: AppState) {
                 SettingsPage.SCROBBLING -> ScrobblingSettingsPanel(settings, state)
                 SettingsPage.LYRICS -> LyricsSettingsPanel()
                 SettingsPage.DISCORD -> DiscordSettingsPanel(settings.preferences, state)
+                SettingsPage.UPDATES -> UpdatePanel(state)
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPanel(settings, state)
                 null -> Unit
             }
@@ -2852,7 +2854,20 @@ private fun SettingsScreen(state: AppState) {
                 discord.enabled,
             )
         }
+        item { SettingsCard("Updates", updatesSubtitle(state), Icons.Default.SystemUpdateAlt, { page = SettingsPage.UPDATES }) }
         item { SettingsCard("Diagnostics", "Check yt-dlp, mpv, FFmpeg and storage", Icons.Default.MonitorHeart, { page = SettingsPage.DIAGNOSTICS }) }
+    }
+}
+
+/** Says on the tile itself when there is something new, so it is not hidden one click away. */
+@Composable
+private fun updatesSubtitle(state: AppState): String {
+    val updates by state.updates.collectAsState()
+    val available = updates.available
+    return when {
+        available != null -> "Spiceity ${available.version} is available"
+        updates.currentVersion.isNotBlank() -> "You have ${updates.currentVersion}"
+        else -> "Check for a newer Spiceity"
     }
 }
 
@@ -2866,6 +2881,7 @@ private fun pageTitle(page: SettingsPage) = when (page) {
     SettingsPage.SCROBBLING -> "Scrobbling"
     SettingsPage.LYRICS -> "Lyrics providers"
     SettingsPage.DISCORD -> "Discord Rich Presence"
+    SettingsPage.UPDATES -> "Updates"
     SettingsPage.DIAGNOSTICS -> "Diagnostics"
 }
 
@@ -3918,7 +3934,7 @@ private fun AccountStatusRow(connection: AccountConnectionState) {
 }
 
 @Composable
-private fun AccountFact(text: String) {
+internal fun AccountFact(text: String) {
     Row(Modifier.padding(vertical = 4.dp)) {
         Text("•", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
         Spacer(Modifier.width(8.dp))
@@ -4632,7 +4648,7 @@ private fun DiagnosticsPanel(settings: SettingsState, state: AppState) {
 }
 
 @Composable
-private fun SettingsPanelCard(content: @Composable ColumnScope.() -> Unit) {
+internal fun SettingsPanelCard(content: @Composable ColumnScope.() -> Unit) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .42f), shape = RoundedCornerShape(16.dp), modifier = Modifier.widthIn(max = 720.dp)) {
         Column(Modifier.fillMaxWidth().padding(22.dp), content = content)
     }
