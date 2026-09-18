@@ -97,7 +97,10 @@ jobs:
       # jpackage shells out to these. Without rpm it does not warn and skip -- it fails the task, which is
       # the right behaviour but an obscure failure if you have not met it before.
       - name: Install the packaging tools
-        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm
+        # xdg-utils and desktop-file-utils are for the packages own post-install hook, not for building:
+        # jpackage writes one that registers the .desktop entry, and on a runner without them dpkg fails
+        # the install with exit status 3 while the package itself is perfectly good.
+        run: sudo apt-get update && sudo apt-get install -y fakeroot binutils rpm xdg-utils desktop-file-utils shared-mime-info
 
       - name: Package
         run: ./gradlew :desktop:packageDeb :desktop:packageRpm -PappVersion="${APP_VERSION#v}" --stacktrace
@@ -176,7 +179,11 @@ jobs:
         run: |
           set -euo pipefail
           apk=$(ls android/build/outputs/apk/release/*.apk)
-          "$ANDROID_HOME"/build-tools/*/apksigner verify --print-certs "$apk"
+          # One version, chosen. The runner carries several build-tools and the bare glob hands the second
+          # path to the first as if it were a command, which apksigner rejects with a message about the
+          # first one -- confusing enough to send you looking in the wrong place.
+          apksigner=$(ls -d "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs "$apk"
 
       - name: Name the file after the version
         run: |
