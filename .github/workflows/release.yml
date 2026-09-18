@@ -124,6 +124,11 @@ jobs:
       - name: Check the packages are well formed
         run: |
           set -euo pipefail
+          # A headless runner has no menu directories, and jpackage post-install script registers the
+          # desktop entry into them -- it stops with "No writable system menu directory found" and dpkg
+          # reports a failed install for a package that is perfectly good. Any real desktop has these; the
+          # runner is made to look like one so the check below tests the case that actually matters.
+          sudo mkdir -p /usr/share/applications /usr/share/desktop-directories
           sudo dpkg --install out/*.deb
           test -x /opt/spiceity/bin/Spiceity || { echo "the deb did not put the binary where it said"; exit 1; }
           sudo dpkg --remove spiceity
