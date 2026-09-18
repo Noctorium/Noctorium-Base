@@ -124,7 +124,16 @@ compose.desktop {
                 // beside it. Generated once; changing it strands everyone's existing installation.
                 upgradeUuid = "8f5ac0d6-2f1a-4b6e-9a4e-1f3c2d6b7e10"
                 dirChooser = true
-                perUserInstall = true
+                /*
+                 * Deliberately not perUserInstall.
+                 *
+                 * jpackage installs a per-user build into %LOCALAPPDATA%\Spiceity, which is exactly where
+                 * AppDirectories keeps settings, credentials, both cookie jars and the downloads. The
+                 * installer would write the runtime and the bundled Chromium on top of them, and an
+                 * uninstall would take the lot. A per-machine install lands in Program Files, costs one
+                 * UAC prompt, and keeps the program and the listener data in the two places the operating
+                 * system has for them.
+                 */
             }
 
             linux {
