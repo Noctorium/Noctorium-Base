@@ -48,4 +48,4 @@ Copy `.env.example` only for developer-owned integration identifiers. User token
 - UI development uses mock providers and does not require live account traffic.
 - Failed or unsupported provider operations must never be shown as successful.
 
-See [Architecture](docs/ARCHITECTURE.md) and [Development](docs/DEVELOPMENT.md).
+See [Architecture](docs/ARCHITECTURE.md), [Development](docs/DEVELOPMENT.md) and [Releasing](docs/RELEASING.md).
