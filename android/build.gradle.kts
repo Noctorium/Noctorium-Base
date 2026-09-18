@@ -27,6 +27,31 @@ android {
     namespace = "app.spiceity.android"
     compileSdk = 35
 
+    /**
+     * Signing, when there is a key to sign with.
+     *
+     * A release APK that is not signed cannot be installed by anybody -- Android refuses it outright --
+     * so a release build with no key configured produces an artifact that looks finished and is useless.
+     * The release workflow provides a keystore through secrets; a checkout without them still builds,
+     * and falls back below to the debug key so what comes out can at least be sideloaded and tested.
+     *
+     * The debug key is not a substitute for a real one: it is well known, it is not yours, and an APK
+     * signed with it cannot be updated by one signed properly later. It is here so that a fork, or a
+     * run before the secrets are set up, produces something installable rather than something broken.
+     */
+    val keystorePath: String? = System.getenv("SPICEITY_KEYSTORE")?.takeIf { it.isNotBlank() }
+
+    signingConfigs {
+        if (keystorePath != null) {
+            create("release") {
+                storeFile = file(keystorePath)
+                storePassword = System.getenv("SPICEITY_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SPICEITY_KEY_ALIAS")
+                keyPassword = System.getenv("SPICEITY_KEY_PASSWORD")
+            }
+        }
+    }
+
     defaultConfig {
         applicationId = "app.spiceity"
         /**
@@ -38,8 +63,20 @@ android {
          */
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        /*
+         * From the tag when the release workflow passes one.
+         *
+         * versionCode has to increase for Android to treat a build as an upgrade, and it is an integer,
+         * so the three parts of the version are packed into one: 1.2.3 becomes 10203. That leaves room
+         * for ninety-nine minors and patches, which is more than this will ever need, and keeps the
+         * ordering the same as the version people actually read.
+         */
+        val parts = (findProperty("appVersion") as String? ?: "0.1.0")
+            .removePrefix("v").substringBefore('-').split('.').mapNotNull(String::toIntOrNull)
+        versionCode = ((parts.getOrNull(0) ?: 0) * 10_000) +
+            ((parts.getOrNull(1) ?: 0) * 100) +
+            (parts.getOrNull(2) ?: 0)
+        versionName = (findProperty("appVersion") as String? ?: "0.1.0").removePrefix("v")
     }
 
     buildTypes {
@@ -47,6 +84,7 @@ android {
             // Left off for now. NewPipeExtractor leans on reflection through its parser stack, and a
             // release build that silently returns no results is a poor first thing to debug on a phone.
             isMinifyEnabled = false
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
     }
 

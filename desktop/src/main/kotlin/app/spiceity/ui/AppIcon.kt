@@ -120,6 +120,18 @@ object AppIcon {
         return out.toByteArray()
     }
 
+    /**
+     * The mark as a PNG, which is what Linux packaging wants.
+     *
+     * dpkg and rpm both take a single square PNG rather than a container of sizes, so there is no .ico
+     * equivalent to build here -- one image, large enough that a desktop environment can scale it down
+     * for whichever slot it needs.
+     */
+    fun pngBytes(size: Int = LINUX_ICON_SIZE): ByteArray = pngEntry(size)
+
+    /** Big enough for an application grid on a high-resolution display to scale from, and no bigger. */
+    const val LINUX_ICON_SIZE = 512
+
     private fun pngEntry(size: Int): ByteArray =
         ByteArrayOutputStream().also { ImageIO.write(image(size), "png", it) }.toByteArray()
 

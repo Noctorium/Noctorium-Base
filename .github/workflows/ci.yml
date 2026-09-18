@@ -1,0 +1,50 @@
+name: CI
+
+# Every push and every pull request, on the things that are cheap to check.
+# Packaging is not here: it takes twenty minutes and half a gigabyte of Chromium per platform, and it
+# belongs to a release rather than to every commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  # A newer push makes the running check pointless, so it is cancelled rather than queued behind it.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Tests and compilation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The Android SDK is already on this runner, and settings.gradle.kts finds it through ANDROID_HOME.
+      # Without one the :android module is skipped silently, which would quietly stop testing half the
+      # project, so this fails loudly instead.
+      - name: Check the Android SDK is present
+        run: test -d "$ANDROID_HOME/platforms" || { echo "No Android SDK; :android would be skipped"; exit 1; }
+
+      - name: Test and compile everything
+        run: ./gradlew :core:test :desktop:test :desktop:compileKotlin :android:assembleDebug --stacktrace
+
+      - name: Keep the debug APK from this commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: spiceity-debug-apk
+          path: android/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14

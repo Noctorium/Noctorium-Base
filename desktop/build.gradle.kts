@@ -8,7 +8,25 @@ plugins {
 }
 
 group = "app.spice"
-version = "0.1.0"
+
+/**
+ * The version, from -PappVersion when the release workflow passes one and a sane default otherwise.
+ *
+ * Kept separate from the packaged version below because the packagers are much fussier than Gradle is:
+ * rpm refuses a version containing a hyphen, and msi wants three numeric parts with the first no
+ * greater than 255. So a tag like v1.2.3-beta.1 is a perfectly good project version and would fail the
+ * build at the very last step, after twenty minutes of packaging, on two of the four platforms.
+ */
+val appVersion: String = (findProperty("appVersion") as String?)?.trim()?.removePrefix("v")
+    ?.takeIf { it.isNotBlank() } ?: "0.1.0"
+
+/** The same version with any pre-release suffix taken off, which is all rpm and msi will take. */
+val packagedVersion: String = appVersion.substringBefore('-').let { numeric ->
+    val parts = numeric.split('.').mapNotNull(String::toIntOrNull)
+    if (parts.size >= 3) parts.take(3).joinToString(".") else "1.0.0"
+}
+
+version = appVersion
 
 kotlin {
     jvmToolchain(21)
@@ -71,9 +89,29 @@ compose.desktop {
         mainClass = "app.spiceity.MainKt"
 
         nativeDistributions {
-            targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
+            /*
+             * Every format each platform can actually produce.
+             *
+             * jpackage only builds for the machine it runs on -- there is no cross-packaging -- so these
+             * are declared together and the release workflow asks each runner for the ones it can make.
+             * Exe is here as well as Msi because it is the installer most people expect to double click;
+             * Rpm because Fedora was previously not served at all.
+             */
+            /*
+             * No Dmg. macOS refuses a bundle version whose major is 0, where msi, deb and rpm all accept
+             * one, so declaring it fails the build at configuration time for every platform while this
+             * project is still 0.x. Nothing here is built or tested on a Mac either -- the bundled
+             * Chromium is chosen per host and no runner produces one. Add it back with a macOS-specific
+             * packageVersion when there is a Mac to test on.
+             */
+            targetFormats(
+                TargetFormat.Msi,
+                TargetFormat.Exe,
+                TargetFormat.Deb,
+                TargetFormat.Rpm,
+            )
             packageName = "Spiceity"
-            packageVersion = "1.0.0"
+            packageVersion = packagedVersion
             description = "One music player for YouTube Music and SoundCloud"
             vendor = "Spiceity"
 
@@ -82,6 +120,22 @@ compose.desktop {
             windows {
                 iconFile.set(project.file("src/main/resources/spiceity.ico"))
                 menuGroup = "Spiceity"
+                // Stable across versions, so an upgrade replaces the install rather than sitting
+                // beside it. Generated once; changing it strands everyone's existing installation.
+                upgradeUuid = "8f5ac0d6-2f1a-4b6e-9a4e-1f3c2d6b7e10"
+                dirChooser = true
+                perUserInstall = true
+            }
+
+            linux {
+                // dpkg and rpm take one square png rather than a container of sizes, so this is the
+                // same mark drawn at 512 and committed beside the .ico.
+                iconFile.set(project.file("src/main/resources/spiceity.png"))
+                packageName = "spiceity"
+                menuGroup = "Audio"
+                appCategory = "AudioVideo"
+                debMaintainer = "spiceity@users.noreply.github.com"
+                rpmLicenseType = "Proprietary"
             }
         }
     }
@@ -89,4 +143,9 @@ compose.desktop {
 
 tasks.test {
     useJUnitPlatform()
+    // Lets -Dspiceity.writeIcons=true reach the test JVM, which is how the committed icon files are
+    // regenerated from AppIcon after the drawing changes. Gradle does not pass its own system properties
+    // down to the tests, so without this the generator silently does nothing and the guard test then
+    // fails on a file nobody managed to rewrite.
+    System.getProperty("spiceity.writeIcons")?.let { systemProperty("spiceity.writeIcons", it) }
 }
