@@ -221,8 +221,15 @@ jobs:
           mkdir -p release
           find artifacts -type f -exec cp {} release/ \;
           ls -la release
-          sha256sum release/* | sed 's| release/|  |' > SHA256SUMS.txt
+          # Generated from inside the folder rather than stripping the path off afterwards. The sed that
+          # used to do that left three spaces where coreutils writes two, which Spiceity's own parser did
+          # not care about and `sha256sum --check` refused outright -- so anybody verifying the release by
+          # hand got a failure that reads exactly like tampering.
+          ( cd release && sha256sum -- * ) > SHA256SUMS.txt
           cat SHA256SUMS.txt
+          # The claim is that these verify. Made here, where it costs seconds, rather than discovered by
+          # whoever downloads them.
+          ( cd release && sha256sum --check --strict ../SHA256SUMS.txt )
           cp SHA256SUMS.txt release/
 
       - uses: softprops/action-gh-release@v2
