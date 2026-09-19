@@ -2,6 +2,7 @@ package app.spiceity.scrobble
 
 import app.spiceity.domain.ProviderType
 import app.spiceity.net.Http
+import app.spiceity.update.AppVersion
 import app.spiceity.domain.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -61,7 +62,7 @@ internal class DefaultScrobbleHttpClient(private val http: Http = Http()) : Scro
             headers = buildMap {
                 put("Accept", "application/json")
                 // Last.fm asks that a client identify itself, and it is the only service here that does.
-                put("User-Agent", "Spiceity/0.1 scrobbler")
+                put("User-Agent", "Spiceity/${AppVersion.name} scrobbler")
                 putAll(headers)
             },
             body = body,
@@ -98,7 +99,7 @@ internal class ListenBrainzClient(
             putJsonObject("additional_info") {
                 put("media_player", "Spiceity")
                 put("submission_client", "Spiceity")
-                put("submission_client_version", "0.1.0")
+                put("submission_client_version", AppVersion.name)
                 put("origin_url", track.sourceUrl)
                 put(
                     "music_service",

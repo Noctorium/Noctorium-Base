@@ -1,6 +1,8 @@
 package app.spiceity.scrobble
 
 import app.spiceity.domain.ProviderType
+import app.spiceity.update.AppVersion
+import app.spiceity.update.Version
 import app.spiceity.settings.ScrobbleConnectionStatus
 import app.spiceity.settings.InMemorySecretStore
 import java.nio.file.Files
@@ -79,6 +81,38 @@ class ScrobbleClientsTest {
             assertEquals("listener", manager.state.value.lastFm.username)
         } finally {
             directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `the version reported to a service is the one the build actually is`() = runBlocking {
+        // It used to be the literal "0.1.0", which was true for exactly one release and then quietly
+        // became a lie -- the kind nothing fails on, because a wrong version is still a valid one.
+        val before = AppVersion.name
+        try {
+            AppVersion.set(Version.parse("3.4.5"))
+            val http = RecordingHttpClient()
+            val track = ScrobbleTrack("key", "Song", "Artist", null, 180, "https://soundcloud.com/x", ProviderType.SOUNDCLOUD)
+
+            ListenBrainzClient(http).scrobble("token", track, 1_700_000_000)
+
+            val info = Json.parseToJsonElement(http.posts.last()).jsonObject["payload"]
+                ?.jsonArray?.first()?.jsonObject?.get("track_metadata")
+                ?.jsonObject?.get("additional_info")?.jsonObject
+            assertEquals("3.4.5", info?.get("submission_client_version")?.toString()?.trim('"'))
+        } finally {
+            AppVersion.set(Version.parse(before))
+        }
+    }
+
+    @Test
+    fun `a build that does not know its version says so rather than guessing`() {
+        val before = AppVersion.name
+        try {
+            AppVersion.set(null)
+            assertEquals("0.0.0", AppVersion.name)
+        } finally {
+            AppVersion.set(Version.parse(before))
         }
     }
 

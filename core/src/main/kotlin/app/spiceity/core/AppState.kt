@@ -70,6 +70,7 @@ import app.spiceity.connect.DeviceKind
 import app.spiceity.connect.NetworkPresence
 import app.spiceity.connect.PlaybackSnapshot
 import app.spiceity.connect.toWire
+import app.spiceity.update.AppVersion
 import app.spiceity.update.AvailableUpdate
 import app.spiceity.update.UpdateCheck
 import app.spiceity.update.UpdateChecker
@@ -385,6 +386,12 @@ class AppState(
 
     /** Whether there is a newer Spiceity, and how far along getting it is. */
     val updates: StateFlow<UpdateState> = mutableUpdates.asStateFlow()
+
+    init {
+        // So that everything else which has to name a version -- the scrobblers, so far -- reports the
+        // same one the updater compares against, rather than a constant somebody has to remember.
+        AppVersion.set(updateInstaller.currentVersion)
+    }
 
     private val updateChecker = UpdateChecker(updateInstaller.currentVersion, updateInstaller.channel)
     private val updateDownloader = UpdateDownloader()
