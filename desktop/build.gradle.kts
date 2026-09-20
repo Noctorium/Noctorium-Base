@@ -20,7 +20,7 @@ group = "app.spice"
  * build at the very last step, after twenty minutes of packaging, on two of the four platforms.
  */
 val appVersion: String = (findProperty("appVersion") as String?)?.trim()?.removePrefix("v")
-    ?.takeIf { it.isNotBlank() } ?: "0.3.2"
+    ?.takeIf { it.isNotBlank() } ?: "0.3.3"
 
 /** The same version with any pre-release suffix taken off, which is all rpm and msi will take. */
 val packagedVersion: String = appVersion.substringBefore('-').let { numeric ->
