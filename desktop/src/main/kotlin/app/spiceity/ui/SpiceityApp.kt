@@ -1492,7 +1492,9 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 FilledIconButton(
                     state::togglePlayback,
                     Modifier.size(42.dp),
-                    enabled = playback.status != PlaybackStatus.RESOLVING && current != null,
+                    // Pressable while it spins: that press gives up on the track, which is the only way
+                    // out of a resolve that is not going to finish.
+                    enabled = current != null,
                 ) {
                     if (playback.status == PlaybackStatus.RESOLVING) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -1676,7 +1678,7 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                         FilledIconButton(
                             state::togglePlayback,
                             Modifier.size(50.dp),
-                            enabled = playback.status != PlaybackStatus.RESOLVING && current != null,
+                            enabled = current != null,
                         ) {
                             if (playback.status == PlaybackStatus.RESOLVING) {
                                 CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
@@ -1901,7 +1903,6 @@ private fun TransportControls(playback: PlaybackState, state: AppState) {
         IconButton(
             state::togglePlayback,
             Modifier.size(56.dp),
-            enabled = playback.status != PlaybackStatus.RESOLVING,
         ) {
             if (playback.status == PlaybackStatus.RESOLVING) {
                 CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 2.dp, color = Color.White)

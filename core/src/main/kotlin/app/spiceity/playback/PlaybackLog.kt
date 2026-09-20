@@ -15,9 +15,12 @@ object PlaybackLog {
         AppDirectories.resolve("logs", "playback.log")
     }
 
+    /** Set once, so a log that cannot be written says so rather than going quiet. */
+    @Volatile private var reportedFailure = false
+
     @Synchronized
     fun event(name: String, fields: Map<String, Any?> = emptyMap()) {
-        runCatching {
+        val attempt = runCatching {
             val target = logPath ?: return
             Files.createDirectories(target.parent)
             val values = buildMap {
@@ -36,6 +39,15 @@ object PlaybackLog {
                 }
             }
             TextFiles.append(target, JsonObject(values).toString() + System.lineSeparator())
+        }
+        // Logging must not take the application down with it -- but a log that fails silently is worse
+        // than none, because its silence reads as "that never happened". This cost an hour of looking
+        // for a bug in the wrong place, so it says so once and then stays out of the way.
+        attempt.onFailure { error ->
+            if (!reportedFailure) {
+                reportedFailure = true
+                System.err.println("Spiceity: the playback log cannot be written (${error.message}). Events after this are not recorded.")
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -61,6 +62,16 @@ class MpvPlaybackEngine(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var progressJob: Job? = null
     private val ipcMutex = Mutex()
+
+    /**
+     * One play at a time.
+     *
+     * `process` and `ipcEndpoint` are ordinary fields, and two plays overlapping is not an exotic case:
+     * a double click does it, and so does the queue moving on while somebody is picking something else.
+     * Without this the second call can adopt the first one's endpoint and then have its player killed by
+     * the first one's cleanup, which leaves a state nothing ever moves off.
+     */
+    private val playMutex = Mutex()
     private val requestIds = AtomicLong()
     private val json = Json { ignoreUnknownKeys = true }
     private val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
@@ -95,7 +106,21 @@ class MpvPlaybackEngine(
     internal suspend fun mediaAddress(track: Track): String =
         downloadedFile(track)?.toString() ?: resolver.resolveAudio(track.sourceUrl)
 
-    override suspend fun play(track: Track) {
+    /**
+     * Starts a track, and guarantees it does not leave the interface on the spinner.
+     *
+     * RESOLVING is the status the play button renders as a spinner, and while it shows, that button is
+     * disabled -- so a play that sets RESOLVING and then leaves without setting anything else takes the
+     * one control that could have recovered it with it. Restarting the application was the only way out.
+     *
+     * Three things had to change for that to stop being possible. Cancellation is no longer reported as a
+     * playback failure, because being interrupted by the listener choosing something else is not an error
+     * and swallowing it also stopped the cancellation propagating. Throwable is caught rather than
+     * Exception, because an Error -- a missing class, a stack overflow inside a dependency -- went
+     * straight past the old catch and left the spinner up with nothing logged anywhere. And the finally
+     * below states the invariant outright: whatever happened, RESOLVING is not how this method ends.
+     */
+    override suspend fun play(track: Track): Unit = playMutex.withLock {
         mutableState.value = mutableState.value.copy(
             status = PlaybackStatus.RESOLVING,
             track = track,
@@ -103,6 +128,9 @@ class MpvPlaybackEngine(
             positionMs = 0,
             durationMs = track.durationMs ?: 0,
         )
+        // Logged on the way in as well as the way out, so that next time the difference between "never
+        // started" and "started and vanished" is a fact rather than a deduction.
+        PlaybackLog.event("playback_requested", mapOf("track" to track.queueKey))
         try {
             val mpv = executable() ?: throw BackendException(
                 "mpv is missing, so there is nothing to play through. Settings, then Playback tools, installs it.",
@@ -144,12 +172,39 @@ class MpvPlaybackEngine(
             mutableState.value = mutableState.value.copy(status = PlaybackStatus.PLAYING)
             PlaybackLog.event("playback_started", mapOf("track" to track.queueKey, "processId" to process?.pid()))
             startProgressTicker()
-        } catch (error: Exception) {
+        } catch (cancellation: CancellationException) {
+            // Somebody pressed something else. Not a failure, and not something to show a message about
+            // -- but the player still has to be stood down and the status still has to leave RESOLVING.
+            stopProcess()
+            mutableState.value = mutableState.value.copy(status = PlaybackStatus.IDLE, errorMessage = null)
+            throw cancellation
+        } catch (error: Throwable) {
             mutableState.value = mutableState.value.copy(
                 status = PlaybackStatus.ERROR,
                 errorMessage = error.message ?: "Playback failed",
             )
-            PlaybackLog.event("playback_failed", mapOf("track" to track.queueKey, "message" to (error.message ?: "unknown")))
+            PlaybackLog.event(
+                "playback_failed",
+                mapOf(
+                    "track" to track.queueKey,
+                    "message" to (error.message ?: "unknown"),
+                    "kind" to error::class.java.name,
+                ),
+            )
+            // An OutOfMemoryError or a StackOverflowError is not this method's to absorb: the state is
+            // recorded so the interface recovers, and then it goes on up.
+            if (error is VirtualMachineError) throw error
+        } finally {
+            if (mutableState.value.status == PlaybackStatus.RESOLVING) {
+                // Nothing above claimed an ending, which means control left by a route this method does
+                // not know about. Any status at all beats the spinner, because the spinner is the one
+                // that cannot be pressed out of.
+                mutableState.value = mutableState.value.copy(
+                    status = PlaybackStatus.ERROR,
+                    errorMessage = "Playback stopped before it started. Try again.",
+                )
+                PlaybackLog.event("playback_stranded", mapOf("track" to track.queueKey))
+            }
         }
     }
 

@@ -450,13 +450,36 @@ class AppState(
         mutableUi.update { it.copy(searchMode = mode, searchResults = SearchResults(), errorMessage = null) }
         search(mutableUi.value.searchQuery)
     }
+    /**
+     * The play that is being set up, so the next one can replace it rather than run alongside it.
+     *
+     * Pressing a second track while the first is still resolving used to start both: two coroutines
+     * inside the engine writing the same player handle, and whichever lost could leave the status on
+     * RESOLVING for good.
+     */
+    private var playJob: Job? = null
+
+    private fun startPlay(select: suspend () -> Track?) {
+        playJob?.cancel()
+        playJob = scope.launch { select()?.let { playEnriched(it) } }
+    }
+
     fun togglePlayback() {
-        scope.launch {
-            when (playback.value.status) {
-                PlaybackStatus.PLAYING -> playbackEngine.pause()
-                PlaybackStatus.PAUSED -> playbackEngine.resume()
-                PlaybackStatus.IDLE, PlaybackStatus.ERROR -> queue.state.value.current?.let { playEnriched(it) }
-                PlaybackStatus.RESOLVING -> Unit
+        when (playback.value.status) {
+            PlaybackStatus.PLAYING -> scope.launch { playbackEngine.pause() }
+            PlaybackStatus.PAUSED -> scope.launch { playbackEngine.resume() }
+            PlaybackStatus.IDLE, PlaybackStatus.ERROR ->
+                queue.state.value.current?.let { track -> startPlay { track } }
+            /*
+             * Give up on a track that is taking too long, rather than nothing at all.
+             *
+             * This branch did nothing, and the button was disabled while it applied -- so a resolve that
+             * did not finish could only be escaped by restarting the application. The spinner is now a
+             * stop button: press it and playback goes back to somewhere another press can act on.
+             */
+            PlaybackStatus.RESOLVING -> {
+                playJob?.cancel()
+                scope.launch { playbackEngine.stop() }
             }
         }
     }
@@ -472,9 +495,9 @@ class AppState(
     fun toggleMute() { scope.launch { playbackEngine.setMuted(!playback.value.isMuted) } }
     fun seekTo(positionMs: Long) { scope.launch { playbackEngine.seekTo(positionMs) } }
 
-    fun next() { scope.launch { queue.next()?.let { playEnriched(it) } } }
-    fun previous() { scope.launch { queue.previous()?.let { playEnriched(it) } } }
-    fun jumpToQueueItem(index: Int) { scope.launch { queue.jumpTo(index)?.let { playEnriched(it) } } }
+    fun next() { startPlay { queue.next() } }
+    fun previous() { startPlay { queue.previous() } }
+    fun jumpToQueueItem(index: Int) { startPlay { queue.jumpTo(index) } }
     fun moveQueueItem(from: Int, to: Int) = queue.move(from, to)
     fun removeQueueItem(index: Int) = queue.removeAt(index)
     fun addToQueue(track: Track) = queue.addToQueue(track)
@@ -1943,7 +1966,7 @@ class AppState(
             index,
             PlaybackContext(track.provider, origin, seedTrackId = track.id, autoplayEnabled = true),
         )
-        scope.launch { playEnriched(track) }
+        startPlay { track }
     }
 
     private suspend fun playEnriched(track: Track) {
