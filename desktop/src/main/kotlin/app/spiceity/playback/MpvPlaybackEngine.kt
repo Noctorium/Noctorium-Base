@@ -105,7 +105,7 @@ class MpvPlaybackEngine(
         )
         try {
             val mpv = executable() ?: throw BackendException(
-                "mpv is missing. Install it in Spiceity Settings or set SPICEITY_MPV_PATH.",
+                "mpv is missing, so there is nothing to play through. Settings, then Playback tools, installs it.",
             )
             val mediaUrl = mediaAddress(track)
             stopProcess()

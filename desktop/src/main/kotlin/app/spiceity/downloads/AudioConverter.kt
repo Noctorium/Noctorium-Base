@@ -32,7 +32,7 @@ class AudioConverter(
     override suspend fun toMp3(input: Path, output: Path, title: String, artist: String): Path =
         withContext(Dispatchers.IO) {
             val player = mpv() ?: throw BackendException(
-                "Making an MP3 needs mpv, which is missing. Install it in Spiceity Settings.",
+                "Making an MP3 needs mpv, which is missing. Settings, then Playback tools, installs it.",
             )
             if (!Files.isRegularFile(input)) throw BackendException("There is nothing to convert.")
 

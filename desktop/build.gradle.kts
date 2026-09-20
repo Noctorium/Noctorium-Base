@@ -173,4 +173,7 @@ tasks.test {
     // down to the tests, so without this the generator silently does nothing and the guard test then
     // fails on a file nobody managed to rewrite.
     System.getProperty("spiceity.writeIcons")?.let { systemProperty("spiceity.writeIcons", it) }
+    // Same again for the test that installs yt-dlp and mpv for real, which is off unless asked for:
+    // it downloads fifty megabytes and depends on two other projects release pages being up.
+    System.getProperty("spiceity.installTools")?.let { systemProperty("spiceity.installTools", it) }
 }

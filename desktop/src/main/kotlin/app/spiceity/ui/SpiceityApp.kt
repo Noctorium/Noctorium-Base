@@ -63,6 +63,7 @@ import app.spiceity.domain.*
 import app.spiceity.lyrics.LyricLine
 import app.spiceity.lyrics.LyricsProviderOutcome
 import app.spiceity.lyrics.LyricsProviderStatus
+import app.spiceity.playback.PlaybackToolInstaller
 import app.spiceity.playback.QueueState
 import app.spiceity.playback.PlaybackState
 import app.spiceity.playback.PlaybackStatus
@@ -117,11 +118,20 @@ fun SpiceityApp(appState: AppState = remember { desktopAppState() }, window: jav
         )
     }
 
+    // Nothing on a desktop ships with yt-dlp or mpv, and until this ran a fresh install could play
+    // nothing at all. Done here rather than asked about: there is no version of this the listener has a
+    // useful opinion on, and the alternative was a dialog in front of an application that cannot work yet.
+    LaunchedEffect(Unit) { PlaybackToolInstaller.ensureReady() }
+
     MaterialTheme(colorScheme = spiceityColorScheme(accent, background)) {
         Surface(Modifier.fillMaxSize()) {
             Row {
                 NavigationRail(ui.destination, appState::navigate)
                 Column(Modifier.weight(1f)) {
+                    PlaybackToolsBanner {
+                        pendingSettingsPage = SettingsPage.PLAYBACK_TOOLS
+                        appState.navigate(Destination.SETTINGS)
+                    }
                     val playerAtTop = preferences.playerBarPosition == PlayerBarPosition.TOP
                     if (playerAtTop) PlayerBar(queue, playback, appState)
                     Box(Modifier.weight(1f)) {
@@ -2718,13 +2728,22 @@ private fun PlaybackError(message: String) {
 
 private enum class SettingsPage {
     ACCOUNT, PROFILE, CUSTOMIZATION, YOUTUBE, SOUNDCLOUD, SPOTIFY, SCROBBLING, LYRICS, DISCORD, UPDATES,
-    DIAGNOSTICS
+    PLAYBACK_TOOLS, DIAGNOSTICS
 }
+
+/**
+ * A settings page something elsewhere has asked for.
+ *
+ * Which page is open is local to [SettingsScreen] and should stay that way -- but the banner shown when
+ * mpv is missing has to be able to land on the page that fixes it, rather than on the settings list with
+ * a instruction to go looking. Read once and cleared, so it cannot pin the screen open.
+ */
+private var pendingSettingsPage: SettingsPage? = null
 
 @Composable
 private fun SettingsScreen(state: AppState) {
     val settings by state.settings.collectAsState()
-    var page by remember { mutableStateOf<SettingsPage?>(null) }
+    var page by remember { mutableStateOf(pendingSettingsPage.also { pendingSettingsPage = null }) }
     if (page != null) {
         SettingsDetailHeader(pageTitle(page!!), { page = null }) {
             when (page) {
@@ -2744,6 +2763,7 @@ private fun SettingsScreen(state: AppState) {
                 SettingsPage.LYRICS -> LyricsSettingsPanel()
                 SettingsPage.DISCORD -> DiscordSettingsPanel(settings.preferences, state)
                 SettingsPage.UPDATES -> UpdatePanel(state)
+                SettingsPage.PLAYBACK_TOOLS -> PlaybackToolsPanel()
                 SettingsPage.DIAGNOSTICS -> DiagnosticsPanel(settings, state)
                 null -> Unit
             }
@@ -2855,7 +2875,29 @@ private fun SettingsScreen(state: AppState) {
             )
         }
         item { SettingsCard("Updates", updatesSubtitle(state), Icons.Default.SystemUpdateAlt, { page = SettingsPage.UPDATES }) }
+        item {
+            SettingsCard(
+                "Playback tools",
+                playbackToolsSubtitle(),
+                Icons.Default.Extension,
+                { page = SettingsPage.PLAYBACK_TOOLS },
+            )
+        }
         item { SettingsCard("Diagnostics", "Check yt-dlp, mpv, FFmpeg and storage", Icons.Default.MonitorHeart, { page = SettingsPage.DIAGNOSTICS }) }
+    }
+}
+
+/** The state of the two programs playback depends on, on the tile rather than one click inside it. */
+@Composable
+private fun playbackToolsSubtitle(): String {
+    val tools by PlaybackToolInstaller.state.collectAsState()
+    val installing = tools.installing
+    return when {
+        installing != null -> "Installing ${installing.displayName}…"
+        tools.tools.isEmpty() -> "yt-dlp and mpv"
+        tools.missingRequired.isNotEmpty() ->
+            tools.missingRequired.joinToString(" and ") { it.displayName } + " is missing"
+        else -> "yt-dlp and mpv are ready"
     }
 }
 
@@ -2882,6 +2924,7 @@ private fun pageTitle(page: SettingsPage) = when (page) {
     SettingsPage.LYRICS -> "Lyrics providers"
     SettingsPage.DISCORD -> "Discord Rich Presence"
     SettingsPage.UPDATES -> "Updates"
+    SettingsPage.PLAYBACK_TOOLS -> "Playback tools"
     SettingsPage.DIAGNOSTICS -> "Diagnostics"
 }
 

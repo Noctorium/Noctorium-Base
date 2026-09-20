@@ -517,7 +517,7 @@ class YtDlpService(
      */
     private fun stream(timeoutSeconds: Long, arguments: Array<out String>, onLine: (String) -> Unit) {
         val binary = executable() ?: throw BackendException(
-            "yt-dlp is missing. Install it in Spiceity Settings or set SPICEITY_YTDLP_PATH.",
+            "yt-dlp is missing, so nothing can be resolved to play. Settings, then Playback tools, installs it.",
         )
         val process = try {
             ProcessBuilder(listOf(binary.toString()) + arguments).redirectErrorStream(true).start()
@@ -554,7 +554,7 @@ class YtDlpService(
 
     private fun run(timeoutSeconds: Long, arguments: Array<out String>): String {
         val binary = executable() ?: throw BackendException(
-            "yt-dlp is missing. Install it in Spiceity Settings or set SPICEITY_YTDLP_PATH.",
+            "yt-dlp is missing, so nothing can be resolved to play. Settings, then Playback tools, installs it.",
         )
         val command = listOf(binary.toString()) + arguments
         val process = try {
