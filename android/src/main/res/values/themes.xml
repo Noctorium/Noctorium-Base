@@ -10,4 +10,20 @@
         <item name="android:navigationBarColor">#08070C</item>
         <item name="android:windowLightStatusBar">false</item>
     </style>
+
+    <!--
+      What the app looks like in the moment before it looks like anything.
+
+      Without this the splash was whatever the launcher chose to draw, and on this phone that was
+      sometimes the icon and sometimes nothing. The icon, its colour and the theme to hand over to are
+      all named here, and MainActivity installs it, so the first frame is the same one every time.
+    -->
+    <style name="Theme.Spiceity.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#08070C</item>
+        <!-- The adaptive icon, not its foreground layer alone: the layer on its own is drawn unmasked and
+             fills a third of the screen with a white S on black, where the icon is the purple disc with
+             the S inside it that the launcher shows and that people recognise. -->
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.Spiceity</item>
+    </style>
 </resources>

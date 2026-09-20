@@ -1,7 +1,6 @@
 package app.spiceity.android
 
 import android.content.Context
-import android.os.SystemClock
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -10,6 +9,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import app.spiceity.domain.Track
+import app.spiceity.net.networkFailureMessage
 import app.spiceity.playback.MusicBackend
 import app.spiceity.playback.PlaybackEngine
 import app.spiceity.playback.PlaybackState
@@ -58,8 +58,6 @@ class Media3PlaybackEngine(
     private val mutableState = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
     private var ticker: Job? = null
-    private val mutableSleepTimer = MutableStateFlow<Long?>(null)
-    private var sleepJob: Job? = null
 
     /**
      * Handed to the media session service, and to nothing else.
@@ -102,11 +100,9 @@ class Media3PlaybackEngine(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    mutableState.update { it.copy(
-                        status = PlaybackStatus.ERROR,
-                        // ExoPlayer's own name for what went wrong, which says more than a code.
-                        errorMessage = error.errorCodeName + (error.message?.let { ": $it" } ?: ""),
-                    ) }
+                    // The whole thing to the log, one line of it to the screen.
+                    android.util.Log.w(PLAYER_LOG_TAG, "Playback failed: ${error.errorCodeName}", error)
+                    mutableState.update { it.copy(status = PlaybackStatus.ERROR, errorMessage = describePlayerError(error)) }
                 }
             })
         }
@@ -233,41 +229,25 @@ class Media3PlaybackEngine(
         }
     }
 
-    /**
-     * Milliseconds until the music stops, or null if nothing is counting.
-     *
-     * Kept here rather than in core because it has to survive the screen turning off, which makes it a
-     * property of the thing that is playing rather than of the thing that is drawing.
-     */
-    val sleepTimer: StateFlow<Long?> = mutableSleepTimer.asStateFlow()
 
     /**
-     * Stops playing in a while.
+     * Why playback stopped, in words for the listener rather than for whoever reads the log.
      *
-     * Counted against elapsedRealtime, which includes time spent asleep. A countdown built from
-     * repeated delays would stretch every time the device dozed, so a timer set for half an hour would
-     * quietly become an hour with the phone face down on a bedside table, which is the one situation it
-     * exists for.
+     * "ERROR_CODE_IO_NETWORK_CONNECTION_FAILED: Unable to resolve host" is what ExoPlayer says. It is
+     * accurate and it is no use to anybody on a train. The code is mapped where it is unambiguous and
+     * the cause chain is read where it is not.
      */
-    fun startSleepTimer(minutes: Int) {
-        sleepJob?.cancel()
-        val endsAt = SystemClock.elapsedRealtime() + minutes * 60_000L
-        sleepJob = scope.launch {
-            while (true) {
-                val remaining = endsAt - SystemClock.elapsedRealtime()
-                if (remaining <= 0) break
-                mutableSleepTimer.value = remaining
-                delay(1_000)
-            }
-            mutableSleepTimer.value = null
-            player.pause()
-        }
-    }
-
-    fun cancelSleepTimer() {
-        sleepJob?.cancel()
-        sleepJob = null
-        mutableSleepTimer.value = null
+    private fun describePlayerError(error: PlaybackException): String = when (error.errorCode) {
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
+            "No internet connection. Check your connection and press play again."
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+            "The stream was refused. It may have expired -- press play to fetch it again."
+        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
+            "The audio for this track has gone missing."
+        else -> networkFailureMessage(error)
+            ?: error.message?.takeIf { it.isNotBlank() }?.take(160)
+            ?: "This track could not be played (${error.errorCodeName})."
     }
 
     override suspend fun stop() = withContext(Dispatchers.Main) {
@@ -279,7 +259,6 @@ class Media3PlaybackEngine(
 
     override fun close() {
         ticker?.cancel()
-        sleepJob?.cancel()
         // Release has to happen on the thread the player was built on, and the process may be going away,
         // so this does not wait for a coroutine to be scheduled.
         player.release()

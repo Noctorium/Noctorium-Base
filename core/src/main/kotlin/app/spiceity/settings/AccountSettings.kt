@@ -191,6 +191,14 @@ data class SpiceityPreferences(
     val timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
     val ambientBackdrop: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
+    /**
+     * How long the sleep timer ran last time, in minutes.
+     *
+     * Remembered rather than configured: the picker on either player is where it is chosen, and this
+     * is only so the same length is one tap away next time. Shared by both players, which is why it is
+     * not under [phone] any more.
+     */
+    val sleepTimerMinutes: Int = 30,
     /** Where saved music is written. Blank means the desktop, which is where it can be seen. */
     val exportFolder: String = "",
     val youtubeCookies: CookieSource = CookieSource(),
@@ -248,6 +256,9 @@ data class SpiceityPreferences(
         // Cleared once its choice has been carried across, like the browser fields above. Leaving it set
         // is what let it be mistaken for the live setting and reported back as Disabled.
         discordPresenceEnabled = false,
+        // The phone-only length moves up to be shared with the desktop. Only carried across when it
+        // was actually changed, so a default never overwrites a choice made since.
+        sleepTimerMinutes = if (sleepTimerMinutes == 30 && phone.sleepTimerMinutes != 30) phone.sleepTimerMinutes else sleepTimerMinutes,
     )
 
     /** Follows a saved cookie jar into the folder's new name, so a rename does not read as a sign-out. */
@@ -333,7 +344,7 @@ data class PhonePreferences(
     val playbackSpeed: Float = 1f,
     /** Drops the silence out of gaps and long intros. */
     val skipSilence: Boolean = false,
-    /** How long the sleep timer runs for when it is started, in minutes. */
+    /** Superseded by [SpiceityPreferences.sleepTimerMinutes]; read once so an old choice is kept. */
     val sleepTimerMinutes: Int = 30,
 )
 

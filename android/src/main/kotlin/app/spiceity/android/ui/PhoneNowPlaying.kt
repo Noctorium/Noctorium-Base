@@ -19,12 +19,9 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
@@ -51,13 +48,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.spiceity.android.SpiceityApplication
 import app.spiceity.core.AppState
 import app.spiceity.playback.RepeatMode
 import app.spiceity.settings.TimeDisplay
@@ -73,41 +68,6 @@ import coil.compose.AsyncImage
  * interface and goes away again, which is also why the only way out is the chevron rather than a tab —
  * leaving by tapping something else would lose the track you were looking at.
  */
-/**
- * Stops the music in a while, or stops counting.
- *
- * One button doing both, because there is nowhere on this screen for a menu and the only two things
- * anyone wants from a sleep timer are to start it and to change their mind. How long it runs for is a
- * setting rather than a prompt, so the common case is a single tap in the dark.
- */
-@Composable
-private fun SleepTimerButton(minutes: Int, haptics: Haptics) {
-    val player = (LocalContext.current.applicationContext as SpiceityApplication).player
-    val remaining by player.sleepTimer.collectAsState()
-    val left = remaining
-    IconButton({
-        haptics.tick()
-        if (left == null) player.startSleepTimer(minutes) else player.cancelSleepTimer()
-    }) {
-        if (left == null) {
-            Icon(Icons.Default.Bedtime, "Sleep timer")
-        } else {
-            Text(
-                sleepLabel(left),
-                color = MaterialTheme.colorScheme.primary,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-            )
-        }
-    }
-}
-
-/** Minutes while there are minutes left, then seconds, so the last stretch visibly moves. */
-internal fun sleepLabel(remainingMs: Long): String {
-    val seconds = remainingMs / 1_000
-    return if (seconds >= 60) "${seconds / 60}m" else "${seconds}s"
-}
-
 @Composable
 internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
     val playback by state.playback.collectAsState()
@@ -145,7 +105,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
                 )
                 Spacer(Modifier.weight(1f))
                 ConnectButton(state, haptics)
-                SleepTimerButton(settings.preferences.phone.sleepTimerMinutes, haptics)
+                SleepTimerButton(state, haptics)
                 IconButton({ showLyrics = !showLyrics }) {
                     Text(if (showLyrics) "♪" else "Aa", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                 }
@@ -161,7 +121,7 @@ internal fun NowPlayingScreen(state: AppState, close: () -> Unit) {
              */
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 if (showLyrics) {
-                    LyricsPane(lyrics, playback.positionMs)
+                    LyricsPane(lyrics, playback.positionMs, state)
                 } else {
                     /*
                      * Double tapping the left or right of the cover jumps back or forward.
@@ -318,43 +278,6 @@ private fun Seekbar(
     }
 }
 
-/** Lyrics, scrolled by hand. The line at the current moment is the bright one. */
-@Composable
-private fun LyricsPane(lyrics: app.spiceity.lyrics.LyricsUiState, positionMs: Long) {
-    val result = lyrics.outcomes.firstNotNullOfOrNull { it.result }
-    when {
-        lyrics.loading -> CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 3.dp)
-        result == null || result.lines.isEmpty() -> Text(
-            lyrics.errorMessage ?: "No lyrics found for this one.",
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 13.sp,
-            textAlign = TextAlign.Center,
-        )
-        else -> {
-            // The last line whose moment has passed. Unsynced lyrics carry no times at all, in which case
-            // nothing is highlighted and the whole thing simply reads as text, which is correct.
-            val activeIndex = result.lines.indexOfLast { line ->
-                line.startTimeMs?.let { it <= positionMs } == true
-            }
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(result.lines.size) { index ->
-                    val line = result.lines[index]
-                    Text(
-                        line.text.ifBlank { " " },
-                        color = if (index == activeIndex) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        },
-                        fontSize = if (index == activeIndex) 17.sp else 15.sp,
-                        fontWeight = if (index == activeIndex) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier.padding(vertical = 4.dp),
-                    )
-                }
-            }
-        }
-    }
-}
 
 /**
  * The artwork, blurred and dimmed, behind the track it belongs to.

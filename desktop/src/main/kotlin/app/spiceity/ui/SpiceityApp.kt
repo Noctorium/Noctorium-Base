@@ -1576,6 +1576,7 @@ private fun InlinePlayerBar(queue: QueueState, playback: PlaybackState, state: A
                 // there is laid on top of the first, so this button was drawn over the queue button and
                 // every click on it went to the queue instead.
                 ConnectButton(state)
+                SleepTimerButton(state)
                 BadgedBox(badge = { if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) } }) {
                     IconButton({ state.navigate(Destination.QUEUE) }, Modifier.size(34.dp)) {
                         Icon(Icons.AutoMirrored.Filled.QueueMusic, "Queue", Modifier.size(19.dp))
@@ -1719,6 +1720,7 @@ private fun PlayerBar(queue: QueueState, playback: PlaybackState, state: AppStat
                             Spacer(Modifier.width(4.dp))
                         }
                         ConnectButton(state)
+                        SleepTimerButton(state)
                         BadgedBox(
                             badge = {
                                 if (queue.tracks.isNotEmpty()) Badge { Text(queue.tracks.size.toString()) }

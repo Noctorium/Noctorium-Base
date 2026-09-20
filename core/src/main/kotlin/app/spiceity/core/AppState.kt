@@ -70,6 +70,9 @@ import app.spiceity.connect.DeviceKind
 import app.spiceity.connect.NetworkPresence
 import app.spiceity.connect.PlaybackSnapshot
 import app.spiceity.connect.toWire
+import app.spiceity.net.readableFailure
+import app.spiceity.playback.SleepTimer
+import app.spiceity.playback.SleepTimerState
 import app.spiceity.update.AppVersion
 import app.spiceity.update.AvailableUpdate
 import app.spiceity.update.UpdateCheck
@@ -302,6 +305,17 @@ class AppState(
     val ui: StateFlow<AppUiState> = mutableUi.asStateFlow()
     val queue = QueueManager()
     val playback: StateFlow<PlaybackState> = playbackEngine.state
+
+    /**
+     * The sleep timer, one for both players.
+     *
+     * It lived inside the phone's engine, which left the desktop without one and put how long it ran
+     * for in Settings. It is about the listener rather than the loudspeaker, so it lives with the rest
+     * of what the listener asked for and pauses whichever engine is playing when it goes off.
+     */
+    private val sleeper = SleepTimer(scope) { playbackEngine.pause() }
+    val sleepTimer: StateFlow<SleepTimerState?> = sleeper.state
+    val sleepTimerRemainingMs: StateFlow<Long?> = sleeper.remainingMs
     private val mutableLyrics = MutableStateFlow(LyricsUiState())
     val lyrics: StateFlow<LyricsUiState> = mutableLyrics.asStateFlow()
     private val mutableSettings = MutableStateFlow(SettingsState(storedPreferences))
@@ -504,6 +518,16 @@ class AppState(
     fun playNext(track: Track) = queue.playNext(track)
     fun toggleShuffle() = queue.toggleShuffle()
     fun cycleRepeat() = queue.cycleRepeat()
+
+    /** Starts the sleep timer, and remembers the length so it is the first offer next time. */
+    fun startSleepTimer(minutes: Int) {
+        sleeper.start(minutes)
+        updatePreferences { copy(sleepTimerMinutes = minutes) }
+    }
+
+    fun sleepAtEndOfTrack() = sleeper.startAtEndOfTrack()
+    fun extendSleepTimer(minutes: Int) = sleeper.extend(minutes)
+    fun cancelSleepTimer() = sleeper.cancel()
     fun clearQueue() {
         queue.clear()
         scope.launch { playbackEngine.stop() }
@@ -1825,7 +1849,7 @@ class AppState(
             val results = homeProviders.map { provider -> async { runCatching { provider.getHome() } } }.awaitAll()
             val discovery = results.flatMap { it.getOrDefault(emptyList()) }
             val sections = personal.await() + discovery
-            val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.message } else null
+            val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.let(::readableFailure) } else null
             mutableUi.update { it.copy(homeSections = sections, homeLoading = false, errorMessage = error) }
         }
     }
@@ -1933,7 +1957,7 @@ class AppState(
                 it.copy(
                     searchLoading = false,
                     errorMessage = if (results.all { result -> result.tracks.isEmpty() })
-                        attempts.firstNotNullOfOrNull { attempt -> attempt.exceptionOrNull()?.message }
+                        attempts.firstNotNullOfOrNull { attempt -> attempt.exceptionOrNull()?.let(::readableFailure) }
                     else null,
                     searchResults = SearchResults(
                         tracks = interleave(results.map(SearchResults::tracks)),
@@ -2004,7 +2028,9 @@ class AppState(
                     current.status == PlaybackStatus.IDLE && current.track != null
                 if (finished) {
                     previous.track?.let { recordListen(it, previous.positionMs, previous.durationMs) }
-                    queue.next(respectRepeatOne = true)?.let { playEnriched(it) }
+                    // A sleep timer set to the end of the track ends here. The listen is still counted;
+                    // the queue is left where it is rather than moved on for nobody.
+                    if (!sleeper.trackEnded()) queue.next(respectRepeatOne = true)?.let { playEnriched(it) }
                 }
                 previous = current
             }
@@ -2438,6 +2464,7 @@ class AppState(
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        sleeper.cancel()
         playbackEngine.close()
         connectManager.close()
         discordPresence.close()

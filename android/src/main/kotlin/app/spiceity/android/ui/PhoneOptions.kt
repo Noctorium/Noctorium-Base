@@ -101,15 +101,6 @@ internal fun PhoneOptionsCard(settings: SettingsState, state: AppState) {
             }
         }
 
-        OptionRow("Sleep timer runs for") {
-            SLEEP_MINUTES.forEach { minutes ->
-                FilterChip(
-                    selected = phone.sleepTimerMinutes == minutes,
-                    onClick = { state.updatePhone { copy(sleepTimerMinutes = minutes) } },
-                    label = { Text("$minutes min", fontSize = 11.sp) },
-                )
-            }
-        }
 
         Toggle(
             "Skip silence",
@@ -124,9 +115,6 @@ private val SEEK_STEPS = listOf(5, 10, 30)
 
 /** Rates worth a chip. Below half speed and above double, music stops being listenable. */
 private val SPEEDS = listOf(0.75f, 1f, 1.25f, 1.5f, 2f)
-
-/** Sleep timer lengths, ending at the point where it is really just leaving it playing. */
-private val SLEEP_MINUTES = listOf(15, 30, 45, 60)
 
 /** 1.0 reads as "Normal" because that is what it is, and 1.5x should not print as 1.5000001x. */
 private fun speedLabel(speed: Float): String = when {

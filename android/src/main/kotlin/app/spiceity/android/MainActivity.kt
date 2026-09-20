@@ -11,6 +11,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import app.spiceity.android.ui.spiceityColors
@@ -41,6 +42,9 @@ class MainActivity : ComponentActivity() {
     ) { /* Either answer is survivable; playback in the background is what is at stake. */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Before super.onCreate, which is where the library insists on being asked. It draws the icon
+        // named in Theme.Spiceity.Starting and hands over to the real theme once Compose has a frame.
+        installSplashScreen()
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 

@@ -1,5 +1,6 @@
 package app.spiceity.android
 
+import app.spiceity.net.networkFailureMessage
 import app.spiceity.domain.Album
 import app.spiceity.domain.Artist
 import app.spiceity.domain.Playlist
@@ -318,8 +319,11 @@ class NewPipeBackend(
             "This track is age-restricted, which needs a signed-in account."
         error is org.schabi.newpipe.extractor.exceptions.PrivateContentException ->
             "This track is private."
-        error.message.isNullOrBlank() -> "This track could not be played (${error::class.java.simpleName})."
-        else -> error.message!!.take(160)
+        // No signal is the commonest failure there is and it arrived as a Google hostname. Said plainly,
+        // before anything else gets a chance to pass the raw text through.
+        else -> networkFailureMessage(error)
+            ?: error.message?.takeIf { it.isNotBlank() }?.take(160)
+            ?: "This track could not be played (${error::class.java.simpleName})."
     }
 
     private fun serviceFor(provider: ProviderType): StreamingService? = when (provider) {

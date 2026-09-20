@@ -43,6 +43,7 @@ import app.spiceity.settings.AccentPreset
 import app.spiceity.settings.BackgroundDepth
 import app.spiceity.settings.BadgePolicy
 import app.spiceity.settings.CardSize
+import app.spiceity.settings.PlayerBarPosition
 import app.spiceity.settings.ProgressBarStyle
 import app.spiceity.settings.ScrobbleConnectionStatus
 import app.spiceity.settings.SettingsState
@@ -55,9 +56,9 @@ import app.spiceity.settings.TimeDisplay
  * The same preferences object drives both, so anything here is a setting the desktop already has — accent,
  * background depth, card size, badges, the progress bar, which screen opens first, and the time readout.
  *
- * Two of the desktop's are left out because they describe things a phone has not got. Hover controls need
- * a pointer to hover; the player bar's position needs a window with a top and a bottom to choose between.
- * Offering either would be a control that changes nothing.
+ * One of the desktop's is left out because it describes a thing a phone has not got: hover controls need
+ * a pointer to hover. The player bar's position used to be left out on the same reasoning and was not
+ * the same case at all -- a phone screen has a top, and some people want the bar there.
  */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -138,6 +139,16 @@ internal fun CustomizationCard(settings: SettingsState, state: AppState) {
                     selected = preferences.progressBarStyle == style,
                     onClick = { state.setProgressBarStyle(style) },
                     label = { Text(style.displayName, fontSize = 11.sp) },
+                )
+            }
+        }
+
+        ChoiceRow("Player bar") {
+            PlayerBarPosition.entries.forEach { position ->
+                FilterChip(
+                    selected = preferences.playerBarPosition == position,
+                    onClick = { state.setPlayerBarPosition(position) },
+                    label = { Text(position.displayName, fontSize = 11.sp) },
                 )
             }
         }

@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -65,6 +67,7 @@ import app.spiceity.core.AppState
 import app.spiceity.core.Destination
 import app.spiceity.settings.AccentPreset
 import app.spiceity.settings.BackgroundDepth
+import app.spiceity.settings.PlayerBarPosition
 import app.spiceity.settings.ProgressBarStyle
 import app.spiceity.settings.TimeDisplay
 import app.spiceity.domain.ProviderType
@@ -154,8 +157,31 @@ fun SpiceityPhone(state: AppState) {
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize()) {
+            /*
+             * The player bar at the head of the screen, for anyone who asked for it there.
+             *
+             * The desktop has offered this all along and the phone quietly did not, on the theory that a
+             * phone has no top to speak of. It has one: it is where the thumb is not, which for a bar
+             * that is mostly looked at is a reasonable place. Up here it takes the status-bar inset itself
+             * and tells the screens beneath that the inset is spent, or each would pad for it again.
+             */
+            val barAtTop = settings.preferences.playerBarPosition == PlayerBarPosition.TOP && playback.track != null
             Column(Modifier.fillMaxSize()) {
-                Box(Modifier.weight(1f)) {
+                if (barAtTop) {
+                    Column(Modifier.windowInsetsPadding(WindowInsets.statusBars)) {
+                        PlayerBar(
+                            playback,
+                            state,
+                            settings.preferences.progressBarStyle,
+                            settings.preferences.phone.swipeToChangeTrack,
+                        ) { nowPlayingOpen = true }
+                    }
+                }
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .then(if (barAtTop) Modifier.consumeWindowInsets(WindowInsets.statusBars) else Modifier),
+                ) {
                     when (ui.destination) {
                         Destination.SEARCH -> SearchScreen(state)
                         Destination.LIBRARY -> LibraryScreen(state)
@@ -168,7 +194,7 @@ fun SpiceityPhone(state: AppState) {
                 }
 
                 Column(Modifier.windowInsetsPadding(WindowInsets.ime.union(WindowInsets.navigationBars))) {
-                    if (playback.track != null) {
+                    if (playback.track != null && !barAtTop) {
                         PlayerBar(
                             playback,
                             state,
