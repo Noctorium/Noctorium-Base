@@ -21,6 +21,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -101,11 +102,11 @@ class Media3PlaybackEngine(
                 }
 
                 override fun onPlayerError(error: PlaybackException) {
-                    mutableState.value = mutableState.value.copy(
+                    mutableState.update { it.copy(
                         status = PlaybackStatus.ERROR,
                         // ExoPlayer's own name for what went wrong, which says more than a code.
                         errorMessage = error.errorCodeName + (error.message?.let { ": $it" } ?: ""),
-                    )
+                    ) }
                 }
             })
         }
@@ -117,13 +118,13 @@ class Media3PlaybackEngine(
      * than kept with the track. A downloaded copy short-circuits that entirely.
      */
     override suspend fun play(track: Track) {
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             status = PlaybackStatus.RESOLVING,
             track = track,
             errorMessage = null,
             positionMs = 0,
             durationMs = track.durationMs ?: 0,
-        )
+        ) }
 
         val source = downloadedFile(track)?.toUri()?.toString()
             ?: runCatching { backend.resolveAudio(track.sourceUrl) }.getOrElse { error ->
@@ -131,10 +132,10 @@ class Media3PlaybackEngine(
                 // a different one failed, which reads as the error being wrong rather than the track being
                 // unplayable.
                 withContext(Dispatchers.Main) { runCatching { player.stop() } }
-                mutableState.value = mutableState.value.copy(
+                mutableState.update { it.copy(
                     status = PlaybackStatus.ERROR,
                     errorMessage = error.message ?: "Could not find an audio stream for this track.",
-                )
+                ) }
                 return
             }
 
@@ -152,11 +153,11 @@ class Media3PlaybackEngine(
         }
         started.onFailure { error ->
             android.util.Log.w(PLAYER_LOG_TAG, "Could not start $source", error)
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 status = PlaybackStatus.ERROR,
                 errorMessage = "This track could not be played: " +
                     (error.message?.take(160) ?: error::class.java.simpleName),
-            )
+            ) }
             return
         }
         startTicking()
@@ -195,7 +196,7 @@ class Media3PlaybackEngine(
     override suspend fun setVolume(value: Float) = withContext(Dispatchers.Main) {
         val clamped = value.coerceIn(0f, 1f)
         player.volume = clamped
-        mutableState.value = mutableState.value.copy(volume = clamped)
+        mutableState.update { it.copy(volume = clamped) }
     }
 
     /**
@@ -206,12 +207,12 @@ class Media3PlaybackEngine(
      * that clips. The phone's own volume keys are louder than this anyway.
      */
     override suspend fun setVolumeBoost(enabled: Boolean) {
-        mutableState.value = mutableState.value.copy(volumeBoostEnabled = false)
+        mutableState.update { it.copy(volumeBoostEnabled = false) }
     }
 
     override suspend fun setMuted(muted: Boolean) = withContext(Dispatchers.Main) {
         player.volume = if (muted) 0f else mutableState.value.volume
-        mutableState.value = mutableState.value.copy(isMuted = muted)
+        mutableState.update { it.copy(isMuted = muted) }
     }
 
     override suspend fun seekTo(positionMs: Long) = withContext(Dispatchers.Main) {
@@ -309,7 +310,7 @@ class Media3PlaybackEngine(
 
     private fun publish() {
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             status = when {
                 player.playbackState == Player.STATE_BUFFERING -> PlaybackStatus.RESOLVING
                 player.isPlaying -> PlaybackStatus.PLAYING
@@ -320,7 +321,7 @@ class Media3PlaybackEngine(
             positionMs = player.currentPosition.coerceAtLeast(0),
             // The player's own length once it knows one, since that is what the bar is drawn against.
             durationMs = duration ?: mutableState.value.durationMs,
-        )
+        ) }
     }
 
 }

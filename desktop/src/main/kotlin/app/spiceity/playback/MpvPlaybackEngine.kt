@@ -121,13 +121,13 @@ class MpvPlaybackEngine(
      * below states the invariant outright: whatever happened, RESOLVING is not how this method ends.
      */
     override suspend fun play(track: Track): Unit = playMutex.withLock {
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             status = PlaybackStatus.RESOLVING,
             track = track,
             errorMessage = null,
             positionMs = 0,
             durationMs = track.durationMs ?: 0,
-        )
+        ) }
         // Logged on the way in as well as the way out, so that next time the difference between "never
         // started" and "started and vanished" is a fact rather than a deduction.
         PlaybackLog.event("playback_requested", mapOf("track" to track.queueKey))
@@ -169,20 +169,20 @@ class MpvPlaybackEngine(
             delay(400)
             if (process?.isAlive != true) throw BackendException("mpv exited before audio playback started")
             waitForIpc()
-            mutableState.value = mutableState.value.copy(status = PlaybackStatus.PLAYING)
+            mutableState.update { it.copy(status = PlaybackStatus.PLAYING) }
             PlaybackLog.event("playback_started", mapOf("track" to track.queueKey, "processId" to process?.pid()))
             startProgressTicker()
         } catch (cancellation: CancellationException) {
             // Somebody pressed something else. Not a failure, and not something to show a message about
             // -- but the player still has to be stood down and the status still has to leave RESOLVING.
             stopProcess()
-            mutableState.value = mutableState.value.copy(status = PlaybackStatus.IDLE, errorMessage = null)
+            mutableState.update { it.copy(status = PlaybackStatus.IDLE, errorMessage = null) }
             throw cancellation
         } catch (error: Throwable) {
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 status = PlaybackStatus.ERROR,
                 errorMessage = error.message ?: "Playback failed",
-            )
+            ) }
             PlaybackLog.event(
                 "playback_failed",
                 mapOf(
@@ -199,10 +199,10 @@ class MpvPlaybackEngine(
                 // Nothing above claimed an ending, which means control left by a route this method does
                 // not know about. Any status at all beats the spinner, because the spinner is the one
                 // that cannot be pressed out of.
-                mutableState.value = mutableState.value.copy(
+                mutableState.update { it.copy(
                     status = PlaybackStatus.ERROR,
                     errorMessage = "Playback stopped before it started. Try again.",
-                )
+                ) }
                 PlaybackLog.event("playback_stranded", mapOf("track" to track.queueKey))
             }
         }
@@ -214,9 +214,9 @@ class MpvPlaybackEngine(
     private suspend fun suspendProcess(paused: Boolean) {
         process?.takeIf { it.isAlive } ?: return
         sendCommand("set_property", JsonPrimitive("pause"), JsonPrimitive(paused))
-        mutableState.value = mutableState.value.copy(
+        mutableState.update { it.copy(
             status = if (paused) PlaybackStatus.PAUSED else PlaybackStatus.PLAYING,
-        )
+        ) }
     }
 
     override suspend fun setVolume(value: Float) {
@@ -226,14 +226,14 @@ class MpvPlaybackEngine(
             if (process?.isAlive == true) {
                 sendCommand("set_property", JsonPrimitive("volume"), JsonPrimitive(requested * 100.0))
                 val confirmed = getNumberProperty("volume")?.div(100.0)?.toFloat()?.coerceIn(0f, maximum) ?: requested
-                mutableState.value = mutableState.value.copy(volume = confirmed, errorMessage = null)
+                mutableState.update { it.copy(volume = confirmed, errorMessage = null) }
                 PlaybackLog.event("volume_changed", mapOf("requestedPercent" to requested * 100, "confirmedPercent" to confirmed * 100))
             } else {
-                mutableState.value = mutableState.value.copy(volume = requested)
+                mutableState.update { it.copy(volume = requested) }
                 PlaybackLog.event("volume_staged", mapOf("requestedPercent" to requested * 100))
             }
         } catch (error: Exception) {
-            mutableState.value = mutableState.value.copy(errorMessage = error.message ?: "Volume control failed")
+            mutableState.update { it.copy(errorMessage = error.message ?: "Volume control failed") }
             PlaybackLog.event("volume_failed", mapOf("message" to (error.message ?: "unknown")))
         }
     }
@@ -252,11 +252,11 @@ class MpvPlaybackEngine(
                     ?.coerceIn(0f, if (enabled) BOOSTED_MAX_VOLUME else NORMAL_MAX_VOLUME)
                     ?: target
             }
-            mutableState.value = mutableState.value.copy(
+            mutableState.update { it.copy(
                 volume = confirmed,
                 volumeBoostEnabled = enabled,
                 errorMessage = null,
-            )
+            ) }
             PlaybackLog.event(
                 "volume_boost_changed",
                 mapOf(
@@ -266,7 +266,7 @@ class MpvPlaybackEngine(
                 ),
             )
         } catch (error: Exception) {
-            mutableState.value = mutableState.value.copy(errorMessage = error.message ?: "Volume boost failed")
+            mutableState.update { it.copy(errorMessage = error.message ?: "Volume boost failed") }
             PlaybackLog.event("volume_boost_failed", mapOf("enabled" to enabled, "message" to (error.message ?: "unknown")))
         }
     }
@@ -276,14 +276,14 @@ class MpvPlaybackEngine(
             if (process?.isAlive == true) {
                 sendCommand("set_property", JsonPrimitive("mute"), JsonPrimitive(muted))
                 val confirmed = getBooleanProperty("mute") ?: muted
-                mutableState.value = mutableState.value.copy(isMuted = confirmed, errorMessage = null)
+                mutableState.update { it.copy(isMuted = confirmed, errorMessage = null) }
                 PlaybackLog.event("mute_changed", mapOf("requested" to muted, "confirmed" to confirmed))
             } else {
-                mutableState.value = mutableState.value.copy(isMuted = muted)
+                mutableState.update { it.copy(isMuted = muted) }
                 PlaybackLog.event("mute_staged", mapOf("requested" to muted))
             }
         } catch (error: Exception) {
-            mutableState.value = mutableState.value.copy(errorMessage = error.message ?: "Mute control failed")
+            mutableState.update { it.copy(errorMessage = error.message ?: "Mute control failed") }
             PlaybackLog.event("mute_failed", mapOf("requested" to muted, "message" to (error.message ?: "unknown")))
         }
     }
@@ -295,12 +295,12 @@ class MpvPlaybackEngine(
             val seconds = String.format(Locale.US, "%.3f", target / 1_000.0)
             sendCommand("seek", JsonPrimitive(seconds.toDouble()), JsonPrimitive("absolute+exact"))
         }
-        mutableState.value = mutableState.value.copy(positionMs = target)
+        mutableState.update { it.copy(positionMs = target) }
     }
 
     override suspend fun stop() {
         stopProcess()
-        mutableState.value = mutableState.value.copy(status = PlaybackStatus.IDLE, track = null)
+        mutableState.update { it.copy(status = PlaybackStatus.IDLE, track = null) }
     }
 
     private fun stopProcess() {
@@ -330,7 +330,7 @@ class MpvPlaybackEngine(
                 val current = mutableState.value
                 if (current.status == PlaybackStatus.PLAYING) {
                     if (process?.isAlive != true) {
-                        mutableState.value = current.copy(status = PlaybackStatus.IDLE)
+                        mutableState.update { it.copy(status = PlaybackStatus.IDLE) }
                         break
                     }
                     // Ask mpv how long the stream is until it can say. A YouTube Music listing carries no

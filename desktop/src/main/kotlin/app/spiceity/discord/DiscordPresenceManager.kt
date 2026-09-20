@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -61,7 +62,7 @@ class DiscordPresenceManager internal constructor(
         )
         if (activity == lastPayload) return
         lastPayload = activity
-        mutableStatus.value = mutableStatus.value.copy(preview = activity.toPreview())
+        mutableStatus.update { it.copy(preview = activity.toPreview()) }
 
         // A change arriving inside the throttle window is held back, not thrown away. Discarding it loses
         // a pause outright: the position stops changing the moment playback does, so nothing arrives
@@ -81,10 +82,10 @@ class DiscordPresenceManager internal constructor(
                 return@launch
             }
             val sent = client.setActivity(activity, UUID.randomUUID().toString())
-            mutableStatus.value = mutableStatus.value.copy(
+            mutableStatus.update { it.copy(
                 connected = sent,
                 lastMessage = if (sent) "Your activity is live on Discord." else "Discord closed the connection.",
-            )
+            ) }
         }
     }
 
@@ -98,7 +99,7 @@ class DiscordPresenceManager internal constructor(
     override suspend fun testConnection(applicationId: String): String {
         client.disconnect()
         val connected = client.connect(applicationId)
-        mutableStatus.value = mutableStatus.value.copy(connected = connected)
+        mutableStatus.update { it.copy(connected = connected) }
         return if (connected) {
             "Connected to the Discord client."
         } else {

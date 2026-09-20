@@ -3,6 +3,7 @@ package app.spiceity.playback
 import app.spiceity.domain.PlaybackContext
 import app.spiceity.domain.Track
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -100,36 +101,52 @@ class QueueManager(private val random: Random = Random.Default) {
         )
     }
 
+    /**
+     * Moving within the queue, decided against the queue as it is at the moment of the move.
+     *
+     * These three read the state, worked out an index from it, and then wrote back a copy of what they
+     * had read. Anything that replaced the queue in between -- starting a playlist, a Connect handover,
+     * the queue being reordered -- was undone by that write, which put the whole previous track list
+     * back along with the new index. Rare, and baffling when it happened.
+     */
     fun jumpTo(index: Int): Track? {
-        val current = mutableState.value
-        if (index !in current.tracks.indices) return null
-        mutableState.value = current.copy(currentIndex = index)
-        return mutableState.value.current
+        var moved = false
+        val updated = mutableState.updateAndGet { current ->
+            moved = index in current.tracks.indices
+            if (moved) current.copy(currentIndex = index) else current
+        }
+        return if (moved) updated.current else null
     }
 
     fun next(respectRepeatOne: Boolean = false): Track? {
-        val current = mutableState.value
-        if (current.tracks.isEmpty()) return null
-        val nextIndex = when {
-            respectRepeatOne && current.repeatMode == RepeatMode.ONE -> current.currentIndex
-            current.currentIndex < current.tracks.lastIndex -> current.currentIndex + 1
-            current.repeatMode == RepeatMode.ALL -> 0
-            else -> return null
+        var moved = false
+        val updated = mutableState.updateAndGet { current ->
+            val nextIndex = when {
+                current.tracks.isEmpty() -> null
+                respectRepeatOne && current.repeatMode == RepeatMode.ONE -> current.currentIndex
+                current.currentIndex < current.tracks.lastIndex -> current.currentIndex + 1
+                current.repeatMode == RepeatMode.ALL -> 0
+                else -> null
+            }
+            moved = nextIndex != null
+            if (nextIndex == null) current else current.copy(currentIndex = nextIndex)
         }
-        mutableState.value = current.copy(currentIndex = nextIndex)
-        return mutableState.value.current
+        return if (moved) updated.current else null
     }
 
     fun previous(): Track? {
-        val current = mutableState.value
-        if (current.tracks.isEmpty()) return null
-        val previousIndex = when {
-            current.currentIndex > 0 -> current.currentIndex - 1
-            current.repeatMode == RepeatMode.ALL -> current.tracks.lastIndex
-            else -> return null
+        var moved = false
+        val updated = mutableState.updateAndGet { current ->
+            val previousIndex = when {
+                current.tracks.isEmpty() -> null
+                current.currentIndex > 0 -> current.currentIndex - 1
+                current.repeatMode == RepeatMode.ALL -> current.tracks.lastIndex
+                else -> null
+            }
+            moved = previousIndex != null
+            if (previousIndex == null) current else current.copy(currentIndex = previousIndex)
         }
-        mutableState.value = current.copy(currentIndex = previousIndex)
-        return mutableState.value.current
+        return if (moved) updated.current else null
     }
 
     fun toggleShuffle() = shuffle(!mutableState.value.shuffleEnabled)
