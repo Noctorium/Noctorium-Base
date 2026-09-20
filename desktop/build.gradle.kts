@@ -1,3 +1,5 @@
+import java.net.HttpURLConnection
+import java.net.URI
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
 
 plugins {
@@ -110,6 +112,9 @@ compose.desktop {
                 TargetFormat.Deb,
                 TargetFormat.Rpm,
             )
+            // mpv and yt-dlp, fetched by fetchPlaybackTools and laid down beside the application so a
+            // fresh install can play something without fetching anything first.
+            appResourcesRootDir.set(layout.buildDirectory.dir("appResources"))
             packageName = "Spiceity"
             packageVersion = packagedVersion
             description = "One music player for YouTube Music and SoundCloud"
@@ -176,4 +181,119 @@ tasks.test {
     // Same again for the test that installs yt-dlp and mpv for real, which is off unless asked for:
     // it downloads fifty megabytes and depends on two other projects release pages being up.
     System.getProperty("spiceity.installTools")?.let { systemProperty("spiceity.installTools", it) }
+}
+
+/*
+ * The player and the extractor, fetched at build time and shipped inside the application.
+ *
+ * Spiceity used to download these on first run, into the listener's own application data folder. That
+ * worked, and then it did not: on one machine playback started and stopped a second later with no sound,
+ * while the same code on another machine played perfectly. Downloading at run time makes every
+ * installation slightly different -- a different mpv build, a different moment, a different antivirus
+ * opinion about an executable that appeared in AppData -- and a bug that cannot be reproduced cannot be
+ * fixed.
+ *
+ * Built in, one release carries one mpv and one yt-dlp, the same bytes for everybody. Nothing has to be
+ * fetched, nothing has to be unpacked on the machine it runs on, and a fresh install can play a track
+ * with no network beyond the music itself.
+ *
+ * The runtime installer stays, for two jobs it is still the right tool for: running from Gradle, where
+ * there is no packaged copy, and replacing a yt-dlp that has aged out -- YouTube changes, and a yt-dlp
+ * frozen at release time stops working long before the next release.
+ */
+val bundledToolsDir: Provider<Directory> = layout.buildDirectory.dir("appResources/windows-x64/bin")
+
+val fetchPlaybackTools by tasks.registering {
+    description = "Downloads mpv and yt-dlp so they can be packaged with the application."
+    outputs.dir(bundledToolsDir)
+    // Cached between builds: these are fifty megabytes and they do not change between two runs of the
+    // same build, so a rebuild should not go and ask GitHub again.
+    val cache = layout.buildDirectory.dir("tools-cache")
+    val target = bundledToolsDir
+
+    doLast {
+        val cacheDir = cache.get().asFile.apply { mkdirs() }
+        val outDir = target.get().asFile.apply { mkdirs() }
+
+        // The folder is made on every platform even though only Windows fills it: Compose is handed
+        // appResourcesRootDir unconditionally, and a root that does not exist is not something to find
+        // out about twenty minutes into the Linux half of a release.
+        if (!org.gradle.internal.os.OperatingSystem.current().isWindows) {
+            println("Not Windows: mpv and yt-dlp come from the package manager here, so nothing is bundled.")
+            return@doLast
+        }
+
+        fun fetch(url: String, into: File) {
+            if (into.exists() && into.length() > 0) return
+            println("Fetching ${into.name}")
+            val partial = File(into.parentFile, into.name + ".part")
+            URI(url).toURL().openStream().use { input: java.io.InputStream ->
+                partial.outputStream().use { output -> input.copyTo(output) }
+            }
+            partial.renameTo(into)
+        }
+
+        fun latestAsset(repository: String, match: Regex): String {
+            val connection = URI("https://api.github.com/repos/$repository/releases/latest")
+                .toURL().openConnection() as HttpURLConnection
+            connection.setRequestProperty("Accept", "application/vnd.github+json")
+            // Unauthenticated calls are limited per address, and every build on a shared CI runner comes
+            // from the same handful of addresses. Without this a release can fail on a rate limit that
+            // has nothing to do with this project.
+            System.getenv("GITHUB_TOKEN")?.takeIf { it.isNotBlank() }?.let {
+                connection.setRequestProperty("Authorization", "Bearer $it")
+            }
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            return Regex(""""browser_download_url"\s*:\s*"([^"]+)"""")
+                .findAll(body)
+                .map { it.groupValues[1] }
+                .firstOrNull { match.containsMatchIn(it.substringAfterLast('/')) }
+                ?: error("No asset matching $match in the latest $repository release")
+        }
+
+        // One standalone executable, straight into place.
+        fetch("https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe", File(outDir, "yt-dlp.exe"))
+
+        // mpv comes as an archive of a whole program folder. Not the -dev variant, which holds headers
+        // rather than a program, and not the -v3 one, which needs AVX2 and dies on older processors.
+        val mpvUrl = latestAsset(
+            "shinchiro/mpv-winbuild-cmake",
+            Regex("""^mpv-x86_64-(?!v3)\d+-git-[0-9a-f]+\.7z$"""),
+        )
+        val archive = File(cacheDir, mpvUrl.substringAfterLast('/'))
+        fetch(mpvUrl, archive)
+
+        val unpacked = File(cacheDir, "mpv").apply { deleteRecursively(); mkdirs() }
+        // bsdtar, which ships in Windows and reads 7z. A build machine is a controlled place to depend
+        // on that; the listener's machine was not, which is half of why this moved to build time.
+        val tar = File(System.getenv("SystemRoot") ?: "C:/Windows", "System32/tar.exe").absolutePath
+        val unpack = ProcessBuilder(tar, "-xf", archive.absolutePath)
+            .directory(unpacked)
+            .redirectErrorStream(true)
+            .start()
+        val unpackOutput = unpack.inputStream.bufferedReader().use { it.readText() }
+        check(unpack.waitFor() == 0) { "Could not unpack the mpv archive: $unpackOutput" }
+
+        val mpv = unpacked.walkTopDown().firstOrNull { it.isFile && it.name.equals("mpv.exe", ignoreCase = true) }
+            ?: error("The mpv archive contained no mpv.exe")
+        mpv.copyTo(File(outDir, "mpv.exe"), overwrite = true)
+        unpacked.walkTopDown().firstOrNull { it.isFile && it.name.equals("d3dcompiler_43.dll", ignoreCase = true) }
+            ?.copyTo(File(outDir, "d3dcompiler_43.dll"), overwrite = true)
+
+        println("Bundled: " + outDir.listFiles()?.joinToString { "${it.name} (${it.length() / 1_048_576} MB)" })
+    }
+}
+
+// Everything that produces something installable needs the tools in place first.
+listOf(
+    // prepareAppResources is the one that actually copies them in; the rest are the entry points
+    // somebody types, and Gradle wants the dependency stated on each rather than inferred.
+    "prepareAppResources",
+    "createDistributable",
+    "packageMsi",
+    "packageExe",
+    "runDistributable",
+    "run",
+).forEach { name ->
+    tasks.matching { it.name == name }.configureEach { dependsOn(fetchPlaybackTools) }
 }

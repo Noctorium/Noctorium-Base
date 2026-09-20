@@ -1,5 +1,6 @@
 package app.spiceity.playback
 
+import app.spiceity.settings.AppDirectories
 import app.spiceity.domain.Track
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +43,26 @@ internal const val NORMAL_MAX_VOLUME = 1f
 internal const val BOOSTED_MAX_VOLUME = 10f
 internal const val BOOST_START_VOLUME = 2f
 
+/**
+ * The line out of an mpv log that says what went wrong, or null if nothing did.
+ *
+ * mpv's log lines are `[   0.026][e][stream] Failed to open ...`: a timestamp, a one letter level and
+ * a component, then the message. The level is a single letter -- `e` for error, `f` for fatal -- and not
+ * the word, which is worth writing down because a first attempt at this looked for "[error]", matched
+ * nothing on any real log, and would have reported "it gave no reason" for every failure there is.
+ *
+ * The last error is taken rather than the first: mpv keeps going through several, and the one that
+ * finally stopped it is at the end.
+ */
+internal fun complaintIn(lines: List<String>): String? {
+    val complaint = lines.lastOrNull { line ->
+        // Anchored on "][" so it cannot match an "e" inside a timestamp or a message.
+        line.contains("][e][") || line.contains("][f][")
+    } ?: return null
+    // Strips the leading bracket groups, however many mpv used, leaving the sentence itself.
+    return complaint.replace(Regex("^(\\[[^]]*])+"), "").trim().take(200).ifBlank { null }
+}
+
 /** Ten seconds of asking at the ticker's rate, after which a stream is taken to have no length. */
 private const val MAX_DURATION_PROBES = 40
 
@@ -76,6 +97,9 @@ class MpvPlaybackEngine(
     private val json = Json { ignoreUnknownKeys = true }
     private val isWindows = System.getProperty("os.name").startsWith("Windows", ignoreCase = true)
     private var ipcEndpoint: String? = null
+
+    /** Where mpv was told to write about the current attempt, for when it does not survive it. */
+    private var processLog: Path? = null
     private var volumeBeforeBoost = mutableState.value.volume
 
     /**
@@ -147,27 +171,38 @@ class MpvPlaybackEngine(
                     "muted" to mutableState.value.isMuted,
                 ),
             )
+            val log = newLogFile()
+            processLog = log
             process = withContext(Dispatchers.IO) {
                 ProcessBuilder(
-                    mpv.toString(),
-                    "--no-config",
-                    "--no-video",
-                    "--force-window=no",
-                    "--terminal=no",
-                    "--input-terminal=no",
-                    "--input-ipc-server=${ipcEndpoint!!}",
-                    "--volume-max=${(BOOSTED_MAX_VOLUME * 100).toInt()}",
-                    "--volume=${(mutableState.value.volume * 100).toInt()}",
-                    "--mute=${if (mutableState.value.isMuted) "yes" else "no"}",
-                    "--title=Spiceity",
-                    "--",
-                    mediaUrl,
+                    buildList {
+                        add(mpv.toString())
+                        add("--no-config")
+                        add("--no-video")
+                        add("--force-window=no")
+                        add("--terminal=no")
+                        add("--input-terminal=no")
+                        // --terminal=no silences everything mpv would otherwise say, including why it is
+                        // about to stop. --log-file is the one channel that still works, and without it a
+                        // player that cannot open an audio device exits looking exactly like a track that
+                        // finished: a second of nothing, then silence, with no message anywhere.
+                        log?.let { add("--log-file=$it") }
+                        add("--input-ipc-server=${ipcEndpoint!!}")
+                        add("--volume-max=${(BOOSTED_MAX_VOLUME * 100).toInt()}")
+                        add("--volume=${(mutableState.value.volume * 100).toInt()}")
+                        add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
+                        add("--title=Spiceity")
+                        add("--")
+                        add(mediaUrl)
+                    },
                 ).redirectOutput(ProcessBuilder.Redirect.DISCARD)
                     .redirectError(ProcessBuilder.Redirect.DISCARD)
                     .start()
             }
             delay(400)
-            if (process?.isAlive != true) throw BackendException("mpv exited before audio playback started")
+            if (process?.isAlive != true) {
+                throw BackendException("mpv stopped before any audio started. " + (mpvComplaint() ?: "It gave no reason."))
+            }
             waitForIpc()
             mutableState.update { it.copy(status = PlaybackStatus.PLAYING) }
             PlaybackLog.event("playback_started", mapOf("track" to track.queueKey, "processId" to process?.pid()))
@@ -303,6 +338,29 @@ class MpvPlaybackEngine(
         mutableState.update { it.copy(status = PlaybackStatus.IDLE, track = null) }
     }
 
+    /**
+     * Somewhere for mpv to write, one file per attempt, cleaned up with the player.
+     *
+     * Null if it cannot be made, in which case mpv is simply started without one -- losing the
+     * explanation is much better than losing the music.
+     */
+    private fun newLogFile(): Path? = runCatching {
+        val directory = AppDirectories.resolve("logs") ?: return@runCatching null
+        java.nio.file.Files.createDirectories(directory)
+        directory.resolve("mpv-last.log").also { java.nio.file.Files.deleteIfExists(it) }
+    }.getOrNull()
+
+    /**
+     * What mpv said was wrong, in one line worth putting on screen.
+     *
+     * Its log is verbose and mostly about codecs. The lines that matter are the ones it marks as errors,
+     * and the last of those is nearly always the one that ended it.
+     */
+    private fun mpvComplaint(): String? = runCatching {
+        val log = processLog ?: return@runCatching null
+        complaintIn(java.nio.file.Files.readAllLines(log))
+    }.getOrNull()
+
     private fun stopProcess() {
         progressJob?.cancel()
         progressJob = null
@@ -330,7 +388,31 @@ class MpvPlaybackEngine(
                 val current = mutableState.value
                 if (current.status == PlaybackStatus.PLAYING) {
                     if (process?.isAlive != true) {
-                        mutableState.update { it.copy(status = PlaybackStatus.IDLE) }
+                        /*
+                         * Whether that was the end of the track or the end of mpv.
+                         *
+                         * Both used to arrive here and both were treated as the track finishing, so a
+                         * player that fell over a second in looked identical to one that had played to
+                         * the end -- the queue moved on, nothing was said, and the listener got silence
+                         * they could not account for. mpv exits 0 when it reaches the end of a file and
+                         * non-zero when it gives up, which is exactly the distinction needed.
+                         */
+                        val code = runCatching { process?.exitValue() }.getOrNull()
+                        if (code != null && code != 0) {
+                            val complaint = mpvComplaint()
+                            mutableState.update {
+                                it.copy(
+                                    status = PlaybackStatus.ERROR,
+                                    errorMessage = "Playback stopped. " + (complaint ?: "mpv exited with code $code."),
+                                )
+                            }
+                            PlaybackLog.event(
+                                "playback_died",
+                                mapOf("exit" to code, "detail" to (complaint ?: "no output")),
+                            )
+                        } else {
+                            mutableState.update { it.copy(status = PlaybackStatus.IDLE) }
+                        }
                         break
                     }
                     // Ask mpv how long the stream is until it can say. A YouTube Music listing carries no

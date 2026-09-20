@@ -32,6 +32,56 @@ class RealPlaybackTest {
         durationMs = 138_000,
     )
 
+    /**
+     * The binaries that ship inside the application, playing a real track.
+     *
+     * Run against the app image built by :desktop:createDistributable, resolved exactly the way the
+     * packaged application resolves them. This is the test that answers the question the whole change
+     * exists for -- that the copy everybody gets is a copy that works -- and it fails loudly rather than
+     * skipping if the image has not been built.
+     */
+    @Test
+    fun `the mpv that ships inside the application plays a real track`() {
+        if (!enabled) return
+        val image = java.nio.file.Path.of("build/compose/binaries/main/app/Spiceity/app/resources")
+        if (!java.nio.file.Files.isDirectory(image.resolve("bin"))) {
+            throw AssertionError("No app image at $image -- run :desktop:createDistributable first")
+        }
+        val property = "compose.application.resources.dir"
+        val before = System.getProperty(property)
+        try {
+            System.setProperty(property, image.toAbsolutePath().toString())
+            val mpv = BackendLocator.mpv()
+            assertTrue(mpv != null && BackendLocator.isBundled(mpv), "did not resolve the bundled mpv: $mpv")
+
+            val engine = MpvPlaybackEngine(YtDlpService())
+            try {
+                runBlocking {
+                    engine.play(track)
+                    val state = engine.state.value
+                    assertEquals(
+                        PlaybackStatus.PLAYING,
+                        state.status,
+                        "the bundled mpv did not play: ${state.errorMessage}",
+                    )
+                    // The symptom being chased was audio that stopped about a second in, which the old
+                    // code reported as the track simply ending. Staying up for three seconds is the
+                    // difference between playing and appearing to.
+                    delay(3_000)
+                    assertEquals(
+                        PlaybackStatus.PLAYING,
+                        engine.state.value.status,
+                        "it stopped shortly after starting: ${engine.state.value.errorMessage}",
+                    )
+                }
+            } finally {
+                runBlocking { engine.stop() }
+            }
+        } finally {
+            if (before == null) System.clearProperty(property) else System.setProperty(property, before)
+        }
+    }
+
     @Test
     fun `pressing play once reaches PLAYING and not a spinner that never ends`() {
         if (!enabled) return

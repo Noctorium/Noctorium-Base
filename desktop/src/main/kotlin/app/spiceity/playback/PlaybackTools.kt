@@ -33,6 +33,9 @@ enum class PlaybackTool(
 
 /** Where one tool came from, so the panel can say something more useful than "found". */
 enum class ToolOrigin {
+    /** Shipped inside the application: the same bytes for everybody running this release. */
+    BUNDLED,
+
     /** In Spiceity's own bin folder, which means Spiceity put it there and may replace it. */
     MANAGED,
 

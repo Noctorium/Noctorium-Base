@@ -68,6 +68,7 @@ object PlaybackToolInstaller {
                 tool = tool,
                 origin = when {
                     found == null -> ToolOrigin.MISSING
+                    BackendLocator.isBundled(found) -> ToolOrigin.BUNDLED
                     isManaged(found) -> ToolOrigin.MANAGED
                     else -> ToolOrigin.SYSTEM
                 },
@@ -118,7 +119,10 @@ object PlaybackToolInstaller {
      */
     private suspend fun refreshStaleYtDlp() {
         val status = mutableState.value.status(PlaybackTool.YT_DLP) ?: return
-        if (status.origin != ToolOrigin.MANAGED) return
+        // A bundled yt-dlp ages too -- its date is the date the release was built -- and it is replaced
+        // the same way, by a newer copy in the application data folder that the locator prefers. One
+        // that came from the package manager is left alone, because it is not ours to replace.
+        if (status.origin != ToolOrigin.MANAGED && status.origin != ToolOrigin.BUNDLED) return
         val path = status.path?.let(Path::of) ?: return
         val age = runCatching {
             System.currentTimeMillis() - Files.getLastModifiedTime(path).toMillis()

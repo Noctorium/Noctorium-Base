@@ -184,6 +184,9 @@ private fun ToolRow(
 private fun describe(tool: PlaybackTool, tools: PlaybackToolsState, windows: Boolean): String {
     val status = tools.status(tool) ?: return "${tool.purpose} — not checked yet"
     return when (status.origin) {
+        // Worth naming, because it is the answer to "why does it work on yours and not mine": a packaged
+        // Spiceity runs the copy it shipped with, and every install of one release runs the same one.
+        ToolOrigin.BUNDLED -> "${tool.purpose} — built in"
         // Saying which copy is being used matters: somebody with their own mpv on PATH and a Spiceity
         // one in its folder should be able to see, without guessing, which of the two is playing.
         ToolOrigin.MANAGED -> "${tool.purpose} — installed by Spiceity"
