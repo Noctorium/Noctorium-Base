@@ -214,6 +214,10 @@ class MpvPlaybackEngine(
             mutableState.update { it.copy(status = PlaybackStatus.IDLE, errorMessage = null) }
             throw cancellation
         } catch (error: Throwable) {
+            // Silence first, as the phone does. Resolving happens before the old player is stopped, so a
+            // track that fails to resolve otherwise leaves the previous one playing under an error about
+            // a different song -- which reads as the error being wrong rather than the track being broken.
+            stopProcess()
             mutableState.update { it.copy(
                 status = PlaybackStatus.ERROR,
                 errorMessage = error.message ?: "Playback failed",

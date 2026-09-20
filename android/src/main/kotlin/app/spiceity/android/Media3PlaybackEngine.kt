@@ -288,6 +288,19 @@ class Media3PlaybackEngine(
     }
 
     private fun publish() {
+        /*
+         * A report about a track this state no longer describes is dropped.
+         *
+         * While the next track resolves, the previous one is still playing in ExoPlayer, and its ticker
+         * and its callbacks keep arriving. Letting them through flipped the status from RESOLVING back to
+         * PLAYING and wrote the old track's position onto the new one -- so a track that failed to resolve
+         * came up at 0:11, which is where the one before it happened to be. Each item carries its track
+         * key, so the two can be told apart.
+         */
+        val held = player.currentMediaItem?.mediaId
+        val shown = mutableState.value.track?.queueKey
+        if (held != null && shown != null && held != shown) return
+
         val duration = player.duration.takeIf { it != C.TIME_UNSET && it > 0 }
         mutableState.update { it.copy(
             status = when {
@@ -297,7 +310,10 @@ class Media3PlaybackEngine(
                 player.playbackState == Player.STATE_ENDED -> PlaybackStatus.IDLE
                 else -> mutableState.value.status
             },
-            positionMs = player.currentPosition.coerceAtLeast(0),
+            // Not read from a stopped player. After stop() ExoPlayer still reports where the last track
+            // finished, and this ran on the callback that stop() posts -- so a track that failed to resolve
+            // came up showing the previous one's final position, 3:37 of a song it never started.
+            positionMs = if (player.playbackState == Player.STATE_IDLE) it.positionMs else player.currentPosition.coerceAtLeast(0),
             // The player's own length once it knows one, since that is what the bar is drawn against.
             durationMs = duration ?: mutableState.value.durationMs,
         ) }
