@@ -71,12 +71,12 @@ android {
          * for ninety-nine minors and patches, which is more than this will ever need, and keeps the
          * ordering the same as the version people actually read.
          */
-        val parts = (findProperty("appVersion") as String? ?: "0.2.0")
+        val parts = (findProperty("appVersion") as String? ?: "0.3.0")
             .removePrefix("v").substringBefore('-').split('.').mapNotNull(String::toIntOrNull)
         versionCode = ((parts.getOrNull(0) ?: 0) * 10_000) +
             ((parts.getOrNull(1) ?: 0) * 100) +
             (parts.getOrNull(2) ?: 0)
-        versionName = (findProperty("appVersion") as String? ?: "0.2.0").removePrefix("v")
+        versionName = (findProperty("appVersion") as String? ?: "0.3.0").removePrefix("v")
     }
 
     buildTypes {
