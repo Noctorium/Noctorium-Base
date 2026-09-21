@@ -2,6 +2,7 @@ package app.spiceity.playback
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -81,17 +82,32 @@ class AudioAddressCache(
         // queue's look-ahead cancelled because the queue changed, a listener who tapped something else --
         // neither loses the answer nor makes the next caller start the same read over again. That
         // happened: two reads of the same page, a quarter of a second apart, both run to the end.
-        val lookup = inFlight.computeIfAbsent(sourceUrl) {
-            scope.async {
-                try {
-                    fetch().also { remember(sourceUrl, it) }
-                } catch (error: Throwable) {
-                    if (error !is CancellationException) {
-                        failures[sourceUrl] = Failure(error, clock() + FAILURE_MEMORY_MS)
-                    }
-                    throw error
+        //
+        // Started lazily, and only once it is known to be the one on the list. A first version registered
+        // the removal inside computeIfAbsent's mapping function; a fetch that finished before that function
+        // returned -- which a trivial one does -- ran the removal from inside the very update that was
+        // adding it, and ConcurrentHashMap threw "Recursive update". Three tests failed on the release
+        // runner and passed on this machine, which is what a race looks like.
+        val candidate = scope.async(start = CoroutineStart.LAZY) {
+            try {
+                fetch().also { remember(sourceUrl, it) }
+            } catch (error: Throwable) {
+                if (error !is CancellationException) {
+                    failures[sourceUrl] = Failure(error, clock() + FAILURE_MEMORY_MS)
                 }
-            }.also { started -> started.invokeOnCompletion { inFlight.remove(sourceUrl, started) } }
+                throw error
+            }
+        }
+        val running = inFlight.putIfAbsent(sourceUrl, candidate)
+        val lookup = if (running != null) {
+            // Somebody else's read is under way. The unstarted candidate is let go of, so it does not sit
+            // in the scope as a child that never finishes.
+            candidate.cancel()
+            running
+        } else {
+            candidate.invokeOnCompletion { inFlight.remove(sourceUrl, candidate) }
+            candidate.start()
+            candidate
         }
         return lookup.await()
     }
