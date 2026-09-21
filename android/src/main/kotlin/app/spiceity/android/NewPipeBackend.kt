@@ -1,6 +1,8 @@
 package app.spiceity.android
 
 import app.spiceity.net.networkFailureMessage
+import app.spiceity.net.retryingTransientFailures
+import app.spiceity.playback.AudioAddressCache
 import app.spiceity.domain.Album
 import app.spiceity.domain.Artist
 import app.spiceity.domain.Playlist
@@ -25,7 +27,6 @@ import org.schabi.newpipe.extractor.downloader.Response
 import org.schabi.newpipe.extractor.playlist.PlaylistInfo
 import org.schabi.newpipe.extractor.search.SearchInfo
 import org.schabi.newpipe.extractor.stream.AudioStream
-import org.schabi.newpipe.extractor.stream.StreamInfo
 import org.schabi.newpipe.extractor.stream.StreamInfoItem
 import java.io.IOException
 import java.nio.file.Files
@@ -59,7 +60,30 @@ class NewPipeBackend(
      * walks out of the house. Supplied as a function so this class keeps knowing nothing about settings.
      */
     private val refuseDownload: () -> String? = { null },
+    /**
+     * What the phone knows about its connection at the moment a lookup fails, or null for nothing more
+     * than the failure itself says. See `Context.describeNetworkProblem`.
+     */
+    private val networkProblem: () -> String? = { null },
 ) : MusicBackend {
+
+    /**
+     * What one visit to a track's page found out, kept so the visit is not repeated.
+     *
+     * Playing a track used to read its page twice, back to back: once to fill in the artist and length,
+     * and once more to find the audio. Each read is two to three seconds on a phone, and together they
+     * were most of the wait between the tap and the sound. Now the page is read once, the address goes
+     * into [addresses] and the facts go here, and whichever is asked for second is answered from memory.
+     */
+    private class PageFacts(
+        val title: String?,
+        val uploader: String?,
+        val durationMs: Long?,
+        val artworkUrl: String?,
+    )
+
+    private val facts = ConcurrentHashMap<String, PageFacts>()
+    private val addresses = AudioAddressCache()
 
     /**
      * Sessions, kept per provider.
@@ -129,33 +153,79 @@ class NewPipeBackend(
         return all.drop((from - 1).coerceAtLeast(0)).take((to - from + 1).coerceAtLeast(0))
     }
 
-    override suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
-        val service = serviceFor(track.provider) ?: return@withContext track
-        val info = runCatching { StreamInfo.getInfo(service, track.sourceUrl) }.getOrNull()
-            ?: return@withContext track
-        track.copy(
-            title = info.name?.takeIf(String::isNotBlank) ?: track.title,
-            artists = track.artists.ifEmpty { artistsOf(info.uploaderName, track.provider) },
-            durationMs = info.duration.takeIf { it > 0 }?.times(1_000) ?: track.durationMs,
-            artworkUrl = track.artworkUrl ?: info.thumbnails?.lastOrNull()?.url,
+    /**
+     * Fills in what a listing left out, from the page if it has to be read and from memory if it need not.
+     *
+     * A track that already has an artist, a length and artwork is handed back untouched without a single
+     * request: NewPipe's listings carry all three for nearly everything, and reading the page again to
+     * confirm them was the first of the two page reads that made a tap take five seconds. When something
+     * is missing the page is read once, and the address found on the way is kept for the play that comes
+     * next, so that one costs nothing.
+     */
+    override suspend fun enrichMetadata(track: Track): Track {
+        if (serviceFor(track.provider) == null) return track
+        val complete = track.artists.isNotEmpty() && track.durationMs != null && track.artworkUrl != null
+        val known = facts[track.sourceUrl]
+            ?: if (complete) {
+                return track
+            } else {
+                runCatching { resolveAudio(track.sourceUrl) }
+                facts[track.sourceUrl] ?: return track
+            }
+        return track.copy(
+            title = known.title?.takeIf(String::isNotBlank) ?: track.title,
+            artists = track.artists.ifEmpty { artistsOf(known.uploader, track.provider) },
+            durationMs = known.durationMs ?: track.durationMs,
+            artworkUrl = track.artworkUrl ?: known.artworkUrl,
         )
     }
 
     /**
      * An address the player can read audio from.
      *
-     * The best audio-only stream is chosen by bitrate. Video streams are never considered: this is a music
-     * player, and fetching a video's pixels to throw them away would spend a phone's data for nothing.
+     * Answered from memory when it was found in the last half hour -- by the play before, by the
+     * enrichment a moment ago, or by the queue looking ahead -- and read from the page otherwise. The best
+     * audio-only stream is chosen by bitrate. Video streams are never considered: this is a music player,
+     * and fetching a video's pixels to throw them away would spend a phone's data for nothing.
      */
-    override suspend fun resolveAudio(sourceUrl: String): String = withContext(Dispatchers.IO) {
+    override suspend fun resolveAudio(sourceUrl: String): String {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
         }
+        return addresses.resolve(sourceUrl) { readPage(sourceUrl) }
+    }
+
+    override fun forgetAudio(sourceUrl: String) = addresses.forget(sourceUrl)
+
+    /**
+     * One visit to the track's page: the facts into [facts], the audio address returned.
+     *
+     * Through the extractor rather than `StreamInfo.getInfo`, deliberately. `getInfo` reads everything a
+     * page can say -- every video stream, subtitles, related items, chapters -- and solving the signature
+     * on each video stream is a JavaScript evaluation apiece, on a phone. Only the audio streams are asked
+     * for here, and only the four facts a listing might have missed.
+     *
+     * A lookup that fails the instant the phone changes networks is asked once more before it is
+     * reported; see `retryingTransientFailures` for why only a quick failure is worth that.
+     */
+    private suspend fun readPage(sourceUrl: String): String = withContext(Dispatchers.IO) {
         val provider = providerOf(sourceUrl)
         val service = serviceFor(provider)
             ?: throw BackendException("Spiceity cannot play this address on Android yet.")
-        val info = attempt("resolve $sourceUrl") { StreamInfo.getInfo(service, sourceUrl) }
-        val stream = info.audioStreams
+        val startedAt = System.nanoTime()
+        val extractor = attempt("resolve $sourceUrl") {
+            retryingTransientFailures { service.getStreamExtractor(sourceUrl).also { it.fetchPage() } }
+        }
+        // How long the page took, in the log, because "it feels slow" has to be a number to be worked on.
+        android.util.Log.i(LOG_TAG, "Read the page for $sourceUrl in ${(System.nanoTime() - startedAt) / 1_000_000} ms")
+        if (facts.size > MAX_REMEMBERED_PAGES) facts.clear()
+        facts[sourceUrl] = PageFacts(
+            title = runCatching { extractor.name }.getOrNull(),
+            uploader = runCatching { extractor.uploaderName }.getOrNull(),
+            durationMs = runCatching { extractor.length }.getOrNull()?.takeIf { it > 0 }?.times(1_000),
+            artworkUrl = runCatching { extractor.thumbnails.lastOrNull()?.url }.getOrNull(),
+        )
+        val stream = attempt("read the streams of $sourceUrl") { extractor.audioStreams }
             .filter { !it.content.isNullOrBlank() }
             .maxByOrNull(AudioStream::getAverageBitrate)
             ?: throw BackendException(
@@ -320,8 +390,9 @@ class NewPipeBackend(
         error is org.schabi.newpipe.extractor.exceptions.PrivateContentException ->
             "This track is private."
         // No signal is the commonest failure there is and it arrived as a Google hostname. Said plainly,
-        // before anything else gets a chance to pass the raw text through.
-        else -> networkFailureMessage(error)
+        // before anything else gets a chance to pass the raw text through -- and said the way the phone
+        // sees it when it can: a phone that is online but has cut this app off is not "no internet".
+        else -> networkFailureMessage(error)?.let { plain -> networkProblem() ?: plain }
             ?: error.message?.takeIf { it.isNotBlank() }?.take(160)
             ?: "This track could not be played (${error::class.java.simpleName})."
     }
@@ -377,6 +448,9 @@ class NewPipeBackend(
      * throttle never engages and a stalled chunk fails fast instead of hanging the whole download.
      */
     private val CHUNK_BYTES = 4L * 1024 * 1024
+
+    /** Facts about more pages than this and the memory is simply emptied; a few hundred is an evening. */
+    private val MAX_REMEMBERED_PAGES = 400
 
     private fun providerOf(sourceUrl: String): ProviderType = when {
         "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC

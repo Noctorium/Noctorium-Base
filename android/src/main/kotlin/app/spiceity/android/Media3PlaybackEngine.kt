@@ -7,6 +7,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import app.spiceity.domain.Track
 import app.spiceity.net.networkFailureMessage
@@ -52,12 +53,24 @@ class Media3PlaybackEngine(
     private val backend: MusicBackend,
     /** A track kept on the device plays from there and asks the network for nothing. */
     private val downloadedFile: (Track) -> Path? = { null },
+    /** What the phone knows about its connection when a stream fails for a network reason. */
+    private val networkProblem: () -> String? = { null },
 ) : PlaybackEngine {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val mutableState = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
     private var ticker: Job? = null
+
+    /**
+     * The track whose refused stream has already been fetched afresh once.
+     *
+     * A stream address can be refused after it was handed out -- it expired, or the phone moved to a
+     * network it was not issued for -- and the right answer is a new address, not a message asking the
+     * listener to press play. That is done once per track; a second refusal is reported, because it is
+     * then about the track rather than the address.
+     */
+    private var refreshedFor: String? = null
 
     /**
      * Handed to the media session service, and to nothing else.
@@ -86,6 +99,20 @@ class Media3PlaybackEngine(
         // foreground service keeps the process alive; it does not keep the radio awake. WAKE_LOCK was
         // already asked for in the manifest and, until now, never taken.
         .setWakeMode(C.WAKE_MODE_NETWORK)
+        // Starts with a second of audio in hand rather than two and a half. Measured on the phone, the
+        // time from handing ExoPlayer an address to hearing anything was 1.3 seconds, and most of it was
+        // waiting for the default buffer to fill from a server that delivers far faster than real time.
+        // The buffer still grows to its usual size once the music is going; only the start is earlier.
+        .setLoadControl(
+            DefaultLoadControl.Builder()
+                .setBufferDurationsMs(
+                    DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
+                    DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
+                    /* bufferForPlaybackMs = */ 1_000,
+                    /* bufferForPlaybackAfterRebufferMs = */ 2_000,
+                )
+                .build(),
+        )
         .build()
         .apply {
             addListener(object : Player.Listener {
@@ -99,9 +126,34 @@ class Media3PlaybackEngine(
                     if (isPlaying) startTicking()
                 }
 
+                /**
+                 * The same track starting over, because it was told to loop.
+                 *
+                 * This is the whole of repeat-one now: ExoPlayer carries on from the top without a gap
+                 * and without a request, and says so here. The count is how the rest of Spiceity learns
+                 * that a listen finished and another began.
+                 */
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) {
+                        mutableState.update { it.copy(loops = it.loops + 1, positionMs = 0) }
+                        android.util.Log.i(PLAYER_LOG_TAG, "Looped ${mediaItem?.mediaId} (round ${mutableState.value.loops})")
+                    }
+                }
+
                 override fun onPlayerError(error: PlaybackException) {
                     // The whole thing to the log, one line of it to the screen.
                     android.util.Log.w(PLAYER_LOG_TAG, "Playback failed: ${error.errorCodeName}", error)
+                    val track = mutableState.value.track
+                    val refused = error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+                    if (refused && track != null && refreshedFor != track.queueKey && downloadedFile(track) == null) {
+                        // The address, not the track: fetch a new one and pick up where this stopped.
+                        refreshedFor = track.queueKey
+                        val resumeAt = mutableState.value.positionMs
+                        android.util.Log.i(PLAYER_LOG_TAG, "Stream refused; fetching a fresh address and resuming at ${resumeAt}ms")
+                        backend.forgetAudio(track.sourceUrl)
+                        scope.launch { start(track, resumeAt) }
+                        return
+                    }
                     mutableState.update { it.copy(status = PlaybackStatus.ERROR, errorMessage = describePlayerError(error)) }
                 }
             })
@@ -114,12 +166,22 @@ class Media3PlaybackEngine(
      * than kept with the track. A downloaded copy short-circuits that entirely.
      */
     override suspend fun play(track: Track) {
+        refreshedFor = null
+        start(track, startAtMs = 0)
+    }
+
+    /**
+     * Resolves the audio and starts it at [startAtMs], which is zero for a fresh play and wherever the
+     * music stopped when a refused address is being replaced.
+     */
+    private suspend fun start(track: Track, startAtMs: Long) {
         mutableState.update { it.copy(
             status = PlaybackStatus.RESOLVING,
             track = track,
             errorMessage = null,
-            positionMs = 0,
+            positionMs = startAtMs,
             durationMs = track.durationMs ?: 0,
+            loops = 0,
         ) }
 
         val source = downloadedFile(track)?.toUri()?.toString()
@@ -142,7 +204,7 @@ class Media3PlaybackEngine(
         // played has to be a message in the player bar, never an exit.
         val started = withContext(Dispatchers.Main) {
             runCatching {
-                player.setMediaItem(mediaItemFor(track, source))
+                player.setMediaItem(mediaItemFor(track, source), startAtMs.coerceAtLeast(0))
                 player.prepare()
                 player.play()
             }
@@ -240,9 +302,9 @@ class Media3PlaybackEngine(
     private fun describePlayerError(error: PlaybackException): String = when (error.errorCode) {
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
         PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ->
-            "No internet connection. Check your connection and press play again."
+            networkProblem() ?: "No internet connection. Check your connection and press play again."
         PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
-            "The stream was refused. It may have expired -- press play to fetch it again."
+            "The service refused this track's stream twice. Try it again in a minute."
         PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND ->
             "The audio for this track has gone missing."
         else -> networkFailureMessage(error)
@@ -255,6 +317,17 @@ class Media3PlaybackEngine(
         player.stop()
         player.clearMediaItems()
         mutableState.value = PlaybackState(volume = mutableState.value.volume)
+    }
+
+    /**
+     * Repeat-one, done by ExoPlayer itself.
+     *
+     * It goes back to the start of the same item without a gap and without asking the network for the
+     * track again, and reports each time round through onMediaItemTransition. Repeat-all stays with the
+     * queue, which is why this is a switch and not a mode.
+     */
+    override suspend fun setLooping(enabled: Boolean) = withContext(Dispatchers.Main) {
+        player.repeatMode = if (enabled) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
 
     override fun close() {

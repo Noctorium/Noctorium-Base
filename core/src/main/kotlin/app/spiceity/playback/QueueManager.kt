@@ -33,6 +33,22 @@ data class QueueState(
 
     val hasPrevious: Boolean
         get() = tracks.isNotEmpty() && (currentIndex > 0 || repeatMode == RepeatMode.ALL)
+
+    /**
+     * The track that will play when this one ends, without moving to it.
+     *
+     * The same decision [QueueManager.next] makes for an automatic advance, said in advance so that its
+     * address can be fetched while there is still music playing. Null at the end of a queue that does
+     * not repeat.
+     */
+    val upcoming: Track?
+        get() = when {
+            tracks.isEmpty() -> null
+            repeatMode == RepeatMode.ONE -> current
+            currentIndex < tracks.lastIndex -> tracks[currentIndex + 1]
+            repeatMode == RepeatMode.ALL -> tracks.first()
+            else -> null
+        }
 }
 
 class QueueManager(private val random: Random = Random.Default) {

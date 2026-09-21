@@ -119,4 +119,28 @@ class QueueManagerTest {
         assertEquals("b", queue.state.value.current?.id)
         assertEquals(2, queue.state.value.currentIndex)
     }
+
+    @Test
+    fun `upcoming says what an automatic advance would play, without moving`() {
+        val queue = QueueManager()
+        queue.playQueue(
+            listOf(track("a"), track("b"), track("c")),
+            1,
+            PlaybackContext(ProviderType.YOUTUBE_MUSIC, PlaybackOrigin.HOME),
+        )
+        assertEquals("c", queue.state.value.upcoming?.id)
+        assertEquals("b", queue.state.value.current?.id, "peeking moved the queue")
+
+        queue.jumpTo(2)
+        assertNull(queue.state.value.upcoming, "a queue that does not repeat has nothing after its last track")
+
+        queue.cycleRepeat() // all
+        assertEquals("a", queue.state.value.upcoming?.id)
+
+        queue.cycleRepeat() // one
+        assertEquals("c", queue.state.value.upcoming?.id)
+
+        // Whatever it said, next() agrees.
+        assertEquals(queue.state.value.upcoming?.id, queue.next(respectRepeatOne = true)?.id)
+    }
 }

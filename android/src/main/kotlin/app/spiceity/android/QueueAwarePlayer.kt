@@ -2,6 +2,7 @@ package app.spiceity.android
 
 import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.Player
+import app.spiceity.playback.RepeatMode
 
 /**
  * The player as the lock screen, the notification and a headset see it.
@@ -25,7 +26,31 @@ class QueueAwarePlayer(
     private val goPrevious: () -> Unit,
     private val canGoNext: () -> Boolean,
     private val canGoPrevious: () -> Boolean,
+    /** The queue's repeat mode, which is the truth; the bare player only knows whether it is looping. */
+    private val repeatMode: () -> RepeatMode = { RepeatMode.OFF },
+    private val setRepeat: (RepeatMode) -> Unit = {},
 ) : ForwardingPlayer(player) {
+
+    /**
+     * Repeat as the queue has it, not as ExoPlayer has it.
+     *
+     * ExoPlayer is told to loop only for repeat-one; repeat-all is the queue's business, and reporting
+     * the player's own setting would tell a car's head unit that repeat was off while the queue went
+     * round. Setting it from outside goes to the queue for the same reason.
+     */
+    override fun getRepeatMode(): Int = when (repeatMode()) {
+        RepeatMode.OFF -> Player.REPEAT_MODE_OFF
+        RepeatMode.ALL -> Player.REPEAT_MODE_ALL
+        RepeatMode.ONE -> Player.REPEAT_MODE_ONE
+    }
+
+    override fun setRepeatMode(repeatMode: Int) = setRepeat(
+        when (repeatMode) {
+            Player.REPEAT_MODE_ONE -> RepeatMode.ONE
+            Player.REPEAT_MODE_ALL -> RepeatMode.ALL
+            else -> RepeatMode.OFF
+        },
+    )
 
     /**
      * What Android is allowed to ask for.

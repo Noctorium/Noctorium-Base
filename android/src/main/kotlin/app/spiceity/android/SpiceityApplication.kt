@@ -66,9 +66,16 @@ class SpiceityApplication : Application() {
                     null
                 }
             },
+            // What the phone knows about its connection when a lookup fails: more than the resolver does.
+            networkProblem = { describeNetworkProblem() },
         )
         val downloads = DownloadManager(backend)
-        player = Media3PlaybackEngine(this, backend, downloadedFile = downloads::localFile)
+        player = Media3PlaybackEngine(
+            this,
+            backend,
+            downloadedFile = downloads::localFile,
+            networkProblem = { describeNetworkProblem() },
+        )
 
         state = AppState(
             ytDlp = backend,

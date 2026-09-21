@@ -37,4 +37,24 @@ interface SystemBridge {
      * saved. A phone answers with its shared music directory.
      */
     fun defaultExportFolder(): Path?
+
+    /**
+     * What is wrong with the network right now, in a sentence for the listener, or null when the platform
+     * cannot tell.
+     *
+     * Asked only after something has already failed for a network reason, to say it more precisely than
+     * "no internet": a phone knows whether it has no connection at all, a Wi-Fi that leads nowhere, or a
+     * perfectly good connection that this app in particular has been cut off from. The desktop has no
+     * such view and leaves it null.
+     */
+    fun describeNetworkProblem(): String? = null
+
+    /**
+     * Whether the connection in use is one somebody pays for by the megabyte.
+     *
+     * Consulted before doing network work nobody asked for, such as looking up a track's address in case
+     * it is played. A desktop on a wire says no; a phone answers from what Android knows about the
+     * network, hotspots and metered Wi-Fi included.
+     */
+    fun isConnectionMetered(): Boolean = false
 }

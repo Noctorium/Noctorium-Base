@@ -56,6 +56,25 @@ interface MusicBackend {
     /** An address the player can actually read audio from. Not durable — these expire. */
     suspend fun resolveAudio(sourceUrl: String): String
 
+    /**
+     * Looks the address up now so that asking for it later costs nothing.
+     *
+     * Called for whatever the queue has lined up next while the current track plays, which is what makes
+     * the step from one track to the next immediate rather than a wait. Failures are not reported: the
+     * real ask, when it comes, will fail in its own words.
+     */
+    suspend fun prefetchAudio(sourceUrl: String) {
+        runCatching { resolveAudio(sourceUrl) }
+    }
+
+    /**
+     * Drops whatever this backend remembered about a source's address.
+     *
+     * The player calls it when a service refused an address it had been given -- most often one bound to
+     * a network the device has since left -- so that the next [resolveAudio] goes back to the service.
+     */
+    fun forgetAudio(sourceUrl: String) {}
+
     /** SoundCloud's own API answers by numeric id; its pages are addressed by profile name. */
     suspend fun resolveSoundCloudPermalink(userId: String): String?
 

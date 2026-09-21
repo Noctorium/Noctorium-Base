@@ -10,6 +10,7 @@ import app.spiceity.domain.Artist
 import app.spiceity.domain.Playlist
 import app.spiceity.domain.ProviderType
 import app.spiceity.domain.Track
+import app.spiceity.net.retryingTransientFailures
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
@@ -73,7 +74,7 @@ class YtDlpService(
         arguments += accountArguments(provider)
         if (provider == ProviderType.YOUTUBE_MUSIC) arguments += listOf("--playlist-end", limit.toString())
         arguments += target
-        val output = run(*arguments.toTypedArray())
+        val output = retryingTransientFailures { run(*arguments.toTypedArray()) }
         val root = json.parseToJsonElement(output).jsonObject
         root["entries"]?.jsonArray.orEmpty().mapNotNull { mapTrack(provider, it.jsonObject) }
     }
@@ -153,17 +154,37 @@ class YtDlpService(
             )
         }
 
-    override suspend fun resolveAudio(sourceUrl: String): String = withContext(Dispatchers.IO) {
+    /**
+     * Addresses already found, so a track played twice -- or lined up next -- is not resolved twice.
+     *
+     * A yt-dlp run is a Python interpreter starting, a page being fetched and a signature being solved:
+     * two to three seconds every time, and the whole of the wait after pressing play. Remembering the
+     * answer for half an hour turns the second press, the previous button and the queue advancing into
+     * something that starts at once.
+     */
+    private val addresses = AudioAddressCache()
+
+    override suspend fun resolveAudio(sourceUrl: String): String {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
         }
+        return addresses.resolve(sourceUrl) {
+            // A lookup that fails the instant a laptop changes Wi-Fi is asked once more before anyone is
+            // told about it. See retryingTransientFailures for why only quick failures are retried.
+            retryingTransientFailures { withContext(Dispatchers.IO) { fetchAudioAddress(sourceUrl) } }
+        }
+    }
+
+    override fun forgetAudio(sourceUrl: String) = addresses.forget(sourceUrl)
+
+    private fun fetchAudioAddress(sourceUrl: String): String {
         val provider = when {
             "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
             "youtube.com" in sourceUrl || "youtu.be" in sourceUrl -> ProviderType.YOUTUBE_VIDEO
             "soundcloud.com" in sourceUrl -> ProviderType.SOUNDCLOUD
             else -> null
         }
-        run(
+        return run(
             "--format", "bestaudio/best",
             "--get-url",
             "--no-playlist",
@@ -192,18 +213,20 @@ class YtDlpService(
 
     override suspend fun enrichMetadata(track: Track): Track = withContext(Dispatchers.IO) {
         if (!track.hasPlaceholderArtist()) return@withContext track
-        val output = run(
-            "--dump-single-json",
-            "--skip-download",
-            "--no-warnings",
-            "--no-playlist",
-            // A player-level request, so it is refused for exactly the same reason a stream is: see
-            // [playbackArguments]. With cookies attached this silently failed and left every YouTube
-            // Music track showing its provider name where the artist belongs.
-            *playbackArguments(track.provider).toTypedArray(),
-            "--",
-            track.sourceUrl,
-        )
+        val output = retryingTransientFailures {
+            run(
+                "--dump-single-json",
+                "--skip-download",
+                "--no-warnings",
+                "--no-playlist",
+                // A player-level request, so it is refused for exactly the same reason a stream is: see
+                // [playbackArguments]. With cookies attached this silently failed and left every YouTube
+                // Music track showing its provider name where the artist belongs.
+                *playbackArguments(track.provider).toTypedArray(),
+                "--",
+                track.sourceUrl,
+            )
+        }
         mapEnrichedTrack(track, json.parseToJsonElement(output).jsonObject)
     }
 

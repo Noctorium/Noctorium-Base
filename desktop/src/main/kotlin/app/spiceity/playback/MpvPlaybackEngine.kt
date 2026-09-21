@@ -103,6 +103,14 @@ class MpvPlaybackEngine(
     private var volumeBeforeBoost = mutableState.value.volume
 
     /**
+     * Whether mpv is to start the file over when it reaches the end, instead of exiting.
+     *
+     * Kept here as well as told to the running player, because the next track starts a new mpv and it
+     * has to be started looping too.
+     */
+    @Volatile private var looping = false
+
+    /**
      * Kills the player if the application goes without having been closed properly.
      *
      * mpv is a separate program, not part of this process, and on Windows a child outlives its parent.
@@ -151,6 +159,7 @@ class MpvPlaybackEngine(
             errorMessage = null,
             positionMs = 0,
             durationMs = track.durationMs ?: 0,
+            loops = 0,
         ) }
         // Logged on the way in as well as the way out, so that next time the difference between "never
         // started" and "started and vanished" is a fact rather than a deduction.
@@ -191,6 +200,9 @@ class MpvPlaybackEngine(
                         add("--volume-max=${(BOOSTED_MAX_VOLUME * 100).toInt()}")
                         add("--volume=${(mutableState.value.volume * 100).toInt()}")
                         add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
+                        // Repeat-one, done by the player: it seeks back to the start out of its own
+                        // cache instead of exiting, so there is no gap and nothing is fetched again.
+                        if (looping) add("--loop-file=inf")
                         add("--title=Spiceity")
                         add("--")
                         add(mediaUrl)
@@ -343,6 +355,23 @@ class MpvPlaybackEngine(
     }
 
     /**
+     * Loops the file that is playing, and every file after it, until told otherwise.
+     *
+     * Set on the running player at once, so pressing repeat-one halfway through a song takes effect on
+     * this song and not the next. A player that has gone away is not an error here: the flag is kept and
+     * the next one is started with it.
+     */
+    override suspend fun setLooping(enabled: Boolean) {
+        looping = enabled
+        if (process?.isAlive != true) return
+        runCatching {
+            sendCommand("set_property", JsonPrimitive("loop-file"), JsonPrimitive(if (enabled) "inf" else "no"))
+        }.onFailure { error ->
+            PlaybackLog.event("loop_failed", mapOf("enabled" to enabled, "message" to (error.message ?: "unknown")))
+        }
+    }
+
+    /**
      * Somewhere for mpv to write, one file per attempt, cleaned up with the player.
      *
      * Null if it cannot be made, in which case mpv is simply started without one -- losing the
@@ -429,6 +458,12 @@ class MpvPlaybackEngine(
                         durationAttempts++
                         measuredDurationMs()
                     }
+                    // Where mpv really is, asked only when the clock says the track should have ended.
+                    // A looping player is back near the start by then, and the position has to follow it
+                    // rather than sit at the end; the wrap is also the one moment a repeat can be counted.
+                    val atEnd = looping && current.durationMs > 0 &&
+                        current.positionMs + elapsedMs >= current.durationMs
+                    val actual = if (atEnd) measuredPositionMs() else null
                     mutableState.update { latest ->
                         if (latest.status != PlaybackStatus.PLAYING) return@update latest
                         val duration = when {
@@ -439,9 +474,16 @@ class MpvPlaybackEngine(
                             else -> 0L
                         }
                         val next = latest.positionMs + elapsedMs
+                        val wrapped = actual != null && duration > 0 && actual < duration / 2
                         latest.copy(
                             durationMs = duration,
-                            positionMs = if (duration > 0) next.coerceAtMost(duration) else next,
+                            positionMs = when {
+                                wrapped -> actual!!
+                                actual != null -> actual.coerceAtMost(duration)
+                                duration > 0 -> next.coerceAtMost(duration)
+                                else -> next
+                            },
+                            loops = if (wrapped) latest.loops + 1 else latest.loops,
                         )
                     }
                 }
@@ -460,6 +502,12 @@ class MpvPlaybackEngine(
             ?.takeIf { it.isFinite() && it > 0 }
             ?.let { (it * 1_000).toLong() }
             ?: 0L
+
+    /** Where mpv says it is in the file, or null if it cannot be asked right now. */
+    private suspend fun measuredPositionMs(): Long? =
+        runCatching { getNumberProperty("time-pos") }.getOrNull()
+            ?.takeIf { it.isFinite() && it >= 0 }
+            ?.let { (it * 1_000).toLong() }
 
     private fun createIpcEndpoint(): String {
         val name = "spiceity-mpv-${UUID.randomUUID()}"

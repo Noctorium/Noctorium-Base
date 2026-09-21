@@ -203,9 +203,12 @@ class ScrobbleManager internal constructor(
             playback.collect { current ->
                 val tick = nanoTime()
                 val track = current.track
+                // A track looping round is playing it again, which it is. Repeat-one used to reload the
+                // track and arrive here as a fresh RESOLVING; now the player loops in place and counts.
                 val newPlayback = track != null && (
                     activeKey != track.queueKey ||
-                        (current.status == PlaybackStatus.RESOLVING && previous.status != PlaybackStatus.RESOLVING)
+                        (current.status == PlaybackStatus.RESOLVING && previous.status != PlaybackStatus.RESOLVING) ||
+                        current.loops != previous.loops
                     )
                 if (newPlayback) {
                     activeKey = track?.queueKey

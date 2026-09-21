@@ -61,4 +61,9 @@ class AndroidBridge(private val context: Context) : SystemBridge {
             ?.apply { mkdirs() }
             ?.toPath()
     }.getOrNull()
+
+    /** What Android knows about the connection that the resolver does not. See [describeNetworkProblem]. */
+    override fun describeNetworkProblem(): String? = runCatching { context.describeNetworkProblem() }.getOrNull()
+
+    override fun isConnectionMetered(): Boolean = context.isOnMeteredConnection()
 }

@@ -70,6 +70,7 @@ import app.spiceity.connect.DeviceKind
 import app.spiceity.connect.NetworkPresence
 import app.spiceity.connect.PlaybackSnapshot
 import app.spiceity.connect.toWire
+import app.spiceity.net.networkFailureMessage
 import app.spiceity.net.readableFailure
 import app.spiceity.playback.SleepTimer
 import app.spiceity.playback.SleepTimerState
@@ -91,6 +92,7 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import java.net.URI
@@ -438,6 +440,9 @@ class AppState(
         }
         refreshHome()
         observeTrackCompletion()
+        observeLooping()
+        observeUpcoming()
+        warmUpForTheLikeliestPlay()
         observeDiscordPresence()
         restoreSpiceityAccount()
         // Started from the stored key rather than waiting for the service to confirm it. Connect is
@@ -1849,7 +1854,7 @@ class AppState(
             val results = homeProviders.map { provider -> async { runCatching { provider.getHome() } } }.awaitAll()
             val discovery = results.flatMap { it.getOrDefault(emptyList()) }
             val sections = personal.await() + discovery
-            val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.let(::readableFailure) } else null
+            val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.let(::explainFailure) } else null
             mutableUi.update { it.copy(homeSections = sections, homeLoading = false, errorMessage = error) }
         }
     }
@@ -1957,7 +1962,7 @@ class AppState(
                 it.copy(
                     searchLoading = false,
                     errorMessage = if (results.all { result -> result.tracks.isEmpty() })
-                        attempts.firstNotNullOfOrNull { attempt -> attempt.exceptionOrNull()?.let(::readableFailure) }
+                        attempts.firstNotNullOfOrNull { attempt -> attempt.exceptionOrNull()?.let(::explainFailure) }
                     else null,
                     searchResults = SearchResults(
                         tracks = interleave(results.map(SearchResults::tracks)),
@@ -2032,10 +2037,116 @@ class AppState(
                     // the queue is left where it is rather than moved on for nobody.
                     if (!sleeper.trackEnded()) queue.next(respectRepeatOne = true)?.let { playEnriched(it) }
                 }
+                // The player went round again on its own. That is a whole listen, counted as one; and
+                // if a sleep timer was waiting for the end of the track, this was it. Looping is switched
+                // off while such a timer is set, so this second part is belt and braces.
+                val looped = current.track != null &&
+                    current.track?.queueKey == previous.track?.queueKey &&
+                    current.loops > previous.loops
+                if (looped) {
+                    val heard = if (previous.durationMs > 0) previous.durationMs else previous.positionMs
+                    previous.track?.let { recordListen(it, heard, previous.durationMs) }
+                    if (sleeper.trackEnded()) playbackEngine.pause()
+                }
                 previous = current
             }
         }
     }
+
+    /**
+     * Tells the player to loop exactly when repeat-one is on and nothing is waiting for the track to end.
+     *
+     * A sleep timer set to "end of track" needs the track to actually end, so looping is lifted for as
+     * long as one is set and put back when it is cancelled or goes off. The engine is told on every change
+     * rather than once, because it forgets nothing but a new track starts from whatever it was last told.
+     */
+    private fun observeLooping() {
+        scope.launch {
+            combine(queue.state, sleeper.state) { queued, timer ->
+                queued.repeatMode == RepeatMode.ONE && timer != SleepTimerState.EndOfTrack
+            }.distinctUntilChanged().collect { looping ->
+                runCatching { playbackEngine.setLooping(looping) }
+            }
+        }
+    }
+
+    /**
+     * Fetches the address of whatever is coming next while the current track is still playing.
+     *
+     * Finding where a track's audio is was the whole of the wait between one track and the next -- and
+     * the whole of the wait after pressing next. Done a few seconds into the current track, once its own
+     * buffering has had the connection to itself, the answer is sitting in the backend when the queue asks
+     * for it. Re-run whenever the upcoming track changes: a track slipped in with "play next", shuffle
+     * switched on, repeat switched off at the last song.
+     */
+    private fun observeUpcoming() {
+        scope.launch {
+            combine(playback, queue.state) { playing, queued ->
+                val settled = playing.status == PlaybackStatus.PLAYING || playing.status == PlaybackStatus.PAUSED
+                queued.upcoming?.takeIf { settled && it.queueKey != playing.track?.queueKey }
+            }.distinctUntilChanged { old, new -> old?.queueKey == new?.queueKey }.collect { upcoming ->
+                prefetchJob?.cancel()
+                prefetchJob = upcoming?.let { track ->
+                    launch {
+                        delay(PREFETCH_AFTER_MS)
+                        prefetch(track)
+                    }
+                }
+            }
+        }
+    }
+
+    private var prefetchJob: Job? = null
+
+    /**
+     * Looks up the track played last, shortly after launch, when the connection is not paid for by the
+     * megabyte.
+     *
+     * Two things are bought with one request. The track at the front of "Where you left off" is the
+     * likeliest first tap, and it then starts at once. And on the phone the first look at any YouTube page
+     * after a cold start is nearly two seconds slower than every one after it -- the player's own
+     * JavaScript has to be fetched and read before a single address can be worked out -- so whichever
+     * track is tapped first is faster for this having run. On mobile data that megabyte or two is not
+     * spent on a guess.
+     */
+    private fun warmUpForTheLikeliestPlay() {
+        scope.launch {
+            delay(WARM_UP_AFTER_MS)
+            if (system.isConnectionMetered()) return@launch
+            val likeliest = mutableUi.value.recentTracks.firstOrNull() ?: return@launch
+            if (likeliest.provider == ProviderType.SPOTIFY) return@launch
+            prefetch(likeliest)
+        }
+    }
+
+    /** The address for [track], looked up now and remembered by the backend. Quiet about failure. */
+    private suspend fun prefetch(track: Track) {
+        // A downloaded track needs no address, and a Spotify track needs matching first -- which is done
+        // here too, since the match is remembered and is the slower half of playing one.
+        if (downloads.localFile(track) != null) return
+        val playable = if (track.provider == ProviderType.SPOTIFY) {
+            runCatching { resolveSpotify(track) }.getOrNull() ?: return
+        } else {
+            track
+        }
+        if (playable.sourceUrl.isBlank()) return
+        PlaybackLog.event("prefetch", mapOf("track" to playable.queueKey))
+        ytDlp.prefetchAudio(playable.sourceUrl)
+    }
+
+    /**
+     * A failure worded for the listener, with the platform's view of the network when it has one.
+     *
+     * The generic wording says "no internet" for every failed lookup. A phone can often say more -- that
+     * it has no connection, that its Wi-Fi leads nowhere, or that this app in particular has been cut off
+     * while everything else is online -- and that last one is the case somebody cannot work out alone.
+     */
+    private fun explainFailure(error: Throwable): String =
+        if (networkFailureMessage(error) != null) {
+            system.describeNetworkProblem() ?: readableFailure(error)
+        } else {
+            readableFailure(error)
+        }
 
 
     // --- Spiceity account, and the listening it counts ---
@@ -2554,6 +2665,16 @@ private fun formatCheckTime(epochSeconds: Long): String = runCatching {
  * covers appear in batches down the list instead of all at once at the end.
  */
 private const val ARTWORK_SLICE = 10
+
+/**
+ * How long into a track the next one's address is fetched. Long enough for the current track to have
+ * buffered with the connection to itself; short enough that a listener who skips after the first chorus
+ * still finds the answer waiting.
+ */
+private const val PREFETCH_AFTER_MS = 4_000L
+
+/** How long after launch the last-played track is looked up, once the screens have had the network first. */
+private const val WARM_UP_AFTER_MS = 2_500L
 
 /** The exception and its cause, since the outer message is often the less useful of the two. */
 private fun describeFailure(error: Throwable): String =

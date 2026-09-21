@@ -154,4 +154,64 @@ class RealPlaybackTest {
             runBlocking { engine.stop() }
         }
     }
+
+    /**
+     * Repeat-one, done inside mpv.
+     *
+     * A two-second file, told to loop, has to come round at least twice in nine seconds without the
+     * process being restarted -- the whole point is that nothing is reloaded -- and each time round has to
+     * be counted, because a listen is scrobbled on it. Then, with looping switched off on the running
+     * player, the file is allowed to end and the state goes idle the way a track normally finishes.
+     *
+     * A generated file rather than a stream, so the test is about the player and not about the network,
+     * and so it is over in seconds.
+     */
+    @Test
+    fun `repeat-one goes round inside mpv and is counted each time, with nothing reloaded`() {
+        if (!enabled) return
+        val wav = shortWav(seconds = 2)
+        val local = track.copy(id = "loop-probe", durationMs = 2_000)
+        val engine = MpvPlaybackEngine(YtDlpService(), downloadedFile = { wav })
+        try {
+            runBlocking {
+                engine.setLooping(true)
+                engine.play(local)
+                assertEquals(PlaybackStatus.PLAYING, engine.state.value.status, engine.state.value.errorMessage)
+
+                val deadline = System.currentTimeMillis() + 9_000
+                while (engine.state.value.loops < 2 && System.currentTimeMillis() < deadline) delay(100)
+                val looped = engine.state.value
+                assertTrue(
+                    looped.loops >= 2,
+                    "went round ${looped.loops} times in nine seconds; status ${looped.status}, ${looped.errorMessage}",
+                )
+                assertEquals(PlaybackStatus.PLAYING, looped.status, "looping was reported as the track ending")
+                assertTrue(looped.positionMs < 2_000, "the position sat at the end instead of following the loop")
+
+                engine.setLooping(false)
+                val end = System.currentTimeMillis() + 6_000
+                while (engine.state.value.status == PlaybackStatus.PLAYING && System.currentTimeMillis() < end) delay(100)
+                assertEquals(PlaybackStatus.IDLE, engine.state.value.status, "with looping off the file did not end")
+            }
+        } finally {
+            runBlocking { engine.stop() }
+            java.nio.file.Files.deleteIfExists(wav)
+        }
+    }
+
+    /** A mono 16-bit sine tone of the given length, written as a WAV file mpv can play. */
+    private fun shortWav(seconds: Int): java.nio.file.Path {
+        val rate = 22_050
+        val samples = rate * seconds
+        val data = java.nio.ByteBuffer.allocate(44 + samples * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        data.put("RIFF".toByteArray()).putInt(36 + samples * 2).put("WAVE".toByteArray())
+        data.put("fmt ".toByteArray()).putInt(16).putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+        data.put("data".toByteArray()).putInt(samples * 2)
+        for (i in 0 until samples) {
+            data.putShort((Math.sin(2 * Math.PI * 440 * i / rate) * 3_000).toInt().toShort())
+        }
+        val file = java.nio.file.Files.createTempFile("spiceity-loop", ".wav")
+        java.nio.file.Files.write(file, data.array())
+        return file
+    }
 }

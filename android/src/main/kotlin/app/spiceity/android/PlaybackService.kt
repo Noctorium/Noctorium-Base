@@ -32,6 +32,8 @@ class PlaybackService : MediaSessionService() {
             goPrevious = state::previous,
             canGoNext = { state.queue.state.value.hasNext },
             canGoPrevious = { state.queue.state.value.hasPrevious },
+            repeatMode = { state.queue.state.value.repeatMode },
+            setRepeat = state.queue::setRepeat,
         )
         session = MediaSession.Builder(this, player).build()
     }
