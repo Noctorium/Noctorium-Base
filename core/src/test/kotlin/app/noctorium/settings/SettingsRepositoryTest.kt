@@ -17,7 +17,9 @@ class SettingsRepositoryTest {
                 progressBarStyle = ProgressBarStyle.MATERIAL,
                 playerBarStyle = PlayerBarStyle.STACKED,
                 accent = AccentPreset.ARTWORK,
-                backgroundDepth = BackgroundDepth.DARK,
+                // The theme, not backgroundDepth: a saved "Soft dark" is migrated into the Dusk theme on
+                // load, deliberately, so it would not survive a reload unchanged. See ThemesTest for that.
+                theme = ThemePreset.NOCTORIUM_DUSK,
                 cardSize = CardSize.LARGE,
                 badgePolicy = BadgePolicy.NEVER,
                 hoverControls = HoverControls.ALWAYS,

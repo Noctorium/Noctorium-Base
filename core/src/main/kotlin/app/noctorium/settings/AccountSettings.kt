@@ -87,9 +87,15 @@ data class AccountConnectionState(
     val hint: String? = null,
 )
 
-/** Accent the whole interface is built from. ARTWORK has no fixed colour — it follows the cover art. */
+/**
+ * Accent the whole interface is built from.
+ *
+ * THEME has no colour of its own: it is whatever the chosen theme's accent is, which is what most people
+ * want once they have picked a theme. ARTWORK follows the cover art. The named ones override the theme.
+ */
 @Serializable
 enum class AccentPreset(val displayName: String, val argb: Long?) {
+    THEME("Theme's own", null),
     VIOLET("Violet", 0xFFB47CFF),
     MAGENTA("Magenta", 0xFFFF6EC7),
     EMBER("Ember", 0xFFFF9757),
@@ -183,7 +189,16 @@ data class NoctoriumPreferences(
     val progressBarStyle: ProgressBarStyle = ProgressBarStyle.MINIMAL,
     val playerBarStyle: PlayerBarStyle = PlayerBarStyle.INLINE,
     val playerBarPosition: PlayerBarPosition = PlayerBarPosition.BOTTOM,
-    val accent: AccentPreset = AccentPreset.VIOLET,
+    val accent: AccentPreset = AccentPreset.THEME,
+    /**
+     * The theme, and the colours for it when the theme is the listener's own.
+     *
+     * The theme took over from backgroundDepth, which chose between two blacks. A saved "Soft dark" is
+     * carried across into the Dusk theme once, in [migrated]; the field itself stays so an older build
+     * reading the same file still finds it.
+     */
+    val theme: ThemePreset = ThemePreset.NOCTORIUM_NIGHT,
+    val customTheme: ThemeColours = ThemePreset.NOCTORIUM_NIGHT.colours!!,
     val backgroundDepth: BackgroundDepth = BackgroundDepth.AMOLED,
     val cardSize: CardSize = CardSize.COMFORTABLE,
     val badgePolicy: BadgePolicy = BadgePolicy.AUTO,
@@ -267,6 +282,11 @@ data class NoctoriumPreferences(
         // The phone-only length moves up to be shared with the desktop. Only carried across when it
         // was actually changed, so a default never overwrites a choice made since.
         sleepTimerMinutes = if (sleepTimerMinutes == 30 && phone.sleepTimerMinutes != 30) phone.sleepTimerMinutes else sleepTimerMinutes,
+        // "Soft dark" was the one alternative to pure black before there were themes; it is the Dusk
+        // theme now. Carried across once, and the old field put back to its default so it cannot carry
+        // again after the listener has chosen something else.
+        theme = if (theme == ThemePreset.NOCTORIUM_NIGHT && backgroundDepth == BackgroundDepth.DARK) ThemePreset.NOCTORIUM_DUSK else theme,
+        backgroundDepth = BackgroundDepth.AMOLED,
     )
 
     /** Follows a saved cookie jar into the folder's new name, so a rename does not read as a sign-out. */

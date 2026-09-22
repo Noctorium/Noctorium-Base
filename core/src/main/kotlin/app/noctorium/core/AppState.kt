@@ -583,6 +583,24 @@ class AppState(
         updatePreferences { copy(playerBarPosition = position) }
     fun setAccent(accent: AccentPreset) = updatePreferences { copy(accent = accent) }
     fun setBackgroundDepth(depth: BackgroundDepth) = updatePreferences { copy(backgroundDepth = depth) }
+
+    /**
+     * Chooses a theme. A named accent chosen for the old theme is let go of at the same time, because a
+     * theme arrives with its own and Gruvbox under a violet accent is nobody's intention; "Match the
+     * artwork" is a wish about the artwork rather than about the theme, and is kept.
+     */
+    fun setTheme(theme: ThemePreset) = updatePreferences {
+        copy(
+            theme = theme,
+            accent = if (accent == AccentPreset.ARTWORK) accent else AccentPreset.THEME,
+            backgroundDepth = BackgroundDepth.AMOLED,
+        )
+    }
+
+    /** Writes the listener's own colours and switches to them. */
+    fun setCustomTheme(colours: ThemeColours) = updatePreferences {
+        copy(theme = ThemePreset.CUSTOM, customTheme = colours, accent = if (accent == AccentPreset.ARTWORK) accent else AccentPreset.THEME)
+    }
     fun setCardSize(size: CardSize) = updatePreferences { copy(cardSize = size) }
     fun setBadgePolicy(policy: BadgePolicy) = updatePreferences { copy(badgePolicy = policy) }
     fun setHoverControls(controls: HoverControls) = updatePreferences { copy(hoverControls = controls) }
