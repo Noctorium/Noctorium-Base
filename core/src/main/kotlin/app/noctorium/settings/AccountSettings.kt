@@ -190,6 +190,14 @@ data class NoctoriumPreferences(
     val hoverControls: HoverControls = HoverControls.ON_HOVER,
     val timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
     val ambientBackdrop: Boolean = true,
+    /**
+     * Whether a YouTube video jumps past the parts SponsorBlock's contributors have marked as not the
+     * music: the intro, the outro, the sponsor read, the minute of talking before the song. YouTube Music
+     * tracks have none of these and are never touched.
+     */
+    val skipNonMusic: Boolean = true,
+    /** Whether the player bar shows the line being sung in place of the artist, while the lyrics are timed. */
+    val lyricsInPlayerBar: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
     /**
      * How long the sleep timer ran last time, in minutes.

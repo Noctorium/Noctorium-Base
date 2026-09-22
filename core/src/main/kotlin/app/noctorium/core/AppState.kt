@@ -29,7 +29,16 @@ import app.noctorium.playlists.LocalPlaylist
 import app.noctorium.playlists.LocalPlaylistRepository
 import app.noctorium.playlists.PlaylistShareLink
 import app.noctorium.playlists.RecentTracksRepository
+import app.noctorium.playlists.PinnedTracksRepository
+import app.noctorium.playlists.isPinned
+import app.noctorium.playlists.togglePinned
 import app.noctorium.playlists.recentWith
+import app.noctorium.library.TrackEdit
+import app.noctorium.library.TrackEditsRepository
+import app.noctorium.library.edited
+import app.noctorium.library.withEdit
+import app.noctorium.playback.SegmentSkipper
+import app.noctorium.playback.SponsorBlockClient
 import app.noctorium.playlists.shareableText
 import app.noctorium.providers.MusicProvider
 import app.noctorium.providers.BackendMusicProvider
@@ -214,6 +223,10 @@ internal fun likeKey(track: Track): String = when (track.provider) {
 data class AppUiState(
     val destination: Destination = Destination.HOME,
     val recentTracks: List<Track> = emptyList(),
+    /** What the listener pinned to the top of Home, in their order. Shown before everything suggested. */
+    val pinnedTracks: List<Track> = emptyList(),
+    /** The listener's corrections to titles and artists, by queue key. Already applied to every list here. */
+    val trackEdits: Map<String, TrackEdit> = emptyMap(),
     val providerFilter: ProviderFilter = ProviderFilter.ALL,
     val homeSections: List<HomeSection> = emptyList(),
     val homeLoading: Boolean = true,
@@ -253,6 +266,10 @@ class AppState(
     private val accountProbe: SessionProbe = UncheckedSession,
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
     private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
+    private val pinnedRepository: PinnedTracksRepository = PinnedTracksRepository(),
+    private val editsRepository: TrackEditsRepository = TrackEditsRepository(),
+    /** Where the parts of a YouTube video that are not the music are looked up. */
+    private val sponsorBlock: SponsorBlockClient = SponsorBlockClient(),
     private val likeClient: SoundCloudLikeClient = SoundCloudLikeClient(),
     // Declared after the store it reads from: a default may only refer to a parameter before it.
     private val scrobbleManager: ScrobbleManager = ScrobbleManager(credentials),
@@ -298,11 +315,28 @@ class AppState(
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val storedPreferences = settingsRepository.load()
+
+    /**
+     * The lists Home and Search are built from, as the services gave them.
+     *
+     * What the interface sees is these with the listener's edits laid over them. Keeping the originals
+     * is what lets an edit be taken back: with only the edited copies, clearing a title would have nothing
+     * to fall back to but the edited title itself.
+     */
+    private var rawRecent: List<Track> = recentRepository.load()
+    private var rawPinned: List<Track> = pinnedRepository.load()
+    private var rawHomeSections: List<HomeSection> = emptyList()
+    private var rawSearchTracks: List<Track> = emptyList()
+
     private val mutableUi = MutableStateFlow(
-        AppUiState(
-            destination = storedPreferences.startPage.destination(),
-            recentTracks = recentRepository.load(),
-        ),
+        editsRepository.load().let { edits ->
+            AppUiState(
+                destination = storedPreferences.startPage.destination(),
+                recentTracks = rawRecent.edited(edits),
+                pinnedTracks = rawPinned.edited(edits),
+                trackEdits = edits,
+            )
+        },
     )
     val ui: StateFlow<AppUiState> = mutableUi.asStateFlow()
     val queue = QueueManager()
@@ -442,6 +476,7 @@ class AppState(
         observeTrackCompletion()
         observeLooping()
         observeUpcoming()
+        observeNonMusicSegments()
         warmUpForTheLikeliestPlay()
         observeDiscordPresence()
         restoreNoctoriumAccount()
@@ -1855,7 +1890,103 @@ class AppState(
             val discovery = results.flatMap { it.getOrDefault(emptyList()) }
             val sections = personal.await() + discovery
             val error = if (sections.isEmpty()) results.firstNotNullOfOrNull { it.exceptionOrNull()?.let(::explainFailure) } else null
-            mutableUi.update { it.copy(homeSections = sections, homeLoading = false, errorMessage = error) }
+            rawHomeSections = sections
+            mutableUi.update { it.copy(homeSections = sections.map { section -> section.edited(it.trackEdits) }, homeLoading = false, errorMessage = error) }
+        }
+    }
+
+    // --- Pinned to Home, and the listener's own titles ---
+
+    /** Pins [track] to the top of Home, or takes it off again. */
+    fun togglePin(track: Track) {
+        rawPinned = togglePinned(rawPinned, track)
+        val pinned = rawPinned
+        mutableUi.update { it.copy(pinnedTracks = pinned.edited(it.trackEdits)) }
+        scope.launch(Dispatchers.IO) { runCatching { pinnedRepository.save(pinned) } }
+    }
+
+    fun isPinned(track: Track): Boolean = rawPinned.isPinned(track)
+
+    /**
+     * Writes down what [track] is really called. Blank fields keep the service's own; both blank forgets
+     * the edit. Every list on screen, the queue and whatever is playing pick the change up at once, and
+     * the next scrobble and listen are counted under the corrected name.
+     */
+    fun editTrack(track: Track, title: String?, artist: String?) {
+        val edits = mutableUi.value.trackEdits.withEdit(track, TrackEdit(title, artist))
+        val shown = track.edited(edits).let { edited ->
+            // A cleared edit has to show the service's own words again, which the edited copy the caller
+            // holds no longer has. The raw lists still do.
+            if (edits[track.queueKey] == null) rawTrack(track.queueKey) ?: edited else edited
+        }
+        mutableUi.update {
+            it.copy(
+                trackEdits = edits,
+                recentTracks = rawRecent.edited(edits),
+                pinnedTracks = rawPinned.edited(edits),
+                homeSections = rawHomeSections.map { section -> section.edited(edits) },
+                searchResults = it.searchResults.copy(tracks = rawSearchTracks.edited(edits)),
+            )
+        }
+        queue.replace(track.queueKey, shown)
+        scope.launch(Dispatchers.IO) { runCatching { editsRepository.save(edits) } }
+    }
+
+    fun clearTrackEdit(track: Track) = editTrack(track, null, null)
+
+    /** The service's own version of a track that is on screen somewhere, for undoing an edit. */
+    private fun rawTrack(queueKey: String): Track? =
+        rawRecent.firstOrNull { it.queueKey == queueKey }
+            ?: rawPinned.firstOrNull { it.queueKey == queueKey }
+            ?: rawSearchTracks.firstOrNull { it.queueKey == queueKey }
+            ?: rawHomeSections.asSequence().flatMap { it.tracks }.firstOrNull { it.queueKey == queueKey }
+
+    fun setSkipNonMusic(enabled: Boolean) = updatePreferences { copy(skipNonMusic = enabled) }
+    fun setLyricsInPlayerBar(enabled: Boolean) = updatePreferences { copy(lyricsInPlayerBar = enabled) }
+
+    // --- The parts of a YouTube video that are not the music ---
+
+    private var skipJob: Job? = null
+
+    /**
+     * Follows the track that is playing and, for a YouTube video, asks SponsorBlock what to jump past.
+     *
+     * Only YouTube videos: a YouTube Music track is the recording and nothing else, and SoundCloud has no
+     * such map. The list is fetched once per track and consulted on every position the player reports;
+     * see [SegmentSkipper] for why a segment is skipped once and then left alone.
+     */
+    private fun observeNonMusicSegments() {
+        scope.launch {
+            playback
+                .map { it.track?.takeIf { track -> track.provider == ProviderType.YOUTUBE_VIDEO }?.id }
+                .distinctUntilChanged()
+                .collect { videoId ->
+                    skipJob?.cancel()
+                    skipJob = videoId?.let { id -> launch { skipNonMusicIn(id) } }
+                }
+        }
+    }
+
+    private suspend fun skipNonMusicIn(videoId: String) {
+        if (!mutableSettings.value.preferences.skipNonMusic) return
+        val segments = runCatching { sponsorBlock.segmentsFor(videoId) }.getOrDefault(emptyList())
+        if (segments.isEmpty()) return
+        PlaybackLog.event("segments_known", mapOf("video" to videoId, "count" to segments.size))
+        var skipper = SegmentSkipper(segments)
+        var loops = playback.value.loops
+        playback.collect { state ->
+            if (!mutableSettings.value.preferences.skipNonMusic || state.status != PlaybackStatus.PLAYING) return@collect
+            // Round again on repeat-one: the segments are back, so the skips are too.
+            if (state.loops != loops) {
+                loops = state.loops
+                skipper = SegmentSkipper(segments)
+            }
+            val segment = skipper.skipFrom(state.positionMs) ?: return@collect
+            PlaybackLog.event(
+                "segment_skipped",
+                mapOf("video" to videoId, "category" to segment.category, "from" to state.positionMs, "to" to segment.endMs),
+            )
+            playbackEngine.seekTo(segment.endMs)
         }
     }
 
@@ -1958,6 +2089,7 @@ class AppState(
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
+            rawSearchTracks = interleave(results.map(SearchResults::tracks))
             mutableUi.update {
                 it.copy(
                     searchLoading = false,
@@ -1965,7 +2097,7 @@ class AppState(
                         attempts.firstNotNullOfOrNull { attempt -> attempt.exceptionOrNull()?.let(::explainFailure) }
                     else null,
                     searchResults = SearchResults(
-                        tracks = interleave(results.map(SearchResults::tracks)),
+                        tracks = rawSearchTracks.edited(it.trackEdits),
                         artists = interleave(results.map(SearchResults::artists)),
                         albums = interleave(results.map(SearchResults::albums)),
                         playlists = interleave(results.map(SearchResults::playlists)),
@@ -2008,16 +2140,20 @@ class AppState(
             track
         }
         val enriched = runCatching { ytDlp.enrichMetadata(playable) }.getOrDefault(playable)
-        if (enriched != playable) queue.replace(playable.queueKey, enriched)
+        // The listener's own title and artist go on last, over whatever the page said, so they are what
+        // the player shows, the scrobbler sends and the notification reads out.
+        val shown = enriched.edited(mutableUi.value.trackEdits)
+        if (shown != playable) queue.replace(playable.queueKey, shown)
         rememberRecent(enriched)
-        playbackEngine.play(enriched)
+        playbackEngine.play(shown)
     }
 
-    /** Records what was played so Home can open with it next time. */
+    /** Records what was played so Home can open with it next time. Kept as the service named it. */
     private fun rememberRecent(track: Track) {
-        val updated = recentWith(mutableUi.value.recentTracks, track)
-        if (updated == mutableUi.value.recentTracks) return
-        mutableUi.update { it.copy(recentTracks = updated) }
+        val updated = recentWith(rawRecent, track)
+        if (updated == rawRecent) return
+        rawRecent = updated
+        mutableUi.update { it.copy(recentTracks = updated.edited(it.trackEdits)) }
         scope.launch(Dispatchers.IO) { runCatching { recentRepository.save(updated) } }
     }
 
@@ -2113,7 +2249,7 @@ class AppState(
         scope.launch {
             delay(WARM_UP_AFTER_MS)
             if (system.isConnectionMetered()) return@launch
-            val likeliest = mutableUi.value.recentTracks.firstOrNull() ?: return@launch
+            val likeliest = rawRecent.firstOrNull() ?: return@launch
             if (likeliest.provider == ProviderType.SPOTIFY) return@launch
             prefetch(likeliest)
         }
