@@ -19,7 +19,7 @@ it a version. The artifacts are attached to the run for two weeks and no release
 
 ## Updating, and why the draft matters
 
-Spiceity checks GitHub once at launch and offers what it finds. It asks `/releases/latest`, which
+Noctorium checks GitHub once at launch and offers what it finds. It asks `/releases/latest`, which
 **ignores drafts and pre-releases** — so nothing is offered to anybody until you publish the draft the
 workflow opened. That is the intended safety catch: a release exists for you to look at before it
 exists for everyone.
@@ -79,9 +79,9 @@ cannot be replaced later by one signed properly, so anybody who installed it has
 To sign properly, make a keystore once:
 
 ```bash
-keytool -genkeypair -v -keystore spiceity.jks -keyalg RSA -keysize 4096 \
-  -validity 10000 -alias spiceity
-base64 -w0 spiceity.jks          # the value for the first secret below
+keytool -genkeypair -v -keystore noctorium.jks -keyalg RSA -keysize 4096 \
+  -validity 10000 -alias noctorium
+base64 -w0 noctorium.jks          # the value for the first secret below
 ```
 
 Then add four repository secrets under Settings → Secrets and variables → Actions:
@@ -90,7 +90,7 @@ Then add four repository secrets under Settings → Secrets and variables → Ac
 | --- | --- |
 | `ANDROID_KEYSTORE_BASE64` | the keystore file, base64 encoded |
 | `ANDROID_KEYSTORE_PASSWORD` | the store password |
-| `ANDROID_KEY_ALIAS` | `spiceity`, or whatever alias you chose |
+| `ANDROID_KEY_ALIAS` | `noctorium`, or whatever alias you chose |
 | `ANDROID_KEY_PASSWORD` | the key password |
 
 Keep the `.jks` somewhere safe and backed up. Losing it means never being able to update the app for
@@ -112,7 +112,7 @@ The `.ico` and `.png` the packagers use are drawn by `AppIcon` and committed. Af
 regenerate them:
 
 ```bash
-./gradlew :desktop:test --tests "*GenerateIconFiles*" -Dspiceity.writeIcons=true
+./gradlew :desktop:test --tests "*GenerateIconFiles*" -Dnoctorium.writeIcons=true
 ```
 
 A test compares the committed files against the code so the two cannot drift — but only on a machine that

@@ -1,5 +1,5 @@
 /**
- * Spiceity on a phone.
+ * Noctorium on a phone.
  *
  * The whole of this module is the bottom of the stack plus a touch interface. Everything above it — the
  * domain model, the Spotify library and matcher, playlists, the queue, settings, scrobbling, lyrics — is
@@ -24,7 +24,7 @@ plugins {
 }
 
 android {
-    namespace = "app.spiceity.android"
+    namespace = "app.noctorium.android"
     compileSdk = 35
 
     /**
@@ -39,21 +39,21 @@ android {
      * signed with it cannot be updated by one signed properly later. It is here so that a fork, or a
      * run before the secrets are set up, produces something installable rather than something broken.
      */
-    val keystorePath: String? = System.getenv("SPICEITY_KEYSTORE")?.takeIf { it.isNotBlank() }
+    val keystorePath: String? = System.getenv("NOCTORIUM_KEYSTORE")?.takeIf { it.isNotBlank() }
 
     signingConfigs {
         if (keystorePath != null) {
             create("release") {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("SPICEITY_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("SPICEITY_KEY_ALIAS")
-                keyPassword = System.getenv("SPICEITY_KEY_PASSWORD")
+                storePassword = System.getenv("NOCTORIUM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("NOCTORIUM_KEY_ALIAS")
+                keyPassword = System.getenv("NOCTORIUM_KEY_PASSWORD")
             }
         }
     }
 
     defaultConfig {
-        applicationId = "app.spiceity"
+        applicationId = "app.noctorium"
         /**
          * Android 8.0, which is where `java.nio.file` arrives.
          *
@@ -71,12 +71,12 @@ android {
          * for ninety-nine minors and patches, which is more than this will ever need, and keeps the
          * ordering the same as the version people actually read.
          */
-        val parts = (findProperty("appVersion") as String? ?: "0.3.4")
+        val parts = (findProperty("appVersion") as String? ?: "0.4.0")
             .removePrefix("v").substringBefore('-').split('.').mapNotNull(String::toIntOrNull)
         versionCode = ((parts.getOrNull(0) ?: 0) * 10_000) +
             ((parts.getOrNull(1) ?: 0) * 100) +
             (parts.getOrNull(2) ?: 0)
-        versionName = (findProperty("appVersion") as String? ?: "0.3.4").removePrefix("v")
+        versionName = (findProperty("appVersion") as String? ?: "0.4.0").removePrefix("v")
     }
 
     buildTypes {
@@ -177,7 +177,7 @@ dependencies {
     // Where a token goes on Android. Hardware-backed where the device has it.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // Artwork. Everything Spiceity shows comes from a service's own CDN over https.
+    // Artwork. Everything Noctorium shows comes from a service's own CDN over https.
     implementation("io.coil-kt:coil-compose:2.7.0")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.3")

@@ -1,6 +1,6 @@
-# Spiceity architecture
+# Noctorium architecture
 
-Spiceity uses Kotlin and Compose Desktop for a native JVM application with coroutines and `StateFlow` for predictable, non-blocking state updates.
+Noctorium uses Kotlin and Compose Desktop for a native JVM application with coroutines and `StateFlow` for predictable, non-blocking state updates.
 
 ## Layers
 

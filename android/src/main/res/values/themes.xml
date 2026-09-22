@@ -4,7 +4,7 @@
   the way in. Everything after this point is Compose's own theming.
 -->
 <resources>
-    <style name="Theme.Spiceity" parent="android:Theme.Material.NoActionBar">
+    <style name="Theme.Noctorium" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">#08070C</item>
         <item name="android:statusBarColor">#08070C</item>
         <item name="android:navigationBarColor">#08070C</item>
@@ -18,12 +18,12 @@
       sometimes the icon and sometimes nothing. The icon, its colour and the theme to hand over to are
       all named here, and MainActivity installs it, so the first frame is the same one every time.
     -->
-    <style name="Theme.Spiceity.Starting" parent="Theme.SplashScreen">
+    <style name="Theme.Noctorium.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">#08070C</item>
         <!-- The adaptive icon, not its foreground layer alone: the layer on its own is drawn unmasked and
-             fills a third of the screen with a white S on black, where the icon is the purple disc with
-             the S inside it that the launcher shows and that people recognise. -->
+             fills a third of the screen with a white N on black, where the icon is the purple disc with
+             the N inside it that the launcher shows and that people recognise. -->
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
-        <item name="postSplashScreenTheme">@style/Theme.Spiceity</item>
+        <item name="postSplashScreenTheme">@style/Theme.Noctorium</item>
     </style>
 </resources>

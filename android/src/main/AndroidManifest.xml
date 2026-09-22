@@ -1,20 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Reading the services, and nothing else. Spiceity asks for no storage, no contacts, no location. -->
+    <!-- Reading the services, and nothing else. Noctorium asks for no storage, no contacts, no location. -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!--
-        Spiceity Connect listens for the listener other devices announcing themselves on the local
+        Noctorium Connect listens for the listener other devices announcing themselves on the local
         network. Without this, the wifi chip filters those broadcasts out before the application ever
         sees them and the device list is silently always empty.
     -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <!--
-        Spiceity is sideloaded, so nothing else updates it. This lets it hand a downloaded APK to
+        Noctorium is sideloaded, so nothing else updates it. This lets it hand a downloaded APK to
         Android's own package installer — which shows its own screen and asks again, and the first
-        time also sends the listener to a settings page to allow it at all. Spiceity installs nothing
+        time also sends the listener to a settings page to allow it at all. Noctorium installs nothing
         itself; it only asks the system to.
     -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -30,19 +30,19 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
-        android:name=".SpiceityApplication"
-        android:label="Spiceity"
+        android:name=".NoctoriumApplication"
+        android:label="Noctorium"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="true"
-        android:theme="@style/Theme.Spiceity"
+        android:theme="@style/Theme.Noctorium"
         android:networkSecurityConfig="@xml/network_security_config">
 
         <activity
             android:name=".MainActivity"
-            android:theme="@style/Theme.Spiceity.Starting"
+            android:theme="@style/Theme.Noctorium.Starting"
             android:exported="true"
-            android:label="Spiceity"
+            android:label="Noctorium"
             android:launchMode="singleTask"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -52,7 +52,7 @@
         </activity>
 
         <!--
-          Lets the share sheet read a file Spiceity saved, and nothing else — see file_paths.xml. Exported
+          Lets the share sheet read a file Noctorium saved, and nothing else — see file_paths.xml. Exported
           false with per-URI grants is the shape that keeps the cookie jars beside it unreachable.
         -->
         <provider

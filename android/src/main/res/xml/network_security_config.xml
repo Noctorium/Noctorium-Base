@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Everything Spiceity fetches is https, and this keeps it that way.
+  Everything Noctorium fetches is https, and this keeps it that way.
 
   The one exception is 127.0.0.1, which is where Spotify's sign-in reply is caught. That address never
   leaves the device — the browser and the receiver are the same phone — and Spotify will not accept an

@@ -44,7 +44,7 @@ jobs:
       - name: Keep the debug APK from this commit
         uses: actions/upload-artifact@v4
         with:
-          name: spiceity-debug-apk
+          name: noctorium-debug-apk
           path: android/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14

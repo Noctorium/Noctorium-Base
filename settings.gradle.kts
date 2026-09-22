@@ -22,7 +22,7 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Spiceity"
+rootProject.name = "Noctorium"
 
 /**
  * One project, three modules, split by what each can actually run.

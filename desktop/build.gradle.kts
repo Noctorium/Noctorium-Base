@@ -9,7 +9,7 @@ plugins {
     id("org.jetbrains.compose")
 }
 
-group = "app.spice"
+group = "app.noctorium"
 
 /**
  * The version, from -PappVersion when the release workflow passes one and a sane default otherwise.
@@ -20,7 +20,7 @@ group = "app.spice"
  * build at the very last step, after twenty minutes of packaging, on two of the four platforms.
  */
 val appVersion: String = (findProperty("appVersion") as String?)?.trim()?.removePrefix("v")
-    ?.takeIf { it.isNotBlank() } ?: "0.3.4"
+    ?.takeIf { it.isNotBlank() } ?: "0.4.0"
 
 /** The same version with any pre-release suffix taken off, which is all rpm and msi will take. */
 val packagedVersion: String = appVersion.substringBefore('-').let { numeric ->
@@ -35,7 +35,7 @@ kotlin {
 }
 
 /**
- * Chromium build that ships inside Spiceity. jcefmaven downloads this payload at first use unless the matching
+ * Chromium build that ships inside Noctorium. jcefmaven downloads this payload at first use unless the matching
  * natives artifact is on the classpath, so bundling it is what removes the wait before the first sign-in.
  * The version string is jcefmaven's own, and has to match the `jcefmaven` dependency exactly.
  */
@@ -76,7 +76,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.1")
     // Reaches the one Windows call that colours the title bar; the window itself stays a native one.
     implementation("net.java.dev.jna:jna:5.17.0")
-    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Spiceity.
+    // Embedded Chromium, used only to host SoundCloud's own sign-in page inside Noctorium.
     implementation("me.friwi:jcefmaven:146.0.10")
     jcefNativesArtifacts().forEach { artifact ->
         implementation("me.friwi:$artifact:$jcefNativesVersion")
@@ -88,7 +88,7 @@ dependencies {
 
 compose.desktop {
     application {
-        mainClass = "app.spiceity.MainKt"
+        mainClass = "app.noctorium.MainKt"
 
         nativeDistributions {
             /*
@@ -115,16 +115,16 @@ compose.desktop {
             // mpv and yt-dlp, fetched by fetchPlaybackTools and laid down beside the application so a
             // fresh install can play something without fetching anything first.
             appResourcesRootDir.set(layout.buildDirectory.dir("appResources"))
-            packageName = "Spiceity"
+            packageName = "Noctorium"
             packageVersion = packagedVersion
             description = "One music player for YouTube Music and SoundCloud"
-            vendor = "Spiceity"
+            vendor = "Noctorium"
 
             // The same mark the window shows, so the installed application and the running one agree.
             // Generated from AppIcon; a test fails if the committed file drifts from the drawing code.
             windows {
-                iconFile.set(project.file("src/main/resources/spiceity.ico"))
-                menuGroup = "Spiceity"
+                iconFile.set(project.file("src/main/resources/noctorium.ico"))
+                menuGroup = "Noctorium"
                 // Stable across versions, so an upgrade replaces the install rather than sitting
                 // beside it. Generated once; changing it strands everyone's existing installation.
                 upgradeUuid = "8f5ac0d6-2f1a-4b6e-9a4e-1f3c2d6b7e10"
@@ -132,7 +132,7 @@ compose.desktop {
                 /*
                  * Deliberately not perUserInstall.
                  *
-                 * jpackage installs a per-user build into %LOCALAPPDATA%\Spiceity, which is exactly where
+                 * jpackage installs a per-user build into %LOCALAPPDATA%\Noctorium, which is exactly where
                  * AppDirectories keeps settings, credentials, both cookie jars and the downloads. The
                  * installer would write the runtime and the bundled Chromium on top of them, and an
                  * uninstall would take the lot. A per-machine install lands in Program Files, costs one
@@ -144,11 +144,11 @@ compose.desktop {
             linux {
                 // dpkg and rpm take one square png rather than a container of sizes, so this is the
                 // same mark drawn at 512 and committed beside the .ico.
-                iconFile.set(project.file("src/main/resources/spiceity.png"))
-                packageName = "spiceity"
+                iconFile.set(project.file("src/main/resources/noctorium.png"))
+                packageName = "noctorium"
                 menuGroup = "Audio"
                 appCategory = "AudioVideo"
-                debMaintainer = "spiceity@users.noreply.github.com"
+                debMaintainer = "noctorium@users.noreply.github.com"
                 rpmLicenseType = "Proprietary"
             }
         }
@@ -167,26 +167,26 @@ tasks.named<ProcessResources>("processResources") {
     val version = appVersion
     inputs.property("appVersion", version)
     from(resources.text.fromString("version=$version\n")) {
-        rename { "spiceity-version.properties" }
+        rename { "noctorium-version.properties" }
     }
 }
 
 tasks.test {
     useJUnitPlatform()
-    // Lets -Dspiceity.writeIcons=true reach the test JVM, which is how the committed icon files are
+    // Lets -Dnoctorium.writeIcons=true reach the test JVM, which is how the committed icon files are
     // regenerated from AppIcon after the drawing changes. Gradle does not pass its own system properties
     // down to the tests, so without this the generator silently does nothing and the guard test then
     // fails on a file nobody managed to rewrite.
-    System.getProperty("spiceity.writeIcons")?.let { systemProperty("spiceity.writeIcons", it) }
+    System.getProperty("noctorium.writeIcons")?.let { systemProperty("noctorium.writeIcons", it) }
     // Same again for the test that installs yt-dlp and mpv for real, which is off unless asked for:
     // it downloads fifty megabytes and depends on two other projects release pages being up.
-    System.getProperty("spiceity.installTools")?.let { systemProperty("spiceity.installTools", it) }
+    System.getProperty("noctorium.installTools")?.let { systemProperty("noctorium.installTools", it) }
 }
 
 /*
  * The player and the extractor, fetched at build time and shipped inside the application.
  *
- * Spiceity used to download these on first run, into the listener's own application data folder. That
+ * Noctorium used to download these on first run, into the listener's own application data folder. That
  * worked, and then it did not: on one machine playback started and stopped a second later with no sound,
  * while the same code on another machine played perfectly. Downloading at run time makes every
  * installation slightly different -- a different mpv build, a different moment, a different antivirus
