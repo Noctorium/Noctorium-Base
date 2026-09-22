@@ -1,8 +1,8 @@
 name: CI
 
-# Every push and every pull request, on the things that are cheap to check.
-# Packaging is not here: it takes twenty minutes and half a gigabyte of Chromium per platform, and it
-# belongs to a release rather than to every commit.
+# Every push and every pull request. This repository is the shared core, so what is checked here is that
+# it compiles and that its tests pass; the two applications that consume it check themselves in their own
+# repositories, and the release pipeline in Noctorium-Installer builds all of it together.
 on:
   push:
     branches: [main]
@@ -16,9 +16,9 @@ concurrency:
 
 jobs:
   build:
-    name: Tests and compilation
+    name: Core tests
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -32,19 +32,5 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      # The Android SDK is already on this runner, and settings.gradle.kts finds it through ANDROID_HOME.
-      # Without one the :android module is skipped silently, which would quietly stop testing half the
-      # project, so this fails loudly instead.
-      - name: Check the Android SDK is present
-        run: test -d "$ANDROID_HOME/platforms" || { echo "No Android SDK; :android would be skipped"; exit 1; }
-
-      - name: Test and compile everything
-        run: ./gradlew :core:test :desktop:test :desktop:compileKotlin :android:assembleDebug --stacktrace
-
-      - name: Keep the debug APK from this commit
-        uses: actions/upload-artifact@v4
-        with:
-          name: noctorium-debug-apk
-          path: android/build/outputs/apk/debug/*.apk
-          if-no-files-found: error
-          retention-days: 14
+      - name: Test the core
+        run: ./gradlew :core:test --stacktrace
