@@ -1960,7 +1960,6 @@ class AppState(
             ?: rawHomeSections.asSequence().flatMap { it.tracks }.firstOrNull { it.queueKey == queueKey }
 
     fun setSkipNonMusic(enabled: Boolean) = updatePreferences { copy(skipNonMusic = enabled) }
-    fun setLyricsInPlayerBar(enabled: Boolean) = updatePreferences { copy(lyricsInPlayerBar = enabled) }
 
     // --- The parts of a YouTube video that are not the music ---
 

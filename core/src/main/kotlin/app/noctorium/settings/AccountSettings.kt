@@ -211,8 +211,6 @@ data class NoctoriumPreferences(
      * tracks have none of these and are never touched.
      */
     val skipNonMusic: Boolean = true,
-    /** Whether the player bar shows the line being sung in place of the artist, while the lyrics are timed. */
-    val lyricsInPlayerBar: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
     /**
      * How long the sleep timer ran last time, in minutes.

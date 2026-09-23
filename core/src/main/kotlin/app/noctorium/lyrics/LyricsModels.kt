@@ -51,23 +51,3 @@ data class LyricsUiState(
     val selectedProvider: LyricsProviderId? = null,
     val errorMessage: String? = null,
 )
-
-/** The synced lyrics being shown, if what is shown is synced: the chosen provider's, else the first found. */
-fun LyricsUiState.syncedResult(): LyricsResult? {
-    val chosen = selectedProvider?.let { id -> outcomes.firstOrNull { it.provider == id }?.result }
-    val result = chosen ?: outcomes.firstOrNull { it.status == LyricsProviderStatus.FOUND }?.result
-    return result?.takeIf { it.synced && it.lines.isNotEmpty() }
-}
-
-/**
- * The line being sung at [positionMs], or null when there is none to show.
- *
- * Null before the first line starts and whenever the lyrics are not timed, so a caller can fall back to
- * whatever it showed before -- the artist, usually -- instead of a blank. The idea of a lyric line that
- * follows you around the application rather than living only on one screen is SpMp's.
- */
-fun LyricsUiState.currentLine(positionMs: Long): String? {
-    val result = syncedResult() ?: return null
-    val index = result.lines.indexOfLast { (it.startTimeMs ?: Long.MAX_VALUE) <= positionMs }
-    return result.lines.getOrNull(index)?.text?.trim()?.takeIf(String::isNotEmpty)
-}
