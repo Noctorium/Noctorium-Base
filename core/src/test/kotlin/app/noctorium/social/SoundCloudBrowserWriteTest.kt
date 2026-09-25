@@ -5,6 +5,8 @@ import app.noctorium.net.BrowserRequester
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertContains
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -98,7 +100,7 @@ class SoundCloudBrowserWriteTest {
     @Test
     fun `a browser that throws falls back rather than losing the like`() = runBlocking {
         val http = ScriptedHttp(LikeHttpResponse(200, ""))
-        val browser = BrowserRequester { _, _, _ -> error("the WebView was destroyed") }
+        val browser = BrowserRequester { _, _, _, _ -> error("the WebView was destroyed") }
 
         val result = SoundCloudLikeClient(http, browser)
             .setLiked("1", "2", token, clientId, liked = true)
@@ -118,36 +120,40 @@ class SoundCloudBrowserWriteTest {
         assertTrue(browser.calls.isEmpty(), "reads are answered without it and cost a page load if sent there")
     }
 
-    private class ScriptedBrowser(private val reply: BrowserReply?) : BrowserRequester {
-        val calls = mutableListOf<String>()
-        val headers = mutableListOf<Map<String, String>>()
+}
 
-        override suspend fun send(
-            method: String,
-            url: String,
-            headers: Map<String, String>,
-        ): BrowserReply? {
-            calls += "$method $url"
-            this.headers += headers
-            return reply
-        }
+internal class ScriptedBrowser(private val reply: BrowserReply?) : BrowserRequester {
+    val calls = mutableListOf<String>()
+    val headers = mutableListOf<Map<String, String>>()
+    val bodies = mutableListOf<String?>()
+
+    override suspend fun send(
+        method: String,
+        url: String,
+        headers: Map<String, String>,
+        body: String?,
+    ): BrowserReply? {
+        calls += "$method $url"
+        this.headers += headers
+        bodies += body
+        return reply
     }
+}
 
-    private class ScriptedHttp(private vararg val replies: LikeHttpResponse) : LikeHttpClient {
-        val calls = mutableListOf<String>()
+internal class ScriptedHttp(private vararg val replies: LikeHttpResponse) : LikeHttpClient {
+    val calls = mutableListOf<String>()
 
-        override suspend fun send(
-            method: String,
-            url: String,
-            token: String,
-            cookies: String?,
-            body: String?,
-            headers: Map<String, String>,
-        ): LikeHttpResponse {
-            val index = calls.size
-            calls += "$method $url"
-            return replies.getOrNull(index) ?: error("no scripted reply")
-        }
+    override suspend fun send(
+        method: String,
+        url: String,
+        token: String,
+        cookies: String?,
+        body: String?,
+        headers: Map<String, String>,
+    ): LikeHttpResponse {
+        val index = calls.size
+        calls += "$method $url"
+        return replies.getOrNull(index) ?: error("no scripted reply")
     }
 }
 
@@ -190,5 +196,100 @@ class SoundCloudLikedNamesTest {
             setOf("1", "2", "3"),
             SoundCloudLikeClient().parseLikedIds("""{"collection":[1,2,3]}"""),
         )
+    }
+}
+
+/**
+ * The same handover for playlists, which SoundCloud refuses from a non-browser exactly as it refuses a
+ * like. Creating one carries a body, which is the part a like never had to.
+ */
+class SoundCloudPlaylistBrowserWriteTest {
+    private val token = "2-294451-1234567890-secret"
+    private val clientId = "Pb72ranhoyt6gw7hM7TkzUItXlMWSNSo"
+
+    @Test
+    fun `creating a playlist goes to the browser, body and all`() = runBlocking {
+        val http = ScriptedHttp()
+        val browser = ScriptedBrowser(BrowserReply(200, """{"id":123456}"""))
+
+        val result = SoundCloudPlaylistClient(http, browser)
+            .create("Night drive", listOf("1", "2"), isPublic = false, token = token, clientId = clientId)
+
+        assertTrue(result.ok)
+        assertEquals("123456", result.playlistId)
+        assertEquals("POST https://api-v2.soundcloud.com/playlists?client_id=$clientId", browser.calls.single())
+        assertTrue(http.calls.isEmpty(), "the ordinary client can only be refused and must not be tried")
+
+        val body = browser.bodies.single() ?: error("the playlist has to be described in the body")
+        assertContains(body, "Night drive")
+        assertContains(body, "private")
+    }
+
+    /** JSON needs saying so, or SoundCloud reads the body as a form and rejects the playlist. */
+    @Test
+    fun `a request with a body says what the body is`() = runBlocking {
+        val browser = ScriptedBrowser(BrowserReply(200, "{}"))
+
+        SoundCloudPlaylistClient(ScriptedHttp(), browser)
+            .setTracks("123456", listOf("1"), token, clientId)
+
+        assertEquals(
+            mapOf("Authorization" to "OAuth $token", "Content-Type" to "application/json"),
+            browser.headers.single(),
+        )
+    }
+
+    @Test
+    fun `deleting carries no body and says nothing about one`() = runBlocking {
+        val browser = ScriptedBrowser(BrowserReply(200, ""))
+
+        val result = SoundCloudPlaylistClient(ScriptedHttp(), browser).delete("123456", token, clientId)
+
+        assertTrue(result.ok)
+        assertTrue(browser.calls.single().startsWith("DELETE "))
+        assertEquals(listOf<String?>(null), browser.bodies)
+        assertEquals(mapOf("Authorization" to "OAuth $token"), browser.headers.single())
+    }
+
+    /**
+     * Reading is not refused and does not need a browser. Sending it there would cost a page load, and on
+     * the phone that page is the whole SoundCloud site.
+     */
+    @Test
+    fun `listing and reading a playlist never go near the browser`() = runBlocking {
+        val browser = ScriptedBrowser(BrowserReply(200, ""))
+        val http = ScriptedHttp(
+            LikeHttpResponse(200, """{"collection":[{"id":9,"title":"Night drive"}]}"""),
+            LikeHttpResponse(200, """{"tracks":[1,2]}"""),
+        )
+        val client = SoundCloudPlaylistClient(http, browser)
+
+        assertEquals(listOf("Night drive"), client.list("1234567890", token, clientId).map { it.title })
+        assertEquals(listOf("1", "2"), client.trackIds("9", token, clientId))
+        assertTrue(browser.calls.isEmpty())
+        assertEquals(2, http.calls.size)
+    }
+
+    @Test
+    fun `no browser falls back to the ordinary client`() = runBlocking {
+        val http = ScriptedHttp(LikeHttpResponse(200, """{"id":7}"""))
+
+        val result = SoundCloudPlaylistClient(http, ScriptedBrowser(reply = null))
+            .create("Night drive", emptyList(), isPublic = true, token = token, clientId = clientId)
+
+        assertTrue(result.ok)
+        assertEquals(1, http.calls.size)
+    }
+
+    @Test
+    fun `a refusal from the browser is reported, not retried without it`() = runBlocking {
+        val http = ScriptedHttp(LikeHttpResponse(200, "{}"))
+        val browser = ScriptedBrowser(BrowserReply(403, "captcha"))
+
+        val result = SoundCloudPlaylistClient(http, browser).rename("123456", "Night drive", token, clientId)
+
+        assertFalse(result.ok)
+        assertContains(result.detail, "403")
+        assertTrue(http.calls.isEmpty())
     }
 }

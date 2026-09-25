@@ -150,7 +150,7 @@ class SoundCloudLikeClient internal constructor(
 
         val method = if (liked) "PUT" else "DELETE"
         val url = likeUrl(userId, trackId, clientId)
-        val response = viaBrowser(method, url, token) ?: try {
+        val response = browser.write(method, url, token) ?: try {
             http.send(method, url, token, cookies)
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -253,30 +253,40 @@ class SoundCloudLikeClient internal constructor(
         else -> null
     }
 
-    /**
-     * The write, made by the device's own browser.
-     *
-     * Null when there is none or it could not run the request, and the ordinary client is tried instead.
-     * Anything it answers -- a refusal included -- is the answer, because a browser that reached
-     * SoundCloud and was told no has learned something an unauthenticated retry would not improve on.
-     *
-     * Only the session is passed along. Cookies, origin, referer and the rest are the browser's own and
-     * are exactly what an assembled header cannot convincingly imitate.
-     */
-    private suspend fun viaBrowser(method: String, url: String, token: String): LikeHttpResponse? {
-        val requester = browser ?: return null
-        val reply = try {
-            requester.send(method, url, mapOf("Authorization" to "OAuth $token"))
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (error: Exception) {
-            null
-        } ?: return null
-        return LikeHttpResponse(reply.status, reply.body)
-    }
-
     internal fun likeUrl(userId: String, trackId: String, clientId: String): String =
         "https://api-v2.soundcloud.com/users/$userId/track_likes/$trackId?client_id=$clientId"
+}
+
+/**
+ * A write made by the device's own browser, where there is one.
+ *
+ * Null when there is none, or when it could not run the request, and the ordinary client is tried
+ * instead. Anything it answers -- a refusal included -- is the answer: a browser that reached SoundCloud
+ * and was told no has learned something that asking again, worse dressed, cannot improve on.
+ *
+ * Only the session and the shape of the body are passed along. Cookies, origin and referer are the
+ * browser's own, which is the entire point -- they are exactly what an assembled header does not manage
+ * to imitate.
+ */
+internal suspend fun BrowserRequester?.write(
+    method: String,
+    url: String,
+    token: String,
+    body: String? = null,
+): LikeHttpResponse? {
+    val requester = this ?: return null
+    val headers = buildMap {
+        put("Authorization", "OAuth $token")
+        if (body != null) put("Content-Type", "application/json")
+    }
+    val reply = try {
+        requester.send(method, url, headers, body)
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Exception) {
+        null
+    } ?: return null
+    return LikeHttpResponse(reply.status, reply.body)
 }
 
 /** A short, safe excerpt of a refusal body — enough to tell an API error from a bot-protection page. */

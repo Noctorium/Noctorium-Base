@@ -1486,6 +1486,32 @@ class AppState(
         withYouTubeWrite { session -> youTubeMusic.removeFromPlaylist(playlistId, videoId, session) }
     }
 
+    /**
+     * Makes a playlist on whichever account was chosen.
+     *
+     * Here rather than in each interface, so that neither the phone nor the desktop has to carry a list
+     * of which services can be written to and by what name.
+     */
+    fun createPlaylist(
+        title: String,
+        provider: ProviderType,
+        tracks: List<Track> = emptyList(),
+        isPublic: Boolean = false,
+    ) = when (provider) {
+        ProviderType.SOUNDCLOUD -> createSoundCloudPlaylist(title, tracks, isPublic)
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> createYouTubePlaylist(title, tracks, isPublic)
+        ProviderType.SPOTIFY, ProviderType.LOCAL ->
+            libraryNotice("Playlists cannot be made on ${provider.displayName} from Noctorium.")
+    }
+
+    /** Adds a track to a playlist on the account that playlist belongs to. */
+    fun addTrackToPlaylist(playlist: Playlist, track: Track) = when (playlist.provider) {
+        ProviderType.SOUNDCLOUD -> addTrackToSoundCloudPlaylist(playlist.id, track)
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> addTrackToYouTubePlaylist(playlist.id, track)
+        ProviderType.SPOTIFY, ProviderType.LOCAL ->
+            libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
+    }
+
     /** Makes a playlist on the YouTube Music account. Private by default, as on SoundCloud. */
     fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
         withYouTubeWrite { session ->
@@ -1534,7 +1560,13 @@ class AppState(
         withSoundCloudWrite { token, clientId, cookies ->
             playlistClient.create(
                 title = title,
-                trackIds = tracks.filter { it.provider == ProviderType.SOUNDCLOUD }.map { it.id },
+                // Numbers, for the same reason as adding one: an address in this list is dropped, and the
+                // playlist arrives quietly missing whatever it was made to hold.
+                trackIds = tracks.filter { it.provider == ProviderType.SOUNDCLOUD }
+                    .mapNotNull { track ->
+                        track.id.takeIf { it.all(Char::isDigit) }
+                            ?: soundCloudAccount.trackId(track.sourceUrl, token, clientId)
+                    },
                 isPublic = isPublic,
                 token = token,
                 clientId = clientId,
@@ -1552,11 +1584,20 @@ class AppState(
             return libraryNotice("Only SoundCloud tracks can go into a SoundCloud playlist.")
         }
         withSoundCloudWrite { token, clientId, cookies ->
+            // The number, not the address. A playlist is saved as a bare list of ids, so the phone's
+            // `tooore/burial-forgive` would simply be dropped on the way and the track would go missing
+            // from a save that reported success -- the same mismatch that made every like fail.
+            val id = track.id.takeIf { it.all(Char::isDigit) }
+                ?: soundCloudAccount.trackId(track.sourceUrl, token, clientId)
+                ?: return@withSoundCloudWrite PlaylistWriteResult(
+                    false,
+                    "SoundCloud would not say which track that is, so it was not added.",
+                )
             val existing = playlistClient.trackIds(playlistId, token, clientId, cookies)
-            if (existing.contains(track.id)) {
+            if (existing.contains(id)) {
                 PlaylistWriteResult(true, "${track.title} is already in that playlist.")
             } else {
-                playlistClient.setTracks(playlistId, existing + track.id, token, clientId, cookies)
+                playlistClient.setTracks(playlistId, existing + id, token, clientId, cookies)
                     .let { if (it.ok) it.copy(detail = "Added ${track.title} on SoundCloud.") else it }
             }
         }

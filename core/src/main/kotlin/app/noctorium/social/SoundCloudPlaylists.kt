@@ -2,6 +2,7 @@ package app.noctorium.social
 
 import kotlinx.coroutines.CancellationException
 import app.noctorium.domain.Playlist
+import app.noctorium.net.BrowserRequester
 import app.noctorium.domain.ProviderType
 import kotlinx.serialization.json.*
 
@@ -21,8 +22,18 @@ data class PlaylistWriteResult(
  */
 class SoundCloudPlaylistClient internal constructor(
     private val http: LikeHttpClient = DefaultLikeHttpClient(),
+    /**
+     * Where a change goes first, on a platform that has a browser to make it.
+     *
+     * The same refusal that stops a like stops a playlist: SoundCloud's bot protection answers 403 with a
+     * captcha to anything that is not a browser, and no arrangement of headers gets past it. Listing
+     * playlists and reading their contents need none of this and do not use it.
+     */
+    private val browser: BrowserRequester? = null,
 ) {
     constructor() : this(DefaultLikeHttpClient())
+
+    constructor(browser: BrowserRequester?) : this(DefaultLikeHttpClient(), browser)
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -218,12 +229,17 @@ class SoundCloudPlaylistClient internal constructor(
         token: String,
         cookies: String?,
         body: String?,
-    ): LikeHttpResponse? = try {
-        http.send(method, url, token, cookies, body)
-    } catch (cancellation: CancellationException) {
-        throw cancellation
-    } catch (error: Exception) {
-        null
+    ): LikeHttpResponse? {
+        // Reads are answered without a browser and would cost a page load for nothing; only the changes
+        // are refused unless one makes them.
+        if (method != "GET") browser.write(method, url, token, body)?.let { return it }
+        return try {
+            http.send(method, url, token, cookies, body)
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            null
+        }
     }
 
     private fun guard(token: String, clientId: String?): String? =
