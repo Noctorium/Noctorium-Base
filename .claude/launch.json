@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "noctorium-website",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["--prefix", "../Noctorium-Website", "run", "dev"],
+      "port": 9003
+    }
+  ]
+}

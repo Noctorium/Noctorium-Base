@@ -16,7 +16,7 @@ import kotlinx.serialization.json.put
  * Settings, to appear as a different application.
  */
 object DiscordApplication {
-    private const val BUILT_IN = "1464831676877111489"
+    private const val BUILT_IN = "1553165990995693588"
 
     val id: String
         get() = System.getenv("NOCTORIUM_DISCORD_APPLICATION_ID")?.trim()?.takeIf(String::isNotBlank) ?: BUILT_IN
