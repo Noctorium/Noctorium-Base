@@ -500,7 +500,10 @@ class AppState(
         // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
         scope.launch(Dispatchers.IO) { publishSpotifyState() }
         scope.launch(Dispatchers.IO) {
-            val soundCloudReady = runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull()?.isNotBlank() == true
+            // Through the same helper as everything else: the credential can be missing while the saved
+            // session still holds the token, and a listener whose session works should not be told that
+            // liking is unavailable. That is what the SoundCloud entry in a track's menu turns on.
+            val soundCloudReady = !soundCloudToken().isNullOrBlank()
             val youTubeSignedIn = youTubeSession()?.sapisid != null
             mutableLikes.update { it.copy(soundCloudReady = soundCloudReady, youTubeReady = youTubeSignedIn) }
             if (soundCloudReady || youTubeSignedIn) refreshLikes()
@@ -1072,11 +1075,7 @@ class AppState(
      */
     private suspend fun soundCloudPlaylistTracks(playlist: Playlist, limit: Int): List<Track>? {
         if (playlist.sourceUrl?.endsWith("/likes") != true) return null
-        val token = withContext(Dispatchers.IO) {
-            runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
-                ?: soundCloudTokenFromSession()
-        } ?: return null
-        return soundCloudAccount.likes(token, limit)
+        return soundCloudAccount.likes(soundCloudToken() ?: return null, limit)
     }
 
     private suspend fun youTubeSession(): YouTubeSession? {
@@ -1249,6 +1248,18 @@ class AppState(
      * No domain is named on purpose: a desktop sign-in leaves it on soundcloud.com and a phone's on
      * m.soundcloud.com, and the token is the same token either way.
      */
+    /**
+     * The SoundCloud token, from wherever it survives.
+     *
+     * The credential is the fast path and the saved session is the durable one. They come apart more
+     * often than they should -- an older sign-in, or one where reading the token failed -- and every
+     * caller wants the same answer, so they all ask here rather than each remembering to look twice.
+     */
+    private suspend fun soundCloudToken(): String? = withContext(Dispatchers.IO) {
+        runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
+            ?: soundCloudTokenFromSession()
+    }
+
     private fun soundCloudTokenFromSession(): String? {
         val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile.takeIf(String::isNotBlank)
             ?: return null
@@ -1261,14 +1272,7 @@ class AppState(
 
     fun detectSoundCloudProfile(announce: Boolean = true) {
         scope.launch {
-            val token = withContext(Dispatchers.IO) {
-                runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
-                    // The saved session is the durable thing; the credential is a copy of one line of it.
-                    // When the copy is missing -- an older sign-in, or one where reading the token failed
-                    // -- the session itself still has it, and asking there is better than telling somebody
-                    // to sign in again to a service they are already signed in to.
-                    ?: soundCloudTokenFromSession()
-            }
+            val token = soundCloudToken()
             if (token.isNullOrBlank()) {
                 if (announce) likeMessage("Sign in to SoundCloud first so Noctorium has a session to ask about.")
                 return@launch
@@ -2137,13 +2141,20 @@ class AppState(
     private suspend fun personalHomeSections(): List<HomeSection> = supervisorScope {
         val username = mutableSettings.value.preferences.soundCloudUsername
         if (username.isBlank()) return@supervisorScope emptyList()
-        val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+        val token = soundCloudToken()
 
         val feed = token?.takeIf(String::isNotBlank)?.let { key ->
             async { runCatching { soundCloudAccount.stream(key, limit = 20) }.getOrDefault(emptyList()) }
         }
         val likes = async {
-            runCatching {
+            // The account first, the backend second, for the same reason the library reads likes that
+            // way: NewPipe refuses a likes page before making a request, so on a phone this row simply
+            // never appeared. yt-dlp reads it perfectly well, which is why it is still asked when the
+            // account cannot answer.
+            val viaApi = token?.takeIf(String::isNotBlank)?.let { key ->
+                runCatching { soundCloudAccount.likes(key, limit = 20) }.getOrNull()
+            }
+            viaApi ?: runCatching {
                 ytDlp.listTracks(ProviderType.SOUNDCLOUD, "https://soundcloud.com/$username/likes", limit = 20)
             }.getOrDefault(emptyList())
         }
