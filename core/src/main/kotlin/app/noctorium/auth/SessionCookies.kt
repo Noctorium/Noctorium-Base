@@ -76,6 +76,11 @@ val SOUNDCLOUD_SESSION_URLS = listOf(
     "https://soundcloud.com/",
     "https://secure.soundcloud.com/",
     "https://api-v2.soundcloud.com/",
+    // Where a phone's sign-in actually happens. SoundCloud sends a mobile browser to m., and the OAuth
+    // exchange runs through api-auth; asking only about the plain host looked at pages the listener on a
+    // phone never visits.
+    "https://m.soundcloud.com/",
+    "https://api-auth.soundcloud.com/",
 )
 
 /** The page SoundCloud sends a signed-in listener to, which lands on their own profile. */
