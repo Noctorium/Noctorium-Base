@@ -313,6 +313,7 @@ class AppState(
             ytDlp,
             ::youTubeSongSearch,
             ::youTubePlaylistTracks,
+            ::youTubeHomeRows,
         ),
         BackendMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
         BackendMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
@@ -1027,6 +1028,17 @@ class AppState(
      * Needs a real session rather than the signed-out fallback [youTubeSongSearch] accepts: a playlist
      * belongs to somebody, and browsing Liked Music without saying who is asking returns nothing.
      */
+    /**
+     * YouTube Music's own home page, for whoever is signed in.
+     *
+     * Needs a real session: signed out, the page is the same generic thing for everybody, which is no
+     * better than the fixed searches it would be replacing.
+     */
+    private suspend fun youTubeHomeRows(): List<Pair<String, List<Track>>>? {
+        val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return null
+        return youTubeMusic.homeSections(session)?.map { it.title to it.tracks }
+    }
+
     private suspend fun youTubePlaylistTracks(playlistId: String, limit: Int): List<Track>? {
         // Null rather than empty: no session is "cannot answer", and the caller should try the backend.
         val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return null

@@ -34,8 +34,37 @@ class BackendMusicProvider(
      * a list that is merely empty replaces "nothing in here" with an error.
      */
     private val playlistTracks: (suspend (String, Int) -> List<Track>?)? = null,
+    /**
+     * The service's own home page, as rows of heading and songs.
+     *
+     * Null falls back to the fixed searches below, which is what everybody saw before: the same two
+     * queries for every listener, every day. A real home page is built for the account asking for it.
+     */
+    private val homeRows: (suspend () -> List<Pair<String, List<Track>>>?)? = null,
 ) : MusicProvider {
     override suspend fun getHome(): List<HomeSection> {
+        if (type == ProviderType.YOUTUBE_MUSIC) {
+            homeRows?.let { read ->
+                val rows = runCatching { read() }.getOrNull()
+                // Empty is an answer -- a home page with nothing on it -- but it is not one worth showing,
+                // so the fixed searches stand in for it rather than leaving the screen blank.
+                if (!rows.isNullOrEmpty()) {
+                    return rows.mapIndexed { index, (title, tracks) ->
+                        HomeSection(
+                            id = "${type.name}:home:$index",
+                            title = title,
+                            subtitle = "On YouTube Music",
+                            provider = type,
+                            tracks = tracks,
+                        )
+                    }
+                }
+            }
+        }
+        return fixedHome()
+    }
+
+    private suspend fun fixedHome(): List<HomeSection> {
         // Each row states what it actually is. The subtitle names the service so the heading does not have to,
         // and the headings no longer repeat the service name back at the listener.
         val searches = when (type) {

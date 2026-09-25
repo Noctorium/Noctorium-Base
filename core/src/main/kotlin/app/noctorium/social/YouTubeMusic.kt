@@ -371,6 +371,71 @@ class YouTubeMusicClient internal constructor(
         return found.take(limit)
     }
 
+    /**
+     * YouTube Music's own home page, as the app's home screen shows it.
+     *
+     * What was here before was two hardcoded searches -- "indie electronic music" and "ambient focus
+     * music" -- the same two for everybody, every day, signed in or not. This asks the page the service
+     * actually builds for this account: Quick picks, Listen again, the mixes made for them.
+     *
+     * The browse id and the shape being read come from SimpMusic (GPL-3.0), whose YouTube Music client
+     * does this properly; the reading here is written against the parsers this file already had.
+     *
+     * Null means it could not be asked -- no session, no reply, a refusal -- as distinct from an empty
+     * list, which means the page had nothing on it. The caller falls back only on null.
+     */
+    suspend fun homeSections(session: YouTubeSession): List<HomeShelf>? {
+        val body = buildJsonObject {
+            put("context", context(session.keys.clientVersion))
+            put("browseId", HOME_BROWSE_ID)
+        }
+        val response = post("browse", body.toString(), session) ?: return null
+        if (response.status !in 200..299) return null
+        return parseHomeShelves(response.body)
+    }
+
+    /**
+     * The rows of a browse page, in the order the page puts them.
+     *
+     * Walked through the section list rather than by collecting every shelf renderer in the document,
+     * because the order is the page's editorial choice and collecting by type throws it away -- and a
+     * carousel nested inside another section would be lifted out to the top level.
+     *
+     * Rows carrying no songs are dropped. Most of them are playlist and album cards, which Noctorium's
+     * home screen has nowhere to put yet; a row with nothing to show is worse than no row.
+     */
+    internal fun parseHomeShelves(body: String): List<HomeShelf> = runCatching {
+        val sections = findSectionContents(json.parseToJsonElement(body)) ?: return emptyList()
+        sections.mapNotNull { section ->
+            val shelf = section as? JsonObject ?: return@mapNotNull null
+            val rows = mutableListOf<JsonObject>()
+            collectRenderers(shelf, "musicResponsiveListItemRenderer", rows)
+            val tracks = rows.mapNotNull(::songFromRow).distinctBy { it.id }
+            if (tracks.isEmpty()) return@mapNotNull null
+            HomeShelf(title = shelfTitle(shelf) ?: return@mapNotNull null, tracks = tracks)
+        }
+    }.getOrDefault(emptyList())
+
+    /** The heading of a row, wherever this kind of row keeps it. */
+    private fun shelfTitle(shelf: JsonObject): String? {
+        SHELF_TITLE_PATHS.forEach { path ->
+            var here: JsonObject? = shelf
+            path.forEach { step -> here = here?.get(step) as? JsonObject }
+            here?.let { runsOf(it) }?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+        }
+        return null
+    }
+
+    /** The contents of the first section list in the document, which is the page's list of rows. */
+    private fun findSectionContents(element: JsonElement): JsonArray? = when (element) {
+        is JsonObject -> {
+            val here = (element["sectionListRenderer"] as? JsonObject)?.get("contents") as? JsonArray
+            here ?: element.values.firstNotNullOfOrNull(::findSectionContents)
+        }
+        is JsonArray -> element.firstNotNullOfOrNull(::findSectionContents)
+        else -> null
+    }
+
     internal fun parseSongs(body: String): List<Track> = runCatching {
         val rows = mutableListOf<JsonObject>()
         collectRenderers(json.parseToJsonElement(body), "musicResponsiveListItemRenderer", rows)
@@ -703,6 +768,22 @@ class YouTubeMusicClient internal constructor(
          */
         const val LIKED_SONGS_BROWSE_ID = "VLLM"
 
+        /** The page YouTube Music opens on, built for whoever is asking. */
+        const val HOME_BROWSE_ID = "FEmusic_home"
+
+        /**
+         * Where each kind of row keeps its heading, ending at the object holding the `runs`.
+         *
+         * A carousel, a plain shelf and a grid each put it somewhere different, and a row whose heading
+         * cannot be found is dropped rather than shown as "Untitled".
+         */
+        val SHELF_TITLE_PATHS = listOf(
+            listOf("musicCarouselShelfRenderer", "header", "musicCarouselShelfBasicHeaderRenderer", "title"),
+            listOf("musicShelfRenderer", "title"),
+            listOf("gridRenderer", "header", "gridHeaderRenderer", "title"),
+            listOf("musicImmersiveCarouselShelfRenderer", "header", "musicCarouselShelfBasicHeaderRenderer", "title"),
+        )
+
         /** Enough pages for a very large liked list, bounded so a repeating token cannot loop forever. */
         const val MAX_LIKED_PAGES = 40
 
@@ -721,6 +802,14 @@ class YouTubeMusicClient internal constructor(
 }
 
 /** A channel this account can act as. The default channel carries no page id. */
+/**
+ * One row of YouTube Music's home page: what it is called, and the songs on it.
+ *
+ * Only the songs. A home page is mostly playlist and album cards, and Noctorium's home screen has
+ * nowhere to put those yet, so rows carrying none are left out rather than shown empty.
+ */
+data class HomeShelf(val title: String, val tracks: List<Track>)
+
 data class YouTubeChannel(val pageId: String, val name: String) {
     val isDefault: Boolean get() = pageId.isBlank()
 }
