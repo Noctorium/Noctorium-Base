@@ -339,6 +339,10 @@ class AppState(
      * class has finished being built.
      */
     private val soundCloudTokenLock = Mutex()
+
+    /** Set once SoundCloud has refused to renew, so nothing keeps trying the token it refused. */
+    @Volatile
+    private var soundCloudSessionEnded = false
     private val storedPreferences = settingsRepository.load()
 
     /**
@@ -1199,6 +1203,8 @@ class AppState(
                     "No SoundCloud session token found in ${source.describe()}. Sign in to SoundCloud in that browser, then try again.",
                 )
             }
+            // A fresh session, so whatever was refused before no longer applies.
+            soundCloudSessionEnded = false
             soundCloudRefreshTokenFromSession()?.let {
                 runCatching { credentials.put(SOUNDCLOUD_REFRESH_TOKEN, it) }
             }
@@ -1260,6 +1266,8 @@ class AppState(
             // Kept from the same jar as the token, one line away from it, and never read before. Without
             // it the session was good for an hour and then looked like a sign-out that nobody performed.
             withContext(Dispatchers.IO) {
+                // A fresh session, so whatever was refused before no longer applies.
+                soundCloudSessionEnded = false
                 soundCloudRefreshTokenFromSession()?.let {
                     runCatching { credentials.put(SOUNDCLOUD_REFRESH_TOKEN, it) }
                 }
@@ -1292,14 +1300,25 @@ class AppState(
      * caller wants the same answer, so they all ask here rather than each remembering to look twice.
      */
     private suspend fun soundCloudToken(forceRenewal: Boolean = false): String? = soundCloudTokenLock.withLock {
+        // The cookie jar is never edited, so the dead token stays readable in it for as long as the file
+        // lives. Without this, a refused renewal would be forgotten by the next read, which would find
+        // that token again, fail to renew it -- the refresh token is gone by then -- and report the
+        // account as connected.
+        if (soundCloudSessionEnded) return@withLock null
         val stored = withContext(Dispatchers.IO) {
             runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
                 ?: soundCloudTokenFromSession()
         }
         if (stored != null && !forceRenewal && !SoundCloudToken.hasExpired(stored)) return@withLock stored
-        // A renewal that cannot be made leaves the old token in place: expired is a guess from a clock,
-        // and a token SoundCloud still honours is better than none.
-        renewedSoundCloudToken(stored) ?: stored
+        when (val renewal = renewSoundCloudToken(stored)) {
+            is SoundCloudRefreshResult.Renewed -> renewal.session.accessToken
+            // Nothing survives a refusal. Handing the old token back would have every caller make a
+            // request that can only be refused, and leave the account looking connected while it is not.
+            SoundCloudRefreshResult.Rejected -> null
+            // Nothing was learned. Expired here is a deduction from a clock, and a token SoundCloud may
+            // still honour beats none at all.
+            SoundCloudRefreshResult.Unavailable -> stored
+        }
     }
 
     /**
@@ -1308,16 +1327,18 @@ class AppState(
      * The refresh token rotates -- SoundCloud invalidates the one just used -- so the new one has to be
      * stored, and this runs under [soundCloudTokenLock] so two readers cannot spend the same one twice.
      */
-    private suspend fun renewedSoundCloudToken(spent: String?): String? {
+    private suspend fun renewSoundCloudToken(spent: String?): SoundCloudRefreshResult {
         val refreshToken = withContext(Dispatchers.IO) {
             runCatching { credentials.get(SOUNDCLOUD_REFRESH_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
                 ?: soundCloudRefreshTokenFromSession()
-        } ?: return null
+        } ?: return SoundCloudRefreshResult.Unavailable
         // The client the refresh token belongs to, named by the token it came with rather than written
         // down here: a sign-in through a different one would be refused by a constant.
-        val clientId = spent?.let { SoundCloudToken.clientIdFrom(it) } ?: return null
+        val clientId = spent?.let { SoundCloudToken.clientIdFrom(it) }
+            ?: return SoundCloudRefreshResult.Unavailable
 
-        return when (val result = soundCloudRefresh.refresh(refreshToken, clientId)) {
+        val result = soundCloudRefresh.refresh(refreshToken, clientId)
+        when (result) {
             is SoundCloudRefreshResult.Renewed -> {
                 withContext(Dispatchers.IO) {
                     runCatching { credentials.put(SOUNDCLOUD_TOKEN, result.session.accessToken) }
@@ -1326,18 +1347,21 @@ class AppState(
                     }
                 }
                 mutableLikes.update { it.copy(soundCloudReady = true) }
-                result.session.accessToken
             }
-            // Spent for good. Clearing it is what stops every later read retrying a refusal, and saying so
-            // once is the difference between "sign in again" and a day of things quietly not working.
+            // Spent for good. Clearing both is what stops every later read retrying a refusal, and saying
+            // so once is the difference between "sign in again" and a day of things quietly not working.
             SoundCloudRefreshResult.Rejected -> {
-                withContext(Dispatchers.IO) { runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) } }
+                withContext(Dispatchers.IO) {
+                    runCatching { credentials.remove(SOUNDCLOUD_TOKEN) }
+                    runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) }
+                }
+                soundCloudSessionEnded = true
                 mutableLikes.update { it.copy(soundCloudReady = false) }
                 likeMessage("Your SoundCloud session has ended. Sign in again in Settings.")
-                null
             }
-            SoundCloudRefreshResult.Unavailable -> null
+            SoundCloudRefreshResult.Unavailable -> Unit
         }
+        return result
     }
 
     private fun soundCloudTokenFromSession(): String? =
