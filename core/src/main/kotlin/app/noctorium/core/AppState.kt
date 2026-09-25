@@ -1192,26 +1192,58 @@ class AppState(
             ProviderType.SOUNDCLOUD,
             AccountConnectionState(AccountConnectionStatus.CONNECTED, "Signed in inside Noctorium."),
         )
-        if (!oauthToken.isNullOrBlank()) {
-            scope.launch(Dispatchers.IO) {
-                runCatching { credentials.put(SOUNDCLOUD_TOKEN, oauthToken) }
-                    .onSuccess { mutableLikes.update { it.copy(soundCloudReady = true) } }
-            }
-        }
         mutableLibrary.update { it.copy(loaded = false) }
         likeMessage("SoundCloud sign-in complete. Playback and liking both use this session now.")
-        // The browser may already have revealed the profile during sign-in; otherwise go and find it.
-        if (!permalink.isNullOrBlank()) adoptSoundCloudProfile(permalink, permalink) else detectSoundCloudProfile(announce = false)
-        refreshLikes()
+
+        // One coroutine, in order, because the second half needs what the first half writes. Storing the
+        // token and then going to look for it were two independent launches, and the look ran first: it
+        // read a credential that was not there yet, found no token, and gave up without a word. Every
+        // machine part worked; they simply ran in the wrong order.
+        scope.launch {
+            if (!oauthToken.isNullOrBlank()) {
+                withContext(Dispatchers.IO) { runCatching { credentials.put(SOUNDCLOUD_TOKEN, oauthToken) } }
+                    .onSuccess { mutableLikes.update { it.copy(soundCloudReady = true) } }
+            }
+            // The browser may already have revealed the profile during sign-in; otherwise go and ask.
+            if (!permalink.isNullOrBlank()) {
+                adoptSoundCloudProfile(permalink, permalink)
+            } else {
+                detectSoundCloudProfile(announce = false)
+            }
+            refreshLikes()
+        }
     }
 
     /**
      * Asks SoundCloud which account the stored session belongs to and remembers the profile name, which is what
      * lets the library and the personalised home rows load without any typing.
      */
+    /**
+     * The oauth_token out of the saved SoundCloud session, whichever host it was set on.
+     *
+     * No domain is named on purpose: a desktop sign-in leaves it on soundcloud.com and a phone's on
+     * m.soundcloud.com, and the token is the same token either way.
+     */
+    private fun soundCloudTokenFromSession(): String? {
+        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile.takeIf(String::isNotBlank)
+            ?: return null
+        return cookieHeaderFor(Path.of(file), "soundcloud.com", names = setOf("oauth_token"))
+            ?.substringAfter("oauth_token=", missingDelimiterValue = "")
+            ?.substringBefore(';')
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+    }
+
     fun detectSoundCloudProfile(announce: Boolean = true) {
         scope.launch {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            val token = withContext(Dispatchers.IO) {
+                runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
+                    // The saved session is the durable thing; the credential is a copy of one line of it.
+                    // When the copy is missing -- an older sign-in, or one where reading the token failed
+                    // -- the session itself still has it, and asking there is better than telling somebody
+                    // to sign in again to a service they are already signed in to.
+                    ?: soundCloudTokenFromSession()
+            }
             if (token.isNullOrBlank()) {
                 if (announce) likeMessage("Sign in to SoundCloud first so Noctorium has a session to ask about.")
                 return@launch
