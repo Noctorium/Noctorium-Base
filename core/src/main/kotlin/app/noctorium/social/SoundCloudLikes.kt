@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import app.noctorium.net.BrowserRequester
 import app.noctorium.net.Http
 import java.nio.file.Files
 import java.nio.file.Path
@@ -102,8 +103,16 @@ internal class DefaultLikeHttpClient(private val http: Http = Http()) : LikeHttp
  */
 class SoundCloudLikeClient internal constructor(
     private val http: LikeHttpClient = DefaultLikeHttpClient(),
+    /**
+     * Where a write goes first, on a platform that has a browser to make it.
+     *
+     * Reading likes needs nothing of the sort, and does not use this.
+     */
+    private val browser: BrowserRequester? = null,
 ) {
     constructor() : this(DefaultLikeHttpClient())
+
+    constructor(browser: BrowserRequester?) : this(DefaultLikeHttpClient(), browser)
 
     /**
      * Likes or unlikes a track, using the same call SoundCloud's website makes.
@@ -141,7 +150,7 @@ class SoundCloudLikeClient internal constructor(
 
         val method = if (liked) "PUT" else "DELETE"
         val url = likeUrl(userId, trackId, clientId)
-        val response = try {
+        val response = viaBrowser(method, url, token) ?: try {
             http.send(method, url, token, cookies)
         } catch (cancellation: CancellationException) {
             throw cancellation
@@ -209,6 +218,12 @@ class SoundCloudLikeClient internal constructor(
      * SoundCloud is inconsistent about this shape — a bare array, a wrapped collection, and a collection of
      * objects all appear in the wild — so every form is accepted rather than assuming one and silently
      * returning nothing when it guesses wrong.
+     *
+     * Each like contributes two names for the same track: the number SoundCloud files it under, and the
+     * `user/track` half of its address. That is not belt and braces. The two backends identify a
+     * SoundCloud track differently — yt-dlp hands back the number, the phone's extractor hands back the
+     * permalink, because that is what the page it read gives it — so a set of numbers alone left every
+     * heart on the phone empty, including on a track it had just successfully liked.
      */
     internal fun parseLikedIds(body: String): Set<String> = runCatching {
         val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(body)
@@ -217,8 +232,17 @@ class SoundCloudLikeClient internal constructor(
             root is JsonObject -> (root["collection"] as? JsonArray) ?: (root["ids"] as? JsonArray)
             else -> null
         } ?: return emptySet()
-        array.mapNotNull(::idOf).toSet()
+        array.flatMap { listOfNotNull(idOf(it), permalinkOf(it)) }.toSet()
     }.getOrDefault(emptySet())
+
+    /** The `user/track` an address ends with, which is how the phone's extractor names a track. */
+    private fun permalinkOf(element: JsonElement): String? {
+        val track = (element as? JsonObject)?.let { it["track"] as? JsonObject ?: it } ?: return null
+        val url = (track["permalink_url"] as? JsonPrimitive)?.contentOrNull ?: return null
+        return url.substringAfter("soundcloud.com/", missingDelimiterValue = "")
+            .trim('/')
+            .takeIf { it.isNotBlank() && it.count { character -> character == '/' } == 1 }
+    }
 
     private fun idOf(element: JsonElement): String? = when (element) {
         // A bare number or string is the id itself.
@@ -227,6 +251,28 @@ class SoundCloudLikeClient internal constructor(
         is JsonObject -> (element["id"] as? JsonPrimitive)?.longOrNull?.toString()
             ?: ((element["track"] as? JsonObject)?.get("id") as? JsonPrimitive)?.longOrNull?.toString()
         else -> null
+    }
+
+    /**
+     * The write, made by the device's own browser.
+     *
+     * Null when there is none or it could not run the request, and the ordinary client is tried instead.
+     * Anything it answers -- a refusal included -- is the answer, because a browser that reached
+     * SoundCloud and was told no has learned something an unauthenticated retry would not improve on.
+     *
+     * Only the session is passed along. Cookies, origin, referer and the rest are the browser's own and
+     * are exactly what an assembled header cannot convincingly imitate.
+     */
+    private suspend fun viaBrowser(method: String, url: String, token: String): LikeHttpResponse? {
+        val requester = browser ?: return null
+        val reply = try {
+            requester.send(method, url, mapOf("Authorization" to "OAuth $token"))
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (error: Exception) {
+            null
+        } ?: return null
+        return LikeHttpResponse(reply.status, reply.body)
     }
 
     internal fun likeUrl(userId: String, trackId: String, clientId: String): String =
