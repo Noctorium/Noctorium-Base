@@ -33,7 +33,7 @@ class BackendMusicProvider(
      * The two must stay apart, because the fallback cannot open these playlists at all and running it on
      * a list that is merely empty replaces "nothing in here" with an error.
      */
-    private val playlistTracks: (suspend (String, Int) -> List<Track>?)? = null,
+    private val playlistTracks: (suspend (Playlist, Int) -> List<Track>?)? = null,
     /**
      * The service's own home page, as rows of heading and songs.
      *
@@ -114,24 +114,12 @@ class BackendMusicProvider(
         val url = playlist.sourceUrl ?: return playlist.tracks
         // YouTube Music's own interface first, where there is one: it can open the built-in lists that
         // the backend cannot, and it answers with titles, artists and lengths already filled in.
-        playlistIdOf(playlist)?.let { id ->
-            playlistTracks?.let { read ->
-                // Anything it answered is the answer, empty included. Only a null -- or a throw -- means
-                // it could not say, and only then is the backend worth asking.
-                runCatching { read(id, PLAYLIST_LIMIT) }.getOrNull()?.let { return it }
-            }
+        playlistTracks?.let { read ->
+            // Anything it answered is the answer, empty included. Only a null -- or a throw -- means it
+            // could not say, and only then is the backend worth asking.
+            runCatching { read(playlist, PLAYLIST_LIMIT) }.getOrNull()?.let { return it }
         }
         return backend.listTracks(type, url)
-    }
-
-    /** The `list=` a playlist is addressed by, which is what YouTube Music browses it under. */
-    private fun playlistIdOf(playlist: Playlist): String? {
-        if (type != ProviderType.YOUTUBE_MUSIC) return null
-        val fromUrl = playlist.sourceUrl
-            ?.substringAfter("list=", "")
-            ?.substringBefore('&')
-            ?.takeIf(String::isNotBlank)
-        return fromUrl ?: playlist.id.takeIf(String::isNotBlank)
     }
 
     override suspend fun resolvePlaylistTracks(playlist: Playlist, from: Int, to: Int): List<Track> {

@@ -316,7 +316,11 @@ class AppState(
             ::youTubeHomeRows,
         ),
         BackendMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
-        BackendMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
+        BackendMusicProvider(
+            ProviderType.SOUNDCLOUD,
+            ytDlp,
+            playlistTracks = ::soundCloudPlaylistTracks,
+        ),
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -1048,10 +1052,31 @@ class AppState(
         }
     }
 
-    private suspend fun youTubePlaylistTracks(playlistId: String, limit: Int): List<Track>? {
+    private suspend fun youTubePlaylistTracks(playlist: Playlist, limit: Int): List<Track>? {
         // Null rather than empty: no session is "cannot answer", and the caller should try the backend.
         val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return null
-        return youTubeMusic.playlistTracks(playlistId, limit, session)
+        // The `list=` it is addressed by is what YouTube Music browses it under.
+        val id = playlist.sourceUrl?.substringAfter("list=", "")?.substringBefore('&')
+            ?.takeIf(String::isNotBlank)
+            ?: playlist.id.takeIf(String::isNotBlank)
+            ?: return null
+        return youTubeMusic.playlistTracks(id, limit, session)
+    }
+
+    /**
+     * SoundCloud's likes, which the extractor will not open.
+     *
+     * A likes page is not a playlist as far as NewPipe is concerned and the address is refused before
+     * any request is made, so the session asks SoundCloud directly. Everything else about SoundCloud --
+     * a set, somebody's profile -- the extractor handles perfectly well, and is left to it.
+     */
+    private suspend fun soundCloudPlaylistTracks(playlist: Playlist, limit: Int): List<Track>? {
+        if (playlist.sourceUrl?.endsWith("/likes") != true) return null
+        val token = withContext(Dispatchers.IO) {
+            runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
+                ?: soundCloudTokenFromSession()
+        } ?: return null
+        return soundCloudAccount.likes(token, limit)
     }
 
     private suspend fun youTubeSession(): YouTubeSession? {

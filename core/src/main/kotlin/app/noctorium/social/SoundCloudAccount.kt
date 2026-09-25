@@ -6,7 +6,7 @@ import app.noctorium.domain.Track
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 
-data class SoundCloudProfile(val permalink: String, val displayName: String)
+data class SoundCloudProfile(val permalink: String, val displayName: String, val id: String? = null)
 
 /**
  * Reads the account behind a signed-in SoundCloud session.
@@ -37,7 +37,9 @@ class SoundCloudAccountClient internal constructor(
             val display = user["username"]?.jsonPrimitive?.contentOrNull
                 ?: user["full_name"]?.jsonPrimitive?.contentOrNull
                 ?: permalink
-            return SoundCloudProfile(permalink, display)
+            val id = user["id"]?.jsonPrimitive?.intOrNull?.toString()
+                ?: user["id"]?.jsonPrimitive?.contentOrNull
+            return SoundCloudProfile(permalink, display, id)
         }
         return null
     }
@@ -58,9 +60,53 @@ class SoundCloudAccountClient internal constructor(
         return collection.mapNotNull { entry -> mapStreamTrack(entry.jsonObject) }.distinctBy { it.queueKey }
     }
 
+    /**
+     * The tracks the listener has liked.
+     *
+     * Here rather than through the extractor because the extractor will not have it: a likes page is not
+     * a playlist as far as NewPipe is concerned, and it refuses the address outright -- "URL not
+     * accepted" -- before any request is made. The same session that plays the tracks can simply ask.
+     *
+     * An empty list is an answer as much as a full one; a failure is null, so the caller can tell a
+     * listener with no likes from a service that would not say.
+     */
+    suspend fun likes(token: String, limit: Int = 200): List<Track>? {
+        if (token.isBlank()) return null
+        // Addressed by account id rather than by "me", which is how the web player asks and the only
+        // form that answers. `/me/likes/tracks` is a 404 and v1's `/me/favorites` a 403 -- that API is
+        // closed now -- so neither is worth trying. The id is already inside the token and needs no
+        // request of its own.
+        // The token carries the id when SoundCloud issued it in its old dash-separated form; one from a
+        // "continue with Google" sign-in does not, so the account is asked instead. That request is the
+        // same one the profile name comes from and is answered by the same session.
+        val id = SoundCloudToken.userIdFrom(token) ?: profile(token)?.id ?: return null
+        val urls = listOf(
+            "https://api-v2.soundcloud.com/users/$id/track_likes?limit=$limit&linked_partitioning=1",
+            "https://api-v2.soundcloud.com/users/$id/likes?limit=$limit&linked_partitioning=1",
+        )
+        for (url in urls) {
+            val reply = get(url, token) ?: continue
+            if (reply.status !in 200..299) continue
+            val root = runCatching { json.parseToJsonElement(reply.body) }.getOrNull() ?: continue
+            val rows = (root as? JsonArray)
+                ?: (root as? JsonObject)?.get("collection") as? JsonArray
+                ?: continue
+            return rows.mapNotNull { entry ->
+                val row = entry as? JsonObject ?: return@mapNotNull null
+                // A like is the track itself; a stream item wraps one. Both shapes read the same way.
+                trackFrom(row["track"]?.jsonObject ?: row)
+            }.distinctBy { it.queueKey }
+        }
+        return null
+    }
+
     internal fun mapStreamTrack(entry: JsonObject): Track? {
         // A stream item wraps either a track or a playlist; only tracks are playable on their own.
         val track = entry["track"]?.jsonObject ?: return null
+        return trackFrom(track)
+    }
+
+    private fun trackFrom(track: JsonObject): Track? {
         val id = track["id"]?.jsonPrimitive?.intOrNull?.toString()
             ?: track["id"]?.jsonPrimitive?.contentOrNull
             ?: return null

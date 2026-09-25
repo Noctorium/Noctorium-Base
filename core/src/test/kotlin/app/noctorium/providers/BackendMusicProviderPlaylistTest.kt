@@ -103,24 +103,28 @@ class BackendMusicProviderPlaylistTest {
         assertEquals(listOf("fallback"), provider.getPlaylistTracks(likedMusic).map { it.id })
     }
 
+    /**
+     * The reader is handed the playlist, not an id picked out of it.
+     *
+     * Which part of a playlist identifies it is the service's business: YouTube Music browses by the
+     * `list=` in the address, SoundCloud's likes are recognised by the address ending in `/likes`. Doing
+     * that here would mean this class knowing both, so it passes the whole thing along.
+     */
     @Test
-    fun `the playlist is browsed by the id in its address`() = runBlocking {
-        var asked: String? = null
+    fun `the reader is given the playlist itself`() = runBlocking {
+        var asked: Playlist? = null
         val provider = BackendMusicProvider(
             ProviderType.YOUTUBE_MUSIC,
             RecordingBackend(),
-            playlistTracks = { id, _ -> asked = id; emptyList() },
+            playlistTracks = { playlist, _ -> asked = playlist; emptyList() },
         )
 
-        provider.getPlaylistTracks(
-            likedMusic.copy(
-                id = "ignored",
-                // The trailing parameter must not end up part of the id.
-                sourceUrl = "https://music.youtube.com/playlist?list=PLabcdefghij&si=xyz",
-            ),
+        val withParameters = likedMusic.copy(
+            sourceUrl = "https://music.youtube.com/playlist?list=PLabcdefghij&si=xyz",
         )
+        provider.getPlaylistTracks(withParameters)
 
-        assertEquals("PLabcdefghij", asked)
+        assertEquals(withParameters, asked)
     }
 
     @Test
