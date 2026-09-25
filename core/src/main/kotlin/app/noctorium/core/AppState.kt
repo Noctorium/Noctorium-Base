@@ -308,7 +308,12 @@ class AppState(
 
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
-        BackendMusicProvider(ProviderType.YOUTUBE_MUSIC, ytDlp, ::youTubeSongSearch),
+        BackendMusicProvider(
+            ProviderType.YOUTUBE_MUSIC,
+            ytDlp,
+            ::youTubeSongSearch,
+            ::youTubePlaylistTracks,
+        ),
         BackendMusicProvider(ProviderType.YOUTUBE_VIDEO, ytDlp),
         BackendMusicProvider(ProviderType.SOUNDCLOUD, ytDlp),
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
@@ -1014,6 +1019,18 @@ class AppState(
         val keys = innertubeKeys.keys() ?: return emptyList()
         val session = youTubeSession() ?: YouTubeSession(keys, null)
         return youTubeMusic.searchSongs(query, limit, session)
+    }
+
+    /**
+     * One of the account's own playlists, read through YouTube Music.
+     *
+     * Needs a real session rather than the signed-out fallback [youTubeSongSearch] accepts: a playlist
+     * belongs to somebody, and browsing Liked Music without saying who is asking returns nothing.
+     */
+    private suspend fun youTubePlaylistTracks(playlistId: String, limit: Int): List<Track>? {
+        // Null rather than empty: no session is "cannot answer", and the caller should try the backend.
+        val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return null
+        return youTubeMusic.playlistTracks(playlistId, limit, session)
     }
 
     private suspend fun youTubeSession(): YouTubeSession? {

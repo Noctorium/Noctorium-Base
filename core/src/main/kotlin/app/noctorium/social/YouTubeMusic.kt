@@ -325,6 +325,52 @@ class YouTubeMusicClient internal constructor(
         return parseSongs(response.body).take(limit)
     }
 
+    /**
+     * The tracks of one playlist, read the way YouTube Music's own page reads them.
+     *
+     * Here because NewPipeExtractor cannot open the playlists that matter most. It requires a playlist id
+     * of at least ten characters, and YouTube's own built-in lists are two: `LM` is Liked Music, `SE` is
+     * Episodes for Later. Both are refused before a request is ever made -- "URL not accepted" -- so on
+     * the phone the listener's own liked songs opened to an error, which is the one list they are most
+     * likely to press.
+     *
+     * A playlist is browsed as `VL` followed by its id, which is where [LIKED_SONGS_BROWSE_ID] comes from,
+     * and the rows are the same shape search returns, so the same parser reads them.
+     *
+     * Null means this could not answer -- no reply, or a refusal -- as opposed to an empty list, which
+     * means it answered and the playlist is empty. The caller has a fallback that cannot open these
+     * playlists at all, so running it on a list that is merely empty would turn "nothing in here" into an
+     * error message. An empty playlist is a fact, not a failure.
+     */
+    suspend fun playlistTracks(playlistId: String, limit: Int, session: YouTubeSession): List<Track>? {
+        if (playlistId.isBlank() || limit <= 0) return null
+        val browseId = if (playlistId.startsWith("VL")) playlistId else "VL$playlistId"
+        val found = mutableListOf<Track>()
+        var continuation: String? = null
+
+        repeat(MAX_LIKED_PAGES) {
+            val token = continuation
+            val body = buildJsonObject {
+                put("context", context(session.keys.clientVersion))
+                if (token == null) put("browseId", browseId) else put("continuation", token)
+            }
+            // A failure on the first page is "could not answer"; on a later one, what arrived already is
+            // a better answer than nothing.
+            val response = post("browse", body.toString(), session)
+                ?: return found.take(limit).ifEmpty { null }
+            if (response.status !in 200..299) return found.take(limit).ifEmpty { null }
+
+            val page = parseSongs(response.body)
+            // A page with no songs on it is the end of the list, and on the first page it is an empty
+            // playlist -- which is an answer.
+            if (page.isEmpty()) return found.take(limit)
+            found += page
+            if (found.size >= limit) return found.take(limit)
+            continuation = continuationToken(response.body) ?: return found.take(limit)
+        }
+        return found.take(limit)
+    }
+
     internal fun parseSongs(body: String): List<Track> = runCatching {
         val rows = mutableListOf<JsonObject>()
         collectRenderers(json.parseToJsonElement(body), "musicResponsiveListItemRenderer", rows)

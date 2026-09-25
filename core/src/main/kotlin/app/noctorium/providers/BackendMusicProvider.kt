@@ -20,6 +20,20 @@ class BackendMusicProvider(
      * the artist belongs. Null, or anything it cannot answer, falls back to the yt-dlp listing.
      */
     private val searchSongs: (suspend (String, Int) -> List<Track>)? = null,
+    /**
+     * Reads a YouTube Music playlist through its own interface, given the playlist's id.
+     *
+     * For the same reason as [searchSongs], and one more: NewPipeExtractor refuses a playlist id shorter
+     * than ten characters, and YouTube's own built-in lists are two -- `LM` for Liked Music, `SE` for
+     * Episodes for Later. Those are exactly the ones a listener finds in their library, and on the phone
+     * they opened to "URL not accepted". Null falls back to the backend, which is right for SoundCloud
+     * and for anything this cannot answer.
+     *
+     * Returning null means "could not answer"; returning an empty list means "answered: it is empty".
+     * The two must stay apart, because the fallback cannot open these playlists at all and running it on
+     * a list that is merely empty replaces "nothing in here" with an error.
+     */
+    private val playlistTracks: (suspend (String, Int) -> List<Track>?)? = null,
 ) : MusicProvider {
     override suspend fun getHome(): List<HomeSection> {
         // Each row states what it actually is. The subtitle names the service so the heading does not have to,
@@ -79,7 +93,26 @@ class BackendMusicProvider(
 
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
         val url = playlist.sourceUrl ?: return playlist.tracks
+        // YouTube Music's own interface first, where there is one: it can open the built-in lists that
+        // the backend cannot, and it answers with titles, artists and lengths already filled in.
+        playlistIdOf(playlist)?.let { id ->
+            playlistTracks?.let { read ->
+                // Anything it answered is the answer, empty included. Only a null -- or a throw -- means
+                // it could not say, and only then is the backend worth asking.
+                runCatching { read(id, PLAYLIST_LIMIT) }.getOrNull()?.let { return it }
+            }
+        }
         return backend.listTracks(type, url)
+    }
+
+    /** The `list=` a playlist is addressed by, which is what YouTube Music browses it under. */
+    private fun playlistIdOf(playlist: Playlist): String? {
+        if (type != ProviderType.YOUTUBE_MUSIC) return null
+        val fromUrl = playlist.sourceUrl
+            ?.substringAfter("list=", "")
+            ?.substringBefore('&')
+            ?.takeIf(String::isNotBlank)
+        return fromUrl ?: playlist.id.takeIf(String::isNotBlank)
     }
 
     override suspend fun resolvePlaylistTracks(playlist: Playlist, from: Int, to: Int): List<Track> {
@@ -99,6 +132,9 @@ class BackendMusicProvider(
     private companion object {
         /** youtube:tab serves the signed-in account's own playlists here, YouTube Music ones included. */
         const val YOUTUBE_PLAYLISTS_FEED = "https://www.youtube.com/feed/playlists"
+
+        /** As many as anybody scrolls in one sitting; the list pages, so this only bounds the reading. */
+        const val PLAYLIST_LIMIT = 200
     }
 
     override suspend fun getRecommendations(context: PlaybackContext): List<Track> {
