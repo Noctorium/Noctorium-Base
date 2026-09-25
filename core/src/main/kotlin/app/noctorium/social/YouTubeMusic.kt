@@ -344,7 +344,13 @@ class YouTubeMusicClient internal constructor(
      */
     suspend fun playlistTracks(playlistId: String, limit: Int, session: YouTubeSession): List<Track>? {
         if (playlistId.isBlank() || limit <= 0) return null
-        val browseId = if (playlistId.startsWith("VL")) playlistId else "VL$playlistId"
+        // A playlist is browsed as VL + its id. An album is browsed by its own id, which already says
+        // what it is -- putting VL in front of one asks for a playlist that does not exist.
+        val browseId = when {
+            playlistId.startsWith("VL") -> playlistId
+            playlistId.startsWith("MPRE") -> playlistId
+            else -> "VL$playlistId"
+        }
         val found = mutableListOf<Track>()
         var continuation: String? = null
 
@@ -408,13 +414,92 @@ class YouTubeMusicClient internal constructor(
         val sections = findSectionContents(json.parseToJsonElement(body)) ?: return emptyList()
         sections.mapNotNull { section ->
             val shelf = section as? JsonObject ?: return@mapNotNull null
-            val rows = mutableListOf<JsonObject>()
-            collectRenderers(shelf, "musicResponsiveListItemRenderer", rows)
-            val tracks = rows.mapNotNull(::songFromRow).distinctBy { it.id }
-            if (tracks.isEmpty()) return@mapNotNull null
-            HomeShelf(title = shelfTitle(shelf) ?: return@mapNotNull null, tracks = tracks)
+            val title = shelfTitle(shelf) ?: return@mapNotNull null
+
+            val songRows = mutableListOf<JsonObject>()
+            collectRenderers(shelf, "musicResponsiveListItemRenderer", songRows)
+            val tracks = songRows.mapNotNull(::songFromRow).distinctBy { it.id }
+
+            // Songs win where a row somehow has both: a card that plays is a better tap than a card that
+            // opens, and the service does not actually mix them.
+            val cards = if (tracks.isNotEmpty()) {
+                emptyList()
+            } else {
+                val cardRows = mutableListOf<JsonObject>()
+                collectRenderers(shelf, "musicTwoRowItemRenderer", cardRows)
+                cardRows.mapNotNull(::playlistFromCard).distinctBy { it.id }
+            }
+
+            HomeShelf(title, tracks, cards).takeUnless { it.isEmpty }
         }
     }.getOrDefault(emptyList())
+
+    /**
+     * One card from a home row: a mix, a playlist or an album.
+     *
+     * Artists and anything else are skipped rather than shown, because tapping them would open a page
+     * Noctorium has none of. What is kept is addressed the way a playlist is, so opening one goes through
+     * the same path as opening it from the library.
+     */
+    private fun playlistFromCard(card: JsonObject): Playlist? {
+        val title = (card["title"] as? JsonObject)?.let(::runsOf)?.trim()?.takeIf(String::isNotBlank)
+            ?: return null
+        val browse = ((card["navigationEndpoint"] as? JsonObject)
+            ?.get("browseEndpoint") as? JsonObject)
+            ?: return null
+        val browseId = browse["browseId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+            ?: return null
+
+        val pageType = (((browse["browseEndpointContextSupportedConfigs"] as? JsonObject)
+            ?.get("browseEndpointContextMusicConfig") as? JsonObject)
+            ?.get("pageType"))?.jsonPrimitive?.contentOrNull
+        // A missing page type is trusted, because older replies carry none and the browse id shape is
+        // already doing the real filtering.
+        if (pageType != null && pageType !in CARD_PAGE_TYPES) return null
+
+        // What the card's play button would play, which is the thing worth opening.
+        //
+        // For a playlist this is the same id the browse endpoint carries. For an album it is not: an
+        // album browses under an MPRE id, and asking YouTube Music for that returns nothing a listing
+        // can be made of -- the extractor's own words for it are "this playlist type is unviewable".
+        // Every album also has an ordinary playlist of its tracks, and its id is here.
+        val id = findPlaylistId(card)
+            ?: browseId.removePrefix("VL").takeIf(String::isNotBlank)
+            ?: return null
+
+        return Playlist(
+            id = id,
+            title = title,
+            provider = ProviderType.YOUTUBE_MUSIC,
+            ownerName = (card["subtitle"] as? JsonObject)?.let(::runsOf)?.trim()?.takeIf(String::isNotBlank),
+            artworkUrl = cardArtwork(card),
+            sourceUrl = "https://music.youtube.com/playlist?list=$id",
+        )
+    }
+
+    /**
+     * The playlist a card would play, wherever in it the endpoint sits.
+     *
+     * Searched for rather than read from a fixed path, because the play button hangs off a different
+     * overlay on each kind of card and the only thing they agree on is the name of the field. Within one
+     * card there is nothing else a `playlistId` could refer to.
+     */
+    private fun findPlaylistId(element: JsonElement): String? = when (element) {
+        is JsonObject -> element["playlistId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+            ?: element.values.firstNotNullOfOrNull(::findPlaylistId)
+        is JsonArray -> element.firstNotNullOfOrNull(::findPlaylistId)
+        else -> null
+    }
+
+    /** The largest thumbnail a card offers, which is the one worth showing on a card. */
+    private fun cardArtwork(card: JsonObject): String? {
+        val thumbnails = (((card["thumbnailRenderer"] as? JsonObject)
+            ?.get("musicThumbnailRenderer") as? JsonObject)
+            ?.get("thumbnail") as? JsonObject)
+            ?.get("thumbnails") as? JsonArray
+        return thumbnails?.lastOrNull()?.let { (it as? JsonObject)?.get("url") }
+            ?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+    }
 
     /** The heading of a row, wherever this kind of row keeps it. */
     private fun shelfTitle(shelf: JsonObject): String? {
@@ -771,6 +856,9 @@ class YouTubeMusicClient internal constructor(
         /** The page YouTube Music opens on, built for whoever is asking. */
         const val HOME_BROWSE_ID = "FEmusic_home"
 
+        /** The cards worth showing: ones that open a list of songs. An artist page is not one. */
+        val CARD_PAGE_TYPES = setOf("MUSIC_PAGE_TYPE_PLAYLIST", "MUSIC_PAGE_TYPE_ALBUM")
+
         /**
          * Where each kind of row keeps its heading, ending at the object holding the `runs`.
          *
@@ -803,12 +891,18 @@ class YouTubeMusicClient internal constructor(
 
 /** A channel this account can act as. The default channel carries no page id. */
 /**
- * One row of YouTube Music's home page: what it is called, and the songs on it.
+ * One row of YouTube Music's home page: what it is called, and what is on it.
  *
- * Only the songs. A home page is mostly playlist and album cards, and Noctorium's home screen has
- * nowhere to put those yet, so rows carrying none are left out rather than shown empty.
+ * A row is songs or cards, never both. Most of a home page is the second kind -- the mixes and albums
+ * the service has put together -- and a row of those opens somewhere rather than playing something.
  */
-data class HomeShelf(val title: String, val tracks: List<Track>)
+data class HomeShelf(
+    val title: String,
+    val tracks: List<Track> = emptyList(),
+    val playlists: List<Playlist> = emptyList(),
+) {
+    val isEmpty: Boolean get() = tracks.isEmpty() && playlists.isEmpty()
+}
 
 data class YouTubeChannel(val pageId: String, val name: String) {
     val isDefault: Boolean get() = pageId.isBlank()

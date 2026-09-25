@@ -86,6 +86,13 @@ data class HomeSection(
     val provider: ProviderType,
     val subtitle: String? = null,
     val tracks: List<Track>,
+    /**
+     * Playlists and albums, where the row is made of those rather than of songs.
+     *
+     * A row is one or the other, never both: the services build them that way, and a strip mixing cards
+     * that play something with cards that open somewhere would be a guessing game for whoever taps one.
+     */
+    val playlists: List<Playlist> = emptyList(),
 )
 
 data class SearchResults(

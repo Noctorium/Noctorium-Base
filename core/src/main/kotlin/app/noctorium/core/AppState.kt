@@ -1034,9 +1034,18 @@ class AppState(
      * Needs a real session: signed out, the page is the same generic thing for everybody, which is no
      * better than the fixed searches it would be replacing.
      */
-    private suspend fun youTubeHomeRows(): List<Pair<String, List<Track>>>? {
+    private suspend fun youTubeHomeRows(): List<HomeSection>? {
         val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return null
-        return youTubeMusic.homeSections(session)?.map { it.title to it.tracks }
+        return youTubeMusic.homeSections(session)?.mapIndexed { index, shelf ->
+            HomeSection(
+                id = "${ProviderType.YOUTUBE_MUSIC.name}:home:$index",
+                title = shelf.title,
+                subtitle = "On YouTube Music",
+                provider = ProviderType.YOUTUBE_MUSIC,
+                tracks = shelf.tracks,
+                playlists = shelf.playlists,
+            )
+        }
     }
 
     private suspend fun youTubePlaylistTracks(playlistId: String, limit: Int): List<Track>? {

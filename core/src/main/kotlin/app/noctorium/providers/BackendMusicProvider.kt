@@ -40,7 +40,7 @@ class BackendMusicProvider(
      * Null falls back to the fixed searches below, which is what everybody saw before: the same two
      * queries for every listener, every day. A real home page is built for the account asking for it.
      */
-    private val homeRows: (suspend () -> List<Pair<String, List<Track>>>?)? = null,
+    private val homeRows: (suspend () -> List<HomeSection>?)? = null,
 ) : MusicProvider {
     override suspend fun getHome(): List<HomeSection> {
         if (type == ProviderType.YOUTUBE_MUSIC) {
@@ -48,17 +48,7 @@ class BackendMusicProvider(
                 val rows = runCatching { read() }.getOrNull()
                 // Empty is an answer -- a home page with nothing on it -- but it is not one worth showing,
                 // so the fixed searches stand in for it rather than leaving the screen blank.
-                if (!rows.isNullOrEmpty()) {
-                    return rows.mapIndexed { index, (title, tracks) ->
-                        HomeSection(
-                            id = "${type.name}:home:$index",
-                            title = title,
-                            subtitle = "On YouTube Music",
-                            provider = type,
-                            tracks = tracks,
-                        )
-                    }
-                }
+                if (!rows.isNullOrEmpty()) return rows
             }
         }
         return fixedHome()
