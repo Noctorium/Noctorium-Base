@@ -1,7 +1,5 @@
 package app.noctorium.social
 
-import app.noctorium.platform.TextFiles
-
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.Dispatchers
@@ -233,42 +231,6 @@ class SoundCloudLikeClient internal constructor(
 
     internal fun likeUrl(userId: String, trackId: String, clientId: String): String =
         "https://api-v2.soundcloud.com/users/$userId/track_likes/$trackId?client_id=$clientId"
-}
-
-/**
- * Finds the SoundCloud session token inside a Netscape cookie jar. Only the one cookie that authorises writes
- * is read; nothing else from the jar is kept.
- */
-object SoundCloudToken {
-    private const val COOKIE_NAME = "oauth_token"
-
-    /**
-     * The numeric account id carried inside the session token.
-     *
-     * SoundCloud's tokens are dash-separated as `version-application-user-secret`, so the account id is already
-     * on this machine and needs no request to discover. Only the id is taken; the secret half is never touched.
-     */
-    fun userIdFrom(token: String): String? {
-        val segments = token.trim().split('-')
-        if (segments.size < 4) return null
-        return segments[2].takeIf { it.length in 5..20 && it.all(Char::isDigit) }
-    }
-
-    fun fromCookieFile(path: Path): String? = runCatching {
-        fromCookieJar(TextFiles.read(path).orEmpty())
-    }.getOrNull()
-
-    fun fromCookieJar(text: String): String? = text.lineSequence()
-        .filterNot { it.startsWith("#") || it.isBlank() }
-        .mapNotNull { line ->
-            val fields = line.split('\t')
-            if (fields.size < 7) return@mapNotNull null
-            val domain = fields[0]
-            if (!domain.contains("soundcloud.com", ignoreCase = true)) return@mapNotNull null
-            if (fields[5] != COOKIE_NAME) return@mapNotNull null
-            fields[6].trim().takeIf(String::isNotBlank)
-        }
-        .firstOrNull()
 }
 
 /** A short, safe excerpt of a refusal body — enough to tell an API error from a bot-protection page. */

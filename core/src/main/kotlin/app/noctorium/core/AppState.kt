@@ -58,6 +58,8 @@ import app.noctorium.social.YouTubeMusicClient
 import app.noctorium.social.YouTubeChannel
 import app.noctorium.social.YouTubeSession
 import app.noctorium.social.cookieHeaderFor
+import app.noctorium.social.SoundCloudRefreshResult
+import app.noctorium.social.SoundCloudTokenRefresh
 import app.noctorium.spotify.SpotifyAccess
 import app.noctorium.spotify.SpotifyAuth
 import app.noctorium.spotify.SpotifyClient
@@ -104,6 +106,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
@@ -277,6 +281,7 @@ class AppState(
     private val discordPresence: PresenceReporter = NoPresenceReporter(),
     private val soundCloudAccount: SoundCloudAccountClient = SoundCloudAccountClient(),
     private val soundCloudClientIds: SoundCloudClientIdProvider = SoundCloudClientIdProvider(),
+    private val soundCloudRefresh: SoundCloudTokenRefresh = SoundCloudTokenRefresh(),
     private val playlistClient: SoundCloudPlaylistClient = SoundCloudPlaylistClient(),
     private val youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(),
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
@@ -324,6 +329,16 @@ class AppState(
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Held while the SoundCloud token is read or renewed.
+     *
+     * Renewing spends the refresh token and SoundCloud issues a replacement, so two renewals at once would
+     * leave one of them holding something already invalidated -- and a screen opening fires several reads
+     * at once by design. Declared up here because the launch below reaches for it before the rest of this
+     * class has finished being built.
+     */
+    private val soundCloudTokenLock = Mutex()
     private val storedPreferences = settingsRepository.load()
 
     /**
@@ -970,18 +985,13 @@ class AppState(
                 LikeResult(LikeOutcome.NEEDS_TOKEN, "Sign in to SoundCloud in Settings before liking tracks.")
             } else {
                 val first = soundCloudLike(track, token, liking)
-                // A refused token is often simply a stale copy: the browser session may have rotated it since
-                // sign-in, and the exported cookie file is where a newer one would be.
+                // A refused token is usually one that has run out since it was read -- they last an hour --
+                // so the session is renewed and the write tried once more rather than reported as a failure.
                 if (first.outcome != LikeOutcome.TOKEN_REJECTED) {
                     first
                 } else {
-                    val fresh = withContext(Dispatchers.IO) { tokenFromCookieFile() }
-                    if (fresh == null || fresh == token) {
-                        first
-                    } else {
-                        withContext(Dispatchers.IO) { runCatching { credentials.put(SOUNDCLOUD_TOKEN, fresh) } }
-                        soundCloudLike(track, fresh, liking)
-                    }
+                    val fresh = soundCloudToken(forceRenewal = true)
+                    if (fresh.isNullOrBlank() || fresh == token) first else soundCloudLike(track, fresh, liking)
                 }
             }
         }
@@ -1005,10 +1015,10 @@ class AppState(
     /**
      * The account id SoundCloud addresses a like by.
      *
-     * Its older tokens carry it -- they are dash-separated as version-application-user-secret -- but one
-     * issued through "continue with Google" does not, and reading it from there was the only route. So
-     * every like failed before a request was made, with "could not read your account id from the
-     * session", on a session that was working perfectly.
+     * Both shapes of token carry it and [SoundCloudToken.userIdFrom] reads either, so this is the third
+     * route and rarely taken -- but it is the one that saved the day when only the dash-separated shape
+     * was understood and every like failed before a request was made, saying the account id could not be
+     * read, on a session that was working perfectly.
      *
      * Kept once found. Liking is the one thing somebody does over and over, and the account is not going
      * to become a different account.
@@ -1115,16 +1125,7 @@ class AppState(
     }
 
     /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
-    private fun soundCloudCookies(): String? {
-        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile
-        return file.takeIf(String::isNotBlank)?.let { soundCloudCookieHeader(Path.of(it)) }
-    }
-
-    /** The session token as it stands in the exported cookie file, which sign-in refreshes. */
-    private fun tokenFromCookieFile(): String? {
-        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile
-        return file.takeIf(String::isNotBlank)?.let { SoundCloudToken.fromCookieFile(Path.of(it)) }
-    }
+    private fun soundCloudCookies(): String? = soundCloudCookieFile()?.let { soundCloudCookieHeader(it) }
 
     /** Reads each connected account's likes so hearts reflect the services rather than only this session. */
     fun refreshLikes() {
@@ -1198,6 +1199,9 @@ class AppState(
                     "No SoundCloud session token found in ${source.describe()}. Sign in to SoundCloud in that browser, then try again.",
                 )
             }
+            soundCloudRefreshTokenFromSession()?.let {
+                runCatching { credentials.put(SOUNDCLOUD_REFRESH_TOKEN, it) }
+            }
             runCatching { credentials.put(SOUNDCLOUD_TOKEN, token) }
                 .onSuccess {
                     mutableLikes.update { it.copy(soundCloudReady = true) }
@@ -1253,6 +1257,13 @@ class AppState(
                 withContext(Dispatchers.IO) { runCatching { credentials.put(SOUNDCLOUD_TOKEN, oauthToken) } }
                     .onSuccess { mutableLikes.update { it.copy(soundCloudReady = true) } }
             }
+            // Kept from the same jar as the token, one line away from it, and never read before. Without
+            // it the session was good for an hour and then looked like a sign-out that nobody performed.
+            withContext(Dispatchers.IO) {
+                soundCloudRefreshTokenFromSession()?.let {
+                    runCatching { credentials.put(SOUNDCLOUD_REFRESH_TOKEN, it) }
+                }
+            }
             // The browser may already have revealed the profile during sign-in; otherwise go and ask.
             if (!permalink.isNullOrBlank()) {
                 adoptSoundCloudProfile(permalink, permalink)
@@ -1280,20 +1291,65 @@ class AppState(
      * often than they should -- an older sign-in, or one where reading the token failed -- and every
      * caller wants the same answer, so they all ask here rather than each remembering to look twice.
      */
-    private suspend fun soundCloudToken(): String? = withContext(Dispatchers.IO) {
-        runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
-            ?: soundCloudTokenFromSession()
+    private suspend fun soundCloudToken(forceRenewal: Boolean = false): String? = soundCloudTokenLock.withLock {
+        val stored = withContext(Dispatchers.IO) {
+            runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
+                ?: soundCloudTokenFromSession()
+        }
+        if (stored != null && !forceRenewal && !SoundCloudToken.hasExpired(stored)) return@withLock stored
+        // A renewal that cannot be made leaves the old token in place: expired is a guess from a clock,
+        // and a token SoundCloud still honours is better than none.
+        renewedSoundCloudToken(stored) ?: stored
     }
 
-    private fun soundCloudTokenFromSession(): String? {
-        val file = mutableSettings.value.preferences.soundCloudCookies.cookieFile.takeIf(String::isNotBlank)
-            ?: return null
-        return cookieHeaderFor(Path.of(file), "soundcloud.com", names = setOf("oauth_token"))
-            ?.substringAfter("oauth_token=", missingDelimiterValue = "")
-            ?.substringBefore(';')
-            ?.trim()
-            ?.takeIf(String::isNotBlank)
+    /**
+     * Trades the spent token for a fresh one, and remembers both halves of the reply.
+     *
+     * The refresh token rotates -- SoundCloud invalidates the one just used -- so the new one has to be
+     * stored, and this runs under [soundCloudTokenLock] so two readers cannot spend the same one twice.
+     */
+    private suspend fun renewedSoundCloudToken(spent: String?): String? {
+        val refreshToken = withContext(Dispatchers.IO) {
+            runCatching { credentials.get(SOUNDCLOUD_REFRESH_TOKEN) }.getOrNull().takeUnless { it.isNullOrBlank() }
+                ?: soundCloudRefreshTokenFromSession()
+        } ?: return null
+        // The client the refresh token belongs to, named by the token it came with rather than written
+        // down here: a sign-in through a different one would be refused by a constant.
+        val clientId = spent?.let { SoundCloudToken.clientIdFrom(it) } ?: return null
+
+        return when (val result = soundCloudRefresh.refresh(refreshToken, clientId)) {
+            is SoundCloudRefreshResult.Renewed -> {
+                withContext(Dispatchers.IO) {
+                    runCatching { credentials.put(SOUNDCLOUD_TOKEN, result.session.accessToken) }
+                    result.session.refreshToken?.let {
+                        runCatching { credentials.put(SOUNDCLOUD_REFRESH_TOKEN, it) }
+                    }
+                }
+                mutableLikes.update { it.copy(soundCloudReady = true) }
+                result.session.accessToken
+            }
+            // Spent for good. Clearing it is what stops every later read retrying a refusal, and saying so
+            // once is the difference between "sign in again" and a day of things quietly not working.
+            SoundCloudRefreshResult.Rejected -> {
+                withContext(Dispatchers.IO) { runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) } }
+                mutableLikes.update { it.copy(soundCloudReady = false) }
+                likeMessage("Your SoundCloud session has ended. Sign in again in Settings.")
+                null
+            }
+            SoundCloudRefreshResult.Unavailable -> null
+        }
     }
+
+    private fun soundCloudTokenFromSession(): String? =
+        soundCloudCookieFile()?.let { SoundCloudToken.fromCookieFile(it) }
+
+    private fun soundCloudRefreshTokenFromSession(): String? =
+        soundCloudCookieFile()?.let { SoundCloudToken.refreshTokenFromCookieFile(it) }
+
+    private fun soundCloudCookieFile(): Path? =
+        mutableSettings.value.preferences.soundCloudCookies.cookieFile
+            .takeIf(String::isNotBlank)
+            ?.let { Path.of(it) }
 
     fun detectSoundCloudProfile(announce: Boolean = true) {
         scope.launch {
@@ -1339,6 +1395,7 @@ class AppState(
 
     fun disconnectSoundCloudLiking() {
         runCatching { credentials.remove(SOUNDCLOUD_TOKEN) }
+        runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) }
         mutableLikes.update { state ->
             state.copy(
                 soundCloudReady = false,
@@ -1765,6 +1822,7 @@ class AppState(
             playlistJob?.cancel()
             updatePreferences { copy(soundCloudCookies = CookieSource(), soundCloudUsername = "") }
             runCatching { credentials.remove(SOUNDCLOUD_TOKEN) }
+            runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) }
             mutableLikes.update { state ->
                 state.copy(
                     soundCloudReady = false,
@@ -2972,6 +3030,9 @@ private fun describeFailure(error: Throwable): String =
 
 /** Credential-store key for the SoundCloud session token that authorises writing likes. */
 private const val SOUNDCLOUD_TOKEN = "soundcloud.oauth_token"
+
+/** Credential-store key for what buys the next session token, since the one above lasts an hour. */
+private const val SOUNDCLOUD_REFRESH_TOKEN = "soundcloud.oauth_refresh_token"
 
 /** Where somebody is sent when Noctorium cannot fetch the update for them. */
 private const val RELEASES_PAGE = "https://github.com/Noctorium/Noctorium-Installer/releases/latest"

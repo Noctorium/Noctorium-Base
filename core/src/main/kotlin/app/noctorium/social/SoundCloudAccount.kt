@@ -78,9 +78,8 @@ class SoundCloudAccountClient internal constructor(
         // form that answers. `/me/likes/tracks` is a 404 and v1's `/me/favorites` a 403 -- that API is
         // closed now -- so neither is worth trying. The id is already inside the token and needs no
         // request of its own.
-        // The token carries the id when SoundCloud issued it in its old dash-separated form; one from a
-        // "continue with Google" sign-in does not, so the account is asked instead. That request is the
-        // same one the profile name comes from and is answered by the same session.
+        // Both shapes of token carry the id -- the old one in the middle of its dashes, the web token in
+        // its subject -- so asking the account is only for a shape neither reader recognises.
         val id = SoundCloudToken.userIdFrom(token) ?: profile(token)?.id ?: return null
         val urls = listOf(
             "https://api-v2.soundcloud.com/users/$id/track_likes?limit=$limit&linked_partitioning=1",
