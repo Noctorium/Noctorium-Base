@@ -965,7 +965,7 @@ class AppState(
 
     private suspend fun writeLike(track: Track, liking: Boolean): LikeResult = when (track.provider) {
         ProviderType.SOUNDCLOUD -> {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            val token = soundCloudToken()
             if (token.isNullOrBlank()) {
                 LikeResult(LikeOutcome.NEEDS_TOKEN, "Sign in to SoundCloud in Settings before liking tracks.")
             } else {
@@ -1002,15 +1002,40 @@ class AppState(
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
-    private suspend fun soundCloudLike(track: Track, token: String, liking: Boolean): LikeResult =
-        likeClient.setLiked(
-            trackId = track.id,
-            userId = SoundCloudToken.userIdFrom(token).orEmpty(),
+    /**
+     * The account id SoundCloud addresses a like by.
+     *
+     * Its older tokens carry it -- they are dash-separated as version-application-user-secret -- but one
+     * issued through "continue with Google" does not, and reading it from there was the only route. So
+     * every like failed before a request was made, with "could not read your account id from the
+     * session", on a session that was working perfectly.
+     *
+     * Kept once found. Liking is the one thing somebody does over and over, and the account is not going
+     * to become a different account.
+     */
+    @Volatile
+    private var knownSoundCloudUserId: String? = null
+
+    private suspend fun soundCloudUserId(token: String): String? {
+        SoundCloudToken.userIdFrom(token)?.let { return it }
+        knownSoundCloudUserId?.let { return it }
+        return soundCloudAccount.profile(token)?.id?.also { knownSoundCloudUserId = it }
+    }
+
+    private suspend fun soundCloudLike(track: Track, token: String, liking: Boolean): LikeResult {
+        val clientId = soundCloudClientIds.clientId()
+        return likeClient.setLiked(
+            // The desktop's backend gives a numeric id; the phone's gives the permalink the page carries,
+            // and only SoundCloud can turn one into the other.
+            trackId = track.id.takeIf { it.all(Char::isDigit) }
+                ?: soundCloudAccount.trackId(track.sourceUrl, token, clientId).orEmpty(),
+            userId = soundCloudUserId(token).orEmpty(),
             token = token,
-            clientId = soundCloudClientIds.clientId(),
+            clientId = clientId,
             liked = liking,
             cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
         )
+    }
 
     /**
      * The session YouTube Music calls need: the page identifiers plus every cookie for the account, since
@@ -1105,10 +1130,10 @@ class AppState(
     fun refreshLikes() {
         scope.launch {
             // One call for the whole liked set, rather than listing two hundred tracks through yt-dlp.
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            val token = soundCloudToken()
             if (!token.isNullOrBlank()) {
                 val liked = likeClient.likedTrackIds(
-                    userId = SoundCloudToken.userIdFrom(token).orEmpty(),
+                    userId = soundCloudUserId(token).orEmpty(),
                     token = token,
                     clientId = soundCloudClientIds.clientId(),
                     cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
@@ -1509,7 +1534,7 @@ class AppState(
      */
     private fun withSoundCloudWrite(write: suspend (String, String?, String?) -> PlaylistWriteResult) {
         scope.launch {
-            val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+            val token = soundCloudToken()
             if (token.isNullOrBlank()) {
                 return@launch libraryNotice("Sign in to SoundCloud under Settings before editing its playlists.")
             }
@@ -2111,9 +2136,9 @@ class AppState(
      * page listing should be used instead.
      */
     private suspend fun soundCloudOwnPlaylists(): List<Playlist>? {
-        val token = withContext(Dispatchers.IO) { runCatching { credentials.get(SOUNDCLOUD_TOKEN) }.getOrNull() }
+        val token = soundCloudToken()
         if (token.isNullOrBlank()) return null
-        val userId = SoundCloudToken.userIdFrom(token) ?: return null
+        val userId = soundCloudUserId(token) ?: return null
         val own = runCatching {
             playlistClient.list(
                 userId = userId,

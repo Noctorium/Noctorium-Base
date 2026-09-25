@@ -5,6 +5,8 @@ import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 data class SoundCloudProfile(val permalink: String, val displayName: String, val id: String? = null)
 
@@ -98,6 +100,36 @@ class SoundCloudAccountClient internal constructor(
             }.distinctBy { it.queueKey }
         }
         return null
+    }
+
+    /**
+     * The numeric id SoundCloud's API needs, for a track Noctorium only knows the address of.
+     *
+     * The phone's extractor identifies a SoundCloud track by its permalink -- `tooore/burial-forgive` --
+     * because that is what the page gives it, while every write in the API is addressed by a number. So
+     * liking anything found on the phone failed before a request was made, saying the track had no id,
+     * which read as though the track were at fault.
+     *
+     * SoundCloud will translate one into the other, which is what `resolve` is for.
+     */
+    suspend fun trackId(permalinkUrl: String, token: String, clientId: String?): String? {
+        if (permalinkUrl.isBlank() || token.isBlank()) return null
+        // resolve answers 401 to a session alone. It is a public endpoint that wants the site's own
+        // client id as well, which is the same one every SoundCloud write here already carries.
+        if (clientId.isNullOrBlank()) return null
+        val encoded = URLEncoder.encode(permalinkUrl, StandardCharsets.UTF_8)
+        // Sent without the session, which is what resolve wants. It is the site's own public lookup and
+        // answers 401 to an OAuth header even when the client id is right beside it -- the token makes it
+        // look like a request for something private, and resolving a public address is not.
+        val reply = get("https://api-v2.soundcloud.com/resolve?url=$encoded&client_id=$clientId", token = "")
+            ?: return null
+        if (reply.status !in 200..299) return null
+        val root = runCatching { json.parseToJsonElement(reply.body).jsonObject }.getOrNull() ?: return null
+        // Only a track can be liked as a track; resolving a playlist address would give an id that the
+        // like endpoint would accept and then apply to the wrong thing.
+        if (root["kind"]?.jsonPrimitive?.contentOrNull != "track") return null
+        return root["id"]?.jsonPrimitive?.intOrNull?.toString()
+            ?: root["id"]?.jsonPrimitive?.contentOrNull?.takeIf { it.all(Char::isDigit) }
     }
 
     internal fun mapStreamTrack(entry: JsonObject): Track? {
