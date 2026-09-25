@@ -18,3 +18,6 @@ secrets/
 Thumbs.db
 
 local.properties
+
+# Editor and tooling scratch, machine-specific.
+.claude/
