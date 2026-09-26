@@ -61,4 +61,32 @@ class AppearanceTest {
         assertTrue(Glass.PANEL_ALPHA in .7f..0.95f)
         assertTrue(Glass.CARD_ALPHA in .6f..Glass.PANEL_ALPHA, "a card sits on a panel, so it is never the more solid of the two")
     }
+
+    /** Material's slider draws itself; everything else goes through the players' own canvas. */
+    @Test
+    fun `every seek bar except Material is drawn`() {
+        assertFalse(ProgressBarStyle.MATERIAL.isDrawn)
+        ProgressBarStyle.entries.filter { it != ProgressBarStyle.MATERIAL }.forEach {
+            assertTrue(it.isDrawn, "$it has no drawing and Material will not draw it either")
+        }
+    }
+
+    /**
+     * The segment pitch is a size, not a count, and the difference is the bug it was written to fix.
+     *
+     * A fixed count makes the block a different size on every screen -- forty across a phone came out
+     * as a row of dots. Keep this in a range where a block is a block and a bar the width of a phone
+     * still has enough of them to read as a progress bar.
+     */
+    @Test
+    fun `a segment is a sensible size rather than a count`() {
+        assertTrue(SeekBar.SEGMENT_PITCH_DP in 10..24)
+        assertTrue(SeekBar.SEGMENT_GAP_RATIO in .1f..0.5f, "no gap is one solid bar; half of it is a row of specks")
+    }
+
+    @Test
+    fun `the wave is a wave and not a vibration`() {
+        assertTrue(SeekBar.WAVE_LENGTH_DP > SeekBar.WAVE_AMPLITUDE_DP * 2, "taller than it is long is a zigzag")
+        assertTrue(SeekBar.WAVE_SECONDS_PER_CYCLE >= 1f, "faster than this is a seek bar demanding attention")
+    }
 }

@@ -170,7 +170,13 @@ enum class PlayerBarPosition(val displayName: String, val description: String) {
     ),
 }
 
-/** How the seek bar is drawn. Both are fully functional; the difference is how much furniture they carry. */
+/**
+ * How the seek bar is drawn.
+ *
+ * All of them seek, by tap and by drag, and all of them say the same two times. The difference is what
+ * the bar looks like while it does it, which on the one control somebody stares at for the length of
+ * every song is not a small thing.
+ */
 @Serializable
 enum class ProgressBarStyle(val displayName: String, val description: String) {
     MINIMAL(
@@ -181,6 +187,64 @@ enum class ProgressBarStyle(val displayName: String, val description: String) {
         "Material",
         "The standard slider, with a larger handle and a thicker track.",
     ),
+    WAVE(
+        "Wave",
+        "The part that has played is a wave, and it travels while the music does.",
+    ),
+    SEGMENTS(
+        "Segments",
+        "The track in even blocks, filling one at a time.",
+    ),
+    CAPSULE(
+        "Capsule",
+        "One thick rounded bar, filled from the left. No handle, nothing else.",
+    ),
+    ;
+
+    /** Whether this one is drawn rather than handed to Material's own slider. */
+    val isDrawn: Boolean get() = this != MATERIAL
+}
+
+/**
+ * The numbers the drawn seek bars are made of, so both players draw the same bar.
+ *
+ * In density-independent pixels throughout, and deliberately not colours: the colours are whatever the
+ * theme and the accent are, which is what lets a wave look right on Gruvbox and on Latte.
+ */
+object SeekBar {
+    /** Thickness of the hairline track, and of the wave's stroke. */
+    const val LINE_DP = 3
+
+    /** The head of a minimal or wave bar. */
+    const val DOT_RADIUS_DP = 6
+
+    /** How tall the wave stands off the centre line, peak to centre. */
+    const val WAVE_AMPLITUDE_DP = 4
+
+    /** One full crest-and-trough, along the bar. */
+    const val WAVE_LENGTH_DP = 20
+
+    /** Seconds for the wave to travel one whole wavelength. Slow: it is a seek bar, not a screensaver. */
+    const val WAVE_SECONDS_PER_CYCLE = 1.6f
+
+    /**
+     * How wide one block and its gap are together. The *count* follows from the bar's width.
+     *
+     * The other way round -- a fixed number of blocks -- was the first attempt, and it makes the block
+     * a different size on every screen: forty of them across a phone came out as a row of dots, and the
+     * same forty across a desktop window are chunky bars. Fixing the pitch instead means a block is a
+     * block everywhere, and a wider bar simply has more of them.
+     */
+    const val SEGMENT_PITCH_DP = 15
+
+    /** The gap between those blocks, as a fraction of one block's width. */
+    const val SEGMENT_GAP_RATIO = .28f
+
+    /** Thickness of the capsule. Fat enough to be the bar rather than a line under the title. */
+    const val CAPSULE_DP = 10
+
+    /** What an unplayed track is drawn at, against the writing colour. */
+    const val TRACK_ALPHA = .22f
 }
 
 @Serializable
