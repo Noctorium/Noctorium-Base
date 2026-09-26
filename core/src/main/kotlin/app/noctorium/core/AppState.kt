@@ -634,6 +634,9 @@ class AppState(
     fun setCustomTheme(colours: ThemeColours) = updatePreferences {
         copy(theme = ThemePreset.CUSTOM, customTheme = colours, accent = if (accent == AccentPreset.ARTWORK) accent else AccentPreset.THEME)
     }
+    fun setSurfaceStyle(style: SurfaceStyle) = updatePreferences { copy(surfaceStyle = style) }
+    fun setCornerStyle(style: CornerStyle) = updatePreferences { copy(cornerStyle = style) }
+    fun setTextSize(size: TextSize) = updatePreferences { copy(textSize = size) }
     fun setCardSize(size: CardSize) = updatePreferences { copy(cardSize = size) }
     fun setBadgePolicy(policy: BadgePolicy) = updatePreferences { copy(badgePolicy = policy) }
     fun setHoverControls(controls: HoverControls) = updatePreferences { copy(hoverControls = controls) }

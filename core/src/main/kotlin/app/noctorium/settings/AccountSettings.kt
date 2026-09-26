@@ -200,6 +200,12 @@ data class NoctoriumPreferences(
     val theme: ThemePreset = ThemePreset.NOCTORIUM_NIGHT,
     val customTheme: ThemeColours = ThemePreset.NOCTORIUM_NIGHT.colours!!,
     val backgroundDepth: BackgroundDepth = BackgroundDepth.AMOLED,
+    /** Panels as solid colour, or as glass over a blurred wash of the cover. See [SurfaceStyle]. */
+    val surfaceStyle: SurfaceStyle = SurfaceStyle.SOLID,
+    /** How round every corner is. Soft is what the players drew before this was a choice. */
+    val cornerStyle: CornerStyle = CornerStyle.SOFT,
+    /** Every text size at once, scaled. Separate from the system's own setting, which covers everything. */
+    val textSize: TextSize = TextSize.DEFAULT,
     val cardSize: CardSize = CardSize.COMFORTABLE,
     val badgePolicy: BadgePolicy = BadgePolicy.AUTO,
     val hoverControls: HoverControls = HoverControls.ON_HOVER,
