@@ -49,17 +49,30 @@ class AppearanceTest {
     }
 
     /**
-     * The panels have to stay panels.
+     * The lens bends at the rim and leaves the middle alone.
      *
-     * Translucency below about a half stops reading as a surface and starts reading as a hole -- which
-     * is not a matter of taste here but of what can be blurred: Compose can pre-blur the wash behind
-     * everything, and cannot blur whatever happens to sit behind one particular panel. The first attempt
-     * at these numbers put a legible album title through the middle of a dialog.
+     * If the bend reached further than the rim is wide, the flat middle of the pane would be distorted
+     * too, and the mini player's title would swim. And a pane frosted heavily is the old frosted glass
+     * this replaced: liquid glass is mostly clear, and what is behind it stays recognisable.
      */
     @Test
-    fun `glass is translucent without being a window`() {
-        assertTrue(Glass.PANEL_ALPHA in .7f..0.95f)
-        assertTrue(Glass.CARD_ALPHA in .6f..Glass.PANEL_ALPHA, "a card sits on a panel, so it is never the more solid of the two")
+    fun `the glass is a lens with a clear middle`() {
+        assertTrue(Glass.REFRACTION_DP in 1..Glass.BEZEL_DP, "a bend wider than the rim reaches into the middle")
+        assertTrue(Glass.FROST_DP in 1..12, "past this it is frosted glass, not liquid glass")
+        assertTrue(Glass.DISPERSION in 0f..0.2f, "past this the rim reads as a broken monitor")
+    }
+
+    /**
+     * The shader is compiled at run time on both platforms, so a typo in it is a crash on a phone rather
+     * than a failed build. These are the names the players set, and a rename on one side has to be one
+     * on the other.
+     */
+    @Test
+    fun `the lens declares every uniform the players set`() {
+        listOf("content", "origin", "size", "radius", "bezel", "strength", "dispersion").forEach { name ->
+            assertTrue(Regex("""uniform\s+\w+\s+$name\s*;""").containsMatchIn(Glass.LENS_SHADER), "no uniform called $name")
+        }
+        assertTrue("half4 main(float2" in Glass.LENS_SHADER)
     }
 
     /** Material's slider draws itself; everything else goes through the players' own canvas. */
