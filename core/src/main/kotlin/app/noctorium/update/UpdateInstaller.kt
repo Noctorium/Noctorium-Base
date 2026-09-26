@@ -42,12 +42,21 @@ interface UpdateInstaller {
     }
 }
 
-/** Everything the settings screen shows about updating. */
+/** Everything the settings screen shows about updating, and the one thing that interrupts. */
 data class UpdateState(
     val currentVersion: String = "",
     val checking: Boolean = false,
-    /** Set once a newer release is found, and cleared when it is dismissed or installed. */
+    /** Set once a newer release is found, and cleared when it is installed. */
     val available: AvailableUpdate? = null,
+    /**
+     * The same release, when it is one worth interrupting somebody about.
+     *
+     * Apart from [available] because the two answer different questions. The settings card asks "is
+     * there a newer Noctorium", and should go on saying yes however many times the offer has been
+     * turned down. This asks "should a dialog appear in front of somebody who did not ask", which is
+     * true once per version and never again after they say no.
+     */
+    val prompt: AvailableUpdate? = null,
     /** Between 0 and 1 while a download is running, null when none is. */
     val downloading: Float? = null,
     val message: String? = null,

@@ -48,6 +48,20 @@ sealed interface UpdateCheck {
 }
 
 /**
+ * Whether a release that was found is one to put a dialog in front of somebody about.
+ *
+ * The whole of the rule that keeps an offer from becoming nagging, kept out here where it can be read
+ * and tested rather than buried in a coroutine inside a state holder.
+ *
+ * Two conditions, and both are about not talking over somebody. [quietly] is the check nobody asked for,
+ * the one at launch; a check somebody started from settings is answered by the settings screen they are
+ * already looking at. And [dismissedVersion] is what they last said "not now" to -- the check runs every
+ * launch, so without remembering that, declining would buy exactly one launch of peace.
+ */
+fun shouldPromptAbout(found: Version, quietly: Boolean, dismissedVersion: String): Boolean =
+    quietly && found.toString() != dismissedVersion
+
+/**
  * Asks GitHub whether there is a newer Noctorium than this one.
  *
  * The releases API rather than a file we publish somewhere, because the releases are already the thing

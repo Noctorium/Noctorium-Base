@@ -92,6 +92,7 @@ import app.noctorium.update.UpdateChecker
 import app.noctorium.update.UpdateDownloader
 import app.noctorium.update.UpdateInstaller
 import app.noctorium.update.UpdateState
+import app.noctorium.update.shouldPromptAbout
 import app.noctorium.account.NoctoriumUser
 import app.noctorium.settings.*
 import kotlinx.coroutines.CoroutineScope
@@ -2634,7 +2635,14 @@ class AppState(
             mutableUpdates.update { it.copy(checking = true, message = null) }
             when (val result = updateChecker.check()) {
                 is UpdateCheck.Available -> mutableUpdates.update {
-                    it.copy(checking = false, available = result.update, message = null)
+                    it.copy(
+                        checking = false,
+                        available = result.update,
+                        prompt = result.update.takeIf {
+                            shouldPromptAbout(result.update.version, quietly, dismissedUpdateVersion())
+                        },
+                        message = null,
+                    )
                 }
                 UpdateCheck.UpToDate -> mutableUpdates.update {
                     it.copy(
@@ -2667,7 +2675,8 @@ class AppState(
         if (mutableUpdates.value.busy) return
         updateJob?.cancel()
         updateJob = scope.launch {
-            mutableUpdates.update { it.copy(downloading = 0f, message = null) }
+            // Saying yes closes the offer as surely as saying no does.
+            mutableUpdates.update { it.copy(prompt = null, downloading = 0f, message = null) }
             val target = updateInstaller.downloadDirectory().resolve(file.name)
             val outcome = updateDownloader.fetch(file, update.sha256, target) { fraction ->
                 mutableUpdates.update { it.copy(downloading = fraction) }
@@ -2702,8 +2711,41 @@ class AppState(
             .onFailure { mutableUpdates.update { state -> state.copy(message = "Could not open $url") } }
     }
 
-    /** Puts the notice away until the next check finds it again. */
-    fun dismissUpdate() = mutableUpdates.update { it.copy(available = null, message = null) }
+    /**
+     * "Yes": takes the update by whichever route this installation has.
+     *
+     * A copy that can install itself does. One that cannot -- an unzipped folder, a release with no
+     * file for this platform, one that published no checksum -- is sent to the release page instead,
+     * which is the whole of what Noctorium can honestly do about those. Either way the offer is done
+     * with: somebody who said yes should not be asked again next launch for having said it.
+     */
+    fun acceptUpdate() {
+        val update = mutableUpdates.value.prompt ?: mutableUpdates.value.available ?: return
+        if (updateInstaller.channel.canInstallItself && update.file != null && update.sha256 != null) {
+            installUpdate()
+        } else {
+            openReleasePage()
+            dismissUpdate()
+        }
+    }
+
+    /**
+     * "Not now": puts the offer away and remembers which version was turned down.
+     *
+     * Only the interruption goes. The settings card still says a newer Noctorium exists, because
+     * somebody who goes to settings to look is asking, and the answer does not change because they
+     * once said not now. What does not happen again is a dialog about this version.
+     */
+    fun dismissUpdate() {
+        val declined = mutableUpdates.value.prompt?.version?.toString().orEmpty()
+        mutableUpdates.update { it.copy(prompt = null, message = null) }
+        if (declined.isNotBlank()) {
+            updatePreferences { copy(updates = this.updates.copy(dismissedVersion = declined)) }
+        }
+    }
+
+    /** What was last turned down, from the live preferences rather than the copy loaded at startup. */
+    private fun dismissedUpdateVersion(): String = mutableSettings.value.preferences.updates.dismissedVersion
 
     fun clearUpdateMessage() = mutableUpdates.update { it.copy(message = null) }
 

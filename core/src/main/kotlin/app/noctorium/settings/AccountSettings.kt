@@ -315,7 +315,17 @@ data class ConnectPreferences(
  * so and have it mean it -- nothing else in the application checks.
  */
 @Serializable
-data class UpdatePreferences(val checkOnLaunch: Boolean = true)
+data class UpdatePreferences(
+    val checkOnLaunch: Boolean = true,
+    /**
+     * The version somebody said "not now" to, so the offer is not made about it again.
+     *
+     * Saved rather than held for the session, because the check runs at every launch and an offer that
+     * comes back every launch after being declined is not an offer, it is nagging. Empty until
+     * something has been turned down. The next version asks once, as this one did.
+     */
+    val dismissedVersion: String = "",
+)
 
 /** The shape of the cover on the now playing screen. */
 @Serializable
