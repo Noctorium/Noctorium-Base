@@ -342,6 +342,18 @@ data class NoctoriumPreferences(
     val youtubePageId: String = "",
     /** Name of that channel, shown in Settings so the choice is legible. */
     val youtubeChannelName: String = "",
+    /**
+     * Which Google account in the session the channel belongs to: `authuser`. Zero, the first, unless the
+     * listener chose a channel of another account signed in to the same browser.
+     */
+    val youtubeAuthUser: Int = 0,
+    /** That channel's picture, shown beside its name. */
+    val youtubeChannelPhoto: String = "",
+    /**
+     * Whether what is played here is added to the YouTube Music history of the account, as it would be
+     * played on YouTube Music itself, so the service's own recommendations follow it.
+     */
+    val youtubeHistory: Boolean = true,
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
     /**

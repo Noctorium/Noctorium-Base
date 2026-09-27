@@ -99,7 +99,7 @@ class YouTubeMusicClient internal constructor(
         val sapisid = session.sapisid
             ?: return LikeResult(LikeOutcome.NEEDS_TOKEN, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             putJsonObject("target") { put("videoId", videoId) }
         }
         val endpoint = if (liked) "like/like" else "like/removelike"
@@ -122,7 +122,7 @@ class YouTubeMusicClient internal constructor(
     suspend fun playlists(session: YouTubeSession): List<Playlist> {
         val sapisid = session.sapisid ?: return emptyList()
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("browseId", "FEmusic_liked_playlists")
         }
         val response = post("browse", body.toString(), session) ?: return emptyList()
@@ -191,7 +191,7 @@ class YouTubeMusicClient internal constructor(
         val sapisid = session.sapisid
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("title", cleanTitle.take(150))
             put("privacyStatus", if (isPublic) "PUBLIC" else "PRIVATE")
             if (videoIds.isNotEmpty()) {
@@ -216,12 +216,52 @@ class YouTubeMusicClient internal constructor(
      * listener has to be able to pick rather than always getting the default.
      */
     suspend fun channels(session: YouTubeSession): List<YouTubeChannel> {
-        val sapisid = session.sapisid ?: return emptyList()
-        val body = buildJsonObject { put("context", context(session.keys.clientVersion)) }
+        session.sapisid ?: return emptyList()
+        // The web page's own switcher first: it lists every Google account signed in to the session, each
+        // with its channels, where accounts_list answers only for the account the request names.
+        val switcher = get(ACCOUNT_SWITCHER_URL, session)
+        if (switcher != null && switcher.status in 200..299) {
+            parseChannels(switcher.body).takeIf { it.isNotEmpty() }?.let { return it }
+        }
+        val body = buildJsonObject { put("context", context(session)) }
         val response = post("account/accounts_list", body.toString(), session) ?: return emptyList()
         if (response.status !in 200..299) return emptyList()
         return parseChannels(response.body)
     }
+
+    /**
+     * Whether YouTube still takes this session as signed in.
+     *
+     * A session that has gone stale is not refused: every request is answered, 200 and all, as though from
+     * somebody signed out, and YouTube says which only in a tracking flag, `logged_in`, in the reply's
+     * context. So a cookie file can look perfectly healthy and be worth nothing, which is how the desktop
+     * came to show "signed in" two days after it had stopped being. This asks the account menu, the one
+     * request whose whole answer is about the account, and reads that flag.
+     */
+    suspend fun signInState(session: YouTubeSession): YouTubeSignIn {
+        session.sapisid ?: return YouTubeSignIn.SIGNED_OUT
+        val body = buildJsonObject { put("context", context(session)) }
+        val response = post("account/account_menu", body.toString(), session) ?: return YouTubeSignIn.UNKNOWN
+        if (response.status == 401 || response.status == 403) return YouTubeSignIn.SIGNED_OUT
+        if (response.status !in 200..299) return YouTubeSignIn.UNKNOWN
+        return when (loggedInFlag(response.body)) {
+            true -> YouTubeSignIn.SIGNED_IN
+            false -> YouTubeSignIn.SIGNED_OUT
+            null -> YouTubeSignIn.UNKNOWN
+        }
+    }
+
+    /** `logged_in` from the reply's tracking parameters: "1", "0", or not there at all. */
+    internal fun loggedInFlag(body: String): Boolean? = runCatching {
+        val root = json.parseToJsonElement(body).jsonObject
+        val services = (root["responseContext"] as? JsonObject)?.get("serviceTrackingParams") as? JsonArray
+        services?.firstNotNullOfOrNull { service ->
+            ((service as? JsonObject)?.get("params") as? JsonArray)?.firstNotNullOfOrNull { param ->
+                val entry = param as? JsonObject ?: return@firstNotNullOfOrNull null
+                if (entry["key"]?.jsonPrimitive?.contentOrNull == "logged_in") entry["value"]?.jsonPrimitive?.contentOrNull else null
+            }
+        }?.let { it == "1" }
+    }.getOrNull()
 
     /**
      * Reads the account switcher.
@@ -231,31 +271,65 @@ class YouTubeMusicClient internal constructor(
      */
     internal fun parseChannels(body: String): List<YouTubeChannel> = runCatching {
         val found = LinkedHashMap<String, YouTubeChannel>()
-        collectChannels(json.parseToJsonElement(body), found)
+        // The web page's own switcher answers with a guard line in front of its JSON.
+        collectChannels(json.parseToJsonElement(body.removePrefix(")]}'").trimStart()), found, email = null)
         found.values.toList()
     }.getOrDefault(emptyList())
 
-    private fun collectChannels(element: JsonElement, into: MutableMap<String, YouTubeChannel>) {
+    /**
+     * Every account item, wherever the reply keeps it, with the Google account each belongs to.
+     *
+     * The account switcher groups channels by Google account, one section each, headed by the account's
+     * email; `accounts_list` answers for one account and has no such header. Both are read here, so the
+     * listing works whichever one answered.
+     */
+    private fun collectChannels(element: JsonElement, into: MutableMap<String, YouTubeChannel>, email: String?) {
         when (element) {
             is JsonObject -> {
+                // A section names its account once, in its header, for every channel under it.
+                val sectionEmail = ((element["accountSectionListRenderer"] as? JsonObject)?.get("header") as? JsonObject)
+                    ?.let { (it["googleAccountHeaderRenderer"] as? JsonObject)?.get("email") as? JsonObject }
+                    ?.let(::runsOf)
+                val here = sectionEmail ?: email
                 val item = element["accountItem"] as? JsonObject
-                if (item != null) {
-                    val name = textOf(item) ?: (item["accountName"] as? JsonObject)?.let { runsOf(it) }
-                    val pageId = ((item["serviceEndpoint"] as? JsonObject)
-                        ?.get("selectActiveIdentityEndpoint") as? JsonObject)
-                        ?.let { (it["supportedTokens"] as? JsonArray) }
-                        ?.firstNotNullOfOrNull { token ->
-                            ((token as? JsonObject)?.get("pageIdToken") as? JsonObject)
-                                ?.get("pageId")?.jsonPrimitive?.contentOrNull
-                        }
-                        .orEmpty()
-                    if (name != null) into[pageId] = YouTubeChannel(pageId, name)
-                }
-                element.values.forEach { collectChannels(it, into) }
+                if (item != null) channelFrom(item, here)?.let { into[it.key] = it }
+                element.values.forEach { collectChannels(it, into, here) }
             }
-            is JsonArray -> element.forEach { collectChannels(it, into) }
+            is JsonArray -> element.forEach { collectChannels(it, into, email) }
             else -> Unit
         }
+    }
+
+    private fun channelFrom(item: JsonObject, email: String?): YouTubeChannel? {
+        val name = labelOf(item["accountName"]) ?: textOf(item) ?: return null
+        val tokens = ((item["serviceEndpoint"] as? JsonObject)?.get("selectActiveIdentityEndpoint") as? JsonObject)
+            ?.get("supportedTokens") as? JsonArray
+        fun token(kind: String, field: String): String? = tokens?.firstNotNullOfOrNull { token ->
+            ((token as? JsonObject)?.get(kind) as? JsonObject)?.get(field)?.jsonPrimitive?.contentOrNull
+        }
+        // The only place the switcher says which signed-in account owns a channel is the authuser in the
+        // address that would switch to it: "/signin?action_handle_signin=true&authuser=1&pageid=…".
+        val authUser = token("accountSigninToken", "signinUrl")
+            ?.let { AUTH_USER.find(it)?.groupValues?.get(1)?.toIntOrNull() } ?: 0
+        val photo = ((item["accountPhoto"] as? JsonObject)?.get("thumbnails") as? JsonArray)
+            ?.lastOrNull()?.let { (it as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull }
+            ?.let { if (it.startsWith("//")) "https:$it" else it }
+        val handle = labelOf(item["channelHandle"]) ?: labelOf(item["accountByline"])
+        return YouTubeChannel(
+            pageId = token("pageIdToken", "pageId").orEmpty(),
+            name = name,
+            authUser = authUser,
+            photoUrl = photo,
+            handle = handle,
+            email = email,
+            selected = item["isSelected"]?.jsonPrimitive?.booleanOrNull == true,
+        )
+    }
+
+    /** A label either way YouTube writes one: as `simpleText`, or as `runs` to be joined. */
+    private fun labelOf(node: JsonElement?): String? {
+        val obj = node as? JsonObject ?: return null
+        return (obj["simpleText"]?.jsonPrimitive?.contentOrNull ?: runsOf(obj))?.trim()?.takeIf(String::isNotBlank)
     }
 
     private fun runsOf(node: JsonObject): String? = (node["runs"] as? JsonArray)
@@ -284,7 +358,7 @@ class YouTubeMusicClient internal constructor(
         repeat(MAX_LIKED_PAGES) {
             val token = continuation
             val body = buildJsonObject {
-                put("context", context(session.keys.clientVersion))
+                put("context", context(session))
                 if (token == null) put("browseId", browseId) else put("continuation", token)
             }
             val response = post("browse", body.toString(), session)
@@ -315,7 +389,7 @@ class YouTubeMusicClient internal constructor(
     suspend fun searchSongs(query: String, limit: Int, session: YouTubeSession): List<Track> {
         if (query.isBlank() || limit <= 0) return emptyList()
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("query", query.trim())
             // YouTube Music's own filter for the "Songs" tab, so albums, artists and playlists stay out.
             put("params", SONGS_ONLY_FILTER)
@@ -357,7 +431,7 @@ class YouTubeMusicClient internal constructor(
         repeat(MAX_LIKED_PAGES) {
             val token = continuation
             val body = buildJsonObject {
-                put("context", context(session.keys.clientVersion))
+                put("context", context(session))
                 if (token == null) put("browseId", browseId) else put("continuation", token)
             }
             // A failure on the first page is "could not answer"; on a later one, what arrived already is
@@ -392,7 +466,7 @@ class YouTubeMusicClient internal constructor(
      */
     suspend fun homeSections(session: YouTubeSession): List<HomeShelf>? {
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("browseId", HOME_BROWSE_ID)
         }
         val response = post("browse", body.toString(), session) ?: return null
@@ -743,7 +817,7 @@ class YouTubeMusicClient internal constructor(
         val sapisid = session.sapisid
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("playlistId", playlistId)
         }
         val response = post("playlist/delete", body.toString(), session)
@@ -765,7 +839,7 @@ class YouTubeMusicClient internal constructor(
         val sapisid = session.sapisid
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("playlistId", playlistId)
             put("actions", buildJsonArray { add(action) })
         }
@@ -783,7 +857,7 @@ class YouTubeMusicClient internal constructor(
         val sapisid = session.sapisid
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
-            put("context", context(session.keys.clientVersion))
+            put("context", context(session))
             put("playlistId", playlistId)
             put(
                 "actions",
@@ -815,8 +889,227 @@ class YouTubeMusicClient internal constructor(
         }
     }
 
+    /**
+     * The request context for one session, which names the brand channel in the body as well as in the
+     * `X-Goog-PageId` header: `onBehalfOfUser` is where YouTube Music's own page puts it, and some endpoints
+     * read the one and some the other.
+     */
+    internal fun context(session: YouTubeSession): JsonObject = buildJsonObject {
+        context(session.keys.clientVersion).forEach { (key, value) -> put(key, value) }
+        session.pageId?.takeIf(String::isNotBlank)?.let { page ->
+            putJsonObject("user") { put("onBehalfOfUser", page) }
+        }
+    }
+
     internal fun endpointUrl(endpoint: String, apiKey: String): String =
         "https://music.youtube.com/youtubei/v1/$endpoint?key=$apiKey&prettyPrint=false"
+
+    // --- History ---
+
+    /**
+     * Tells YouTube Music the song was played, so it lands in the account's history and its recommendations
+     * learn from what is listened to here.
+     *
+     * The same three steps the service's own player takes, as SimpMusic (GPL-3.0) does them: the player is
+     * asked about the video as the signed-in account, and its answer carries the addresses the player
+     * reports to; the playback report is what files the play in history, and a first watch-time report
+     * says it was actually listened to rather than only opened. [cpn] ties the reports together as one
+     * playback, as the player's own does. The player's answer is used for nothing else -- the audio comes
+     * from wherever it always has.
+     */
+    suspend fun recordPlay(videoId: String, session: YouTubeSession, cpn: String = playbackNonce()): Boolean {
+        if (videoId.isBlank()) return false
+        session.sapisid ?: return false
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("videoId", videoId)
+            put("cpn", cpn)
+        }
+        val player = post("player", body.toString(), session) ?: return false
+        if (player.status !in 200..299) return false
+        val tracking = trackingUrls(player.body) ?: return false
+        val common = mapOf("ver" to "2", "c" to "WEB_REMIX", "cpn" to cpn)
+        val played = get(withParameters(tracking.playback, common), session)
+        if (played == null || played.status !in 200..299) return false
+        tracking.watchtime?.let { get(withParameters(it, common + mapOf("st" to "0", "et" to "5.54")), session) }
+        return true
+    }
+
+    internal data class TrackingUrls(val playback: String, val watchtime: String?)
+
+    internal fun trackingUrls(playerBody: String): TrackingUrls? = runCatching {
+        val tracking = json.parseToJsonElement(playerBody).jsonObject["playbackTracking"] as? JsonObject ?: return null
+        fun url(name: String) = ((tracking[name] as? JsonObject)?.get("baseUrl"))?.jsonPrimitive?.contentOrNull
+        TrackingUrls(url("videostatsPlaybackUrl") ?: return null, url("videostatsWatchtimeUrl"))
+    }.getOrNull()
+
+    // --- Artists ---
+
+    /**
+     * The artist a song is by, as YouTube Music links it: the artist page's id, which is also the channel
+     * to follow. Read from "up next", whose first entry is the song itself with its byline linked, because
+     * the byline is where the artist page is named; a video's own channel is often an upload account or a
+     * label rather than the artist.
+     */
+    suspend fun artistOf(videoId: String, session: YouTubeSession): YouTubeArtist? {
+        if (videoId.isBlank()) return null
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("videoId", videoId)
+            put("isAudioOnly", true)
+        }
+        val response = post("next", body.toString(), session) ?: return null
+        if (response.status !in 200..299) return null
+        val artist = firstArtistLink(response.body) ?: return null
+        return artist.copy(following = followingOf(artist.channelId, session))
+    }
+
+    /** Whether the account follows this artist, from the subscribe button on the artist's page. */
+    private suspend fun followingOf(channelId: String, session: YouTubeSession): Boolean? {
+        session.sapisid ?: return null
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("browseId", channelId)
+        }
+        val response = post("browse", body.toString(), session) ?: return null
+        if (response.status !in 200..299) return null
+        return subscribedFlag(response.body)
+    }
+
+    internal fun firstArtistLink(body: String): YouTubeArtist? = runCatching {
+        findArtistRun(json.parseToJsonElement(body))
+    }.getOrNull()
+
+    private fun findArtistRun(element: JsonElement): YouTubeArtist? = when (element) {
+        is JsonObject -> {
+            val browse = (element["navigationEndpoint"] as? JsonObject)?.get("browseEndpoint") as? JsonObject
+            val pageType = (((browse?.get("browseEndpointContextSupportedConfigs") as? JsonObject)
+                ?.get("browseEndpointContextMusicConfig") as? JsonObject)?.get("pageType"))?.jsonPrimitive?.contentOrNull
+            val id = browse?.get("browseId")?.jsonPrimitive?.contentOrNull
+            val name = element["text"]?.jsonPrimitive?.contentOrNull
+            if (pageType == "MUSIC_PAGE_TYPE_ARTIST" && id != null && name != null) {
+                YouTubeArtist(id, name)
+            } else {
+                element.values.firstNotNullOfOrNull(::findArtistRun)
+            }
+        }
+        is JsonArray -> element.firstNotNullOfOrNull(::findArtistRun)
+        else -> null
+    }
+
+    internal fun subscribedFlag(body: String): Boolean? = runCatching {
+        findSubscribed(json.parseToJsonElement(body))
+    }.getOrNull()
+
+    private fun findSubscribed(element: JsonElement): Boolean? = when (element) {
+        is JsonObject -> (element["subscribeButtonRenderer"] as? JsonObject)?.get("subscribed")?.jsonPrimitive?.booleanOrNull
+            ?: element.values.firstNotNullOfOrNull(::findSubscribed)
+        is JsonArray -> element.firstNotNullOfOrNull(::findSubscribed)
+        else -> null
+    }
+
+    /** Follows or stops following an artist, which YouTube calls subscribing to their channel. */
+    suspend fun setFollowing(channelId: String, follow: Boolean, session: YouTubeSession): PlaylistWriteResult {
+        session.sapisid ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("channelIds", buildJsonArray { add(JsonPrimitive(channelId)) })
+        }
+        val response = post(if (follow) "subscription/subscribe" else "subscription/unsubscribe", body.toString(), session)
+            ?: return PlaylistWriteResult(false, "Could not reach YouTube Music.")
+        return if (response.status in 200..299) {
+            PlaylistWriteResult(true, if (follow) "Following on YouTube Music." else "No longer following.")
+        } else {
+            PlaylistWriteResult(false, "YouTube answered HTTP ${response.status}.")
+        }
+    }
+
+    // --- Playlist order ---
+
+    /**
+     * Moves the song at [from] to [to] in one of the account's own playlists.
+     *
+     * YouTube moves an entry by the id of its place in the playlist, not by the video -- the same song can
+     * be in a playlist twice -- and says where by naming the entry it should come before. Those ids are not
+     * in the song list Noctorium keeps, so the playlist is read again for them, which also means the move
+     * is made against the playlist as it is now rather than as it was when the screen was drawn.
+     */
+    suspend fun movePlaylistItem(playlistId: String, from: Int, to: Int, session: YouTubeSession): PlaylistWriteResult {
+        session.sapisid ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
+        if (from == to) return PlaylistWriteResult(true, "Already there.", playlistId)
+        val entries = playlistEntries(playlistId, session)
+            ?: return PlaylistWriteResult(false, "Could not read the playlist from YouTube Music.")
+        val moved = entries.getOrNull(from) ?: return PlaylistWriteResult(false, "That song is no longer in the playlist.")
+        // Before whatever will follow it once it is in its new place. Moving down means the entry that is at
+        // [to] now ends up above it, so it goes before the one after that.
+        val successor = if (to > from) entries.getOrNull(to + 1) else entries.getOrNull(to)
+        // Edited by its bare id; "VL" is only how a playlist is browsed.
+        return editPlaylist(
+            playlistId.removePrefix("VL"),
+            session,
+            buildJsonObject {
+                put("action", "ACTION_MOVE_VIDEO_BEFORE")
+                put("setVideoId", moved.setVideoId)
+                successor?.let { put("movedSetVideoIdSuccessor", it.setVideoId) }
+            },
+            "Moved.",
+        )
+    }
+
+    internal data class PlaylistEntry(val videoId: String, val setVideoId: String)
+
+    private suspend fun playlistEntries(playlistId: String, session: YouTubeSession): List<PlaylistEntry>? {
+        val found = mutableListOf<PlaylistEntry>()
+        var continuation: String? = null
+        repeat(MAX_LIKED_PAGES) {
+            val token = continuation
+            val body = buildJsonObject {
+                put("context", context(session))
+                if (token == null) put("browseId", if (playlistId.startsWith("VL")) playlistId else "VL$playlistId")
+                else put("continuation", token)
+            }
+            val response = post("browse", body.toString(), session) ?: return found.ifEmpty { null }
+            if (response.status !in 200..299) return found.ifEmpty { null }
+            val page = parseEntries(response.body)
+            if (page.isEmpty()) return found
+            found += page
+            continuation = continuationToken(response.body) ?: return found
+        }
+        return found
+    }
+
+    internal fun parseEntries(body: String): List<PlaylistEntry> = runCatching {
+        val out = mutableListOf<PlaylistEntry>()
+        fun walk(element: JsonElement) {
+            when (element) {
+                is JsonObject -> {
+                    val data = element["playlistItemData"] as? JsonObject
+                    val video = data?.get("videoId")?.jsonPrimitive?.contentOrNull
+                    val set = data?.get("playlistSetVideoId")?.jsonPrimitive?.contentOrNull
+                    if (video != null && set != null) out += PlaylistEntry(video, set) else element.values.forEach(::walk)
+                }
+                is JsonArray -> element.forEach(::walk)
+                else -> Unit
+            }
+        }
+        walk(json.parseToJsonElement(body))
+        out
+    }.getOrDefault(emptyList())
+
+    /** A page-level GET on music.youtube.com with the session, for the few things not under youtubei/v1. */
+    private suspend fun get(url: String, session: YouTubeSession): LikeHttpResponse? = try {
+        http.send(
+            method = "GET",
+            url = url,
+            token = "",
+            cookies = session.cookieHeader,
+            headers = session.headers(nowEpochSeconds()),
+        )
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (error: Exception) {
+        null
+    }
 
     private suspend fun post(
         endpoint: String,
@@ -841,6 +1134,11 @@ class YouTubeMusicClient internal constructor(
 
     private companion object {
         const val ORIGIN = MUSIC_ORIGIN
+
+        /** The list the avatar menu on music.youtube.com opens: every account and channel in the session. */
+        const val ACCOUNT_SWITCHER_URL = "https://music.youtube.com/getAccountSwitcherEndpoint"
+
+        val AUTH_USER = Regex("""[?&]authuser=(\d+)""")
 
         /**
          * The account's "Liked songs", which is an ordinary playlist kept under the id LM; browsing
@@ -904,8 +1202,23 @@ data class HomeShelf(
     val isEmpty: Boolean get() = tracks.isEmpty() && playlists.isEmpty()
 }
 
-data class YouTubeChannel(val pageId: String, val name: String) {
+data class YouTubeChannel(
+    val pageId: String,
+    val name: String,
+    /** Which Google account in the session owns it. See [YouTubeSession.authUser]. */
+    val authUser: Int = 0,
+    val photoUrl: String? = null,
+    /** "@handle", or the email for an account's own default channel when it has no handle. */
+    val handle: String? = null,
+    /** The Google account it belongs to, when the listing says. Several accounts can share a session. */
+    val email: String? = null,
+    /** The one YouTube itself had selected when it answered. */
+    val selected: Boolean = false,
+) {
     val isDefault: Boolean get() = pageId.isBlank()
+
+    /** Distinct across accounts: two accounts' default channels both have a blank page id. */
+    val key: String get() = "$authUser/$pageId"
 }
 
 /**
@@ -917,6 +1230,13 @@ data class YouTubeSession(
     val keys: InnertubeKeys,
     val cookieHeader: String?,
     val pageId: String? = null,
+    /**
+     * Which of the Google accounts signed in to this browser session to act as: `authuser` in YouTube's
+     * own addresses. It was always 0, which is the first account, and a browser signed in to two sends the
+     * second one's requests as the first. A brand channel's page id only means anything together with the
+     * account that owns it; sent with the wrong one, YouTube answers as though nobody were signed in.
+     */
+    val authUser: Int = 0,
 ) {
     val sapisid: String? get() = sapisidFrom(cookieHeader)
 
@@ -929,7 +1249,7 @@ data class YouTubeSession(
      */
     internal fun headers(epochSeconds: Long = System.currentTimeMillis() / 1000): Map<String, String> = buildMap {
         sapisid?.let { put("Authorization", sapisidHash(it, MUSIC_ORIGIN, epochSeconds)) }
-        put("X-Goog-AuthUser", "0")
+        put("X-Goog-AuthUser", authUser.coerceAtLeast(0).toString())
         // 67 is the client number YouTube Music's own requests carry.
         put("X-YouTube-Client-Name", "67")
         put("X-YouTube-Client-Version", this@YouTubeSession.keys.clientVersion)
@@ -953,4 +1273,40 @@ private suspend fun fetchPage(url: String): String? = withContext(Dispatchers.IO
         }
         connection.getInputStream().use { it.readBytes().decodeToString() }
     }.getOrNull()
+}
+
+/** What YouTube made of a session when last asked. */
+enum class YouTubeSignIn {
+    SIGNED_IN,
+
+    /** Answered, and answered as somebody signed out: the session is stale or has been revoked. */
+    SIGNED_OUT,
+
+    /** Could not tell: no connection, or a reply without the flag. Never a reason to throw a session away. */
+    UNKNOWN,
+}
+
+/** An artist as YouTube Music links one: the page id, which is also the channel that is followed. */
+data class YouTubeArtist(
+    val channelId: String,
+    val name: String,
+    /** Null when it could not be read, which is not the same as not following. */
+    val following: Boolean? = null,
+)
+
+/**
+ * The client playback nonce: sixteen characters from the URL-safe alphabet, made up per playback, which ties
+ * one play's reports together the way the service's own player does.
+ */
+internal fun playbackNonce(random: kotlin.random.Random = kotlin.random.Random): String {
+    val alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+    return (1..16).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
+}
+
+/** [url] with [parameters] added, each encoded, after whatever query it already has. */
+internal fun withParameters(url: String, parameters: Map<String, String>): String {
+    val separator = if ('?' in url) "&" else "?"
+    return url + separator + parameters.entries.joinToString("&") { (name, value) ->
+        java.net.URLEncoder.encode(name, Charsets.UTF_8) + "=" + java.net.URLEncoder.encode(value, Charsets.UTF_8)
+    }
 }

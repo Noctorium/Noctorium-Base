@@ -55,6 +55,19 @@ import app.noctorium.social.PlaylistWriteResult
 import app.noctorium.social.SoundCloudClientIdProvider
 import app.noctorium.social.SoundCloudPlaylistClient
 import app.noctorium.social.InnertubeKeyProvider
+import app.noctorium.social.YouTubeArtist
+import app.noctorium.social.YouTubeSignIn
+import app.noctorium.social.cookieHeaderFor
+import app.noctorium.auth.HarvestedCookie
+import app.noctorium.auth.SessionTransfer
+import app.noctorium.auth.TransferredSession
+import app.noctorium.auth.YouTubeSessionRefresh
+import app.noctorium.auth.isYouTubeSignedIn
+import app.noctorium.auth.parsePastedCookies
+import app.noctorium.auth.readCookieFile
+import app.noctorium.auth.toHarvested
+import app.noctorium.auth.toTransferred
+import app.noctorium.auth.writeCookieFile
 import app.noctorium.social.YouTubeMusicClient
 import app.noctorium.social.YouTubeChannel
 import app.noctorium.social.YouTubeSession
@@ -528,6 +541,9 @@ class AppState(
         observeNonMusicSegments()
         warmUpForTheLikeliestPlay()
         observeDiscordPresence()
+        observeYouTubeSignIn()
+        observeYouTubeHistory()
+        observeArtistFollow()
         restoreNoctoriumAccount()
         // Started from the stored key rather than waiting for the service to confirm it. Connect is
         // most wanted when the internet is not working, and a device that could not find the speaker in
@@ -1148,7 +1164,8 @@ class AppState(
         val header = withContext(Dispatchers.IO) { cookieHeaderFor(Path.of(file), "youtube.com") }
             ?: return null
         val keys = innertubeKeys.keys() ?: return null
-        return YouTubeSession(keys, header, mutableSettings.value.preferences.youtubePageId)
+        val preferences = mutableSettings.value.preferences
+        return YouTubeSession(keys, header, preferences.youtubePageId, preferences.youtubeAuthUser)
     }
 
     /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
@@ -1486,11 +1503,303 @@ class AppState(
 
     /** Switches which channel Noctorium acts as; every later call carries it. */
     fun setYouTubeChannel(channel: YouTubeChannel) {
-        updatePreferences { copy(youtubePageId = channel.pageId, youtubeChannelName = channel.name) }
+        updatePreferences {
+            copy(
+                youtubePageId = channel.pageId,
+                youtubeChannelName = channel.name,
+                youtubeAuthUser = channel.authUser,
+                youtubeChannelPhoto = channel.photoUrl.orEmpty(),
+            )
+        }
         mutableLibrary.update { it.copy(loaded = false) }
         likeMessage("Now acting as ${channel.name} on YouTube Music.")
         refreshLikes()
         refreshLibrary(force = true)
+    }
+
+    // --- YouTube Music: staying signed in, a sign-in from the phone, history, following, order ---
+
+    private val youTubeRefresh = YouTubeSessionRefresh()
+
+    /**
+     * Asks YouTube whether the saved session still works, renews it when it has only gone stale, and says
+     * so plainly when it cannot be renewed.
+     *
+     * A stale session is not refused: it is answered as somebody signed out, so the only sign is the flag
+     * [YouTubeMusicClient.signInState] reads. Before this, a session could be dead for days while Settings
+     * went on saying "signed in" and every like and playlist quietly came back empty.
+     */
+    fun checkYouTubeSignIn() {
+        scope.launch { verifyYouTubeSignIn() }
+    }
+
+    private suspend fun verifyYouTubeSignIn(): YouTubeSignIn {
+        val file = mutableSettings.value.preferences.youtubeCookies.cookieFile.takeIf(String::isNotBlank)
+            ?: return YouTubeSignIn.SIGNED_OUT
+        val session = youTubeSession() ?: return YouTubeSignIn.UNKNOWN
+        var state = youTubeMusic.signInState(session)
+        var renewed = false
+        if (state == YouTubeSignIn.SIGNED_OUT && youTubeRefresh.refresh(Path.of(file))) {
+            renewed = true
+            state = youTubeSession()?.let { youTubeMusic.signInState(it) } ?: YouTubeSignIn.UNKNOWN
+        }
+        ScrobbleLog.event("youtube_sign_in_checked", mapOf("state" to state.name, "renewed" to renewed))
+        when (state) {
+            YouTubeSignIn.SIGNED_IN -> {
+                updatePreferences {
+                    copy(youtubeCookies = youtubeCookies.copy(verifiedAtEpochSeconds = Instant.now().epochSecond))
+                }
+                val channel = mutableSettings.value.preferences.youtubeChannelName.takeIf(String::isNotBlank)
+                updateAccountState(
+                    ProviderType.YOUTUBE_MUSIC,
+                    AccountConnectionState(
+                        AccountConnectionStatus.CONNECTED,
+                        (if (channel != null) "Signed in as $channel" else "Signed in") +
+                            (if (renewed) " — the session was renewed just now." else "."),
+                    ),
+                )
+                mutableLikes.update { it.copy(youTubeReady = true) }
+                if (renewed) refreshLibrary(force = true)
+            }
+            YouTubeSignIn.SIGNED_OUT -> {
+                updateAccountState(
+                    ProviderType.YOUTUBE_MUSIC,
+                    AccountConnectionState(
+                        AccountConnectionStatus.ERROR,
+                        "Your YouTube Music sign-in has expired.",
+                        "Sign in again, or send the sign-in over from Noctorium on your phone.",
+                    ),
+                )
+                mutableLikes.update { it.copy(youTubeReady = false) }
+            }
+            YouTubeSignIn.UNKNOWN -> Unit
+        }
+        return state
+    }
+
+    /** A check shortly after launch, and every few hours after, so a lapse is found before somebody does. */
+    private fun observeYouTubeSignIn() {
+        scope.launch {
+            delay(SIGN_IN_CHECK_AFTER_LAUNCH_MS)
+            while (true) {
+                if (mutableSettings.value.preferences.youtubeCookies.isConfigured) verifyYouTubeSignIn()
+                delay(SIGN_IN_CHECK_EVERY_MS)
+            }
+        }
+    }
+
+    /**
+     * Files each YouTube song in the account's YouTube Music history, once it has really been listened to.
+     *
+     * Five seconds of playing first, so a skip past something is not counted as a listen, and once per play:
+     * pausing and carrying on is the same play, and a repeat is a new one, as the loop counter says.
+     */
+    private fun observeYouTubeHistory() {
+        scope.launch {
+            var lastRecorded: String? = null
+            playback
+                .map { state ->
+                    state.track
+                        ?.takeIf { state.status == PlaybackStatus.PLAYING && it.provider in YOUTUBE_PROVIDERS }
+                        ?.let { "${it.queueKey}#${state.loops}" to it }
+                }
+                .distinctUntilChanged { old, new -> old?.first == new?.first }
+                .collectLatest { entry ->
+                    val (key, track) = entry ?: return@collectLatest
+                    if (key == lastRecorded) return@collectLatest
+                    delay(HISTORY_AFTER_MS)
+                    if (!mutableSettings.value.preferences.youtubeHistory) return@collectLatest
+                    val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return@collectLatest
+                    lastRecorded = key
+                    val recorded = youTubeMusic.recordPlay(track.id, session)
+                    ScrobbleLog.event("youtube_history", mapOf("track" to track.queueKey, "recorded" to recorded))
+                }
+        }
+    }
+
+    fun setYouTubeHistory(enabled: Boolean) = updatePreferences { copy(youtubeHistory = enabled) }
+
+    private val mutableArtistFollow = MutableStateFlow<YouTubeArtist?>(null)
+
+    /** The artist of the YouTube song that is playing, and whether the account follows them. Null until known. */
+    val artistFollow: StateFlow<YouTubeArtist?> = mutableArtistFollow.asStateFlow()
+
+    private fun observeArtistFollow() {
+        scope.launch {
+            playback
+                .map { it.track?.takeIf { track -> track.provider in YOUTUBE_PROVIDERS } }
+                .distinctUntilChanged { old, new -> old?.queueKey == new?.queueKey }
+                .collectLatest { track ->
+                    mutableArtistFollow.value = null
+                    track ?: return@collectLatest
+                    val session = youTubeSession()?.takeIf { it.sapisid != null } ?: return@collectLatest
+                    mutableArtistFollow.value = youTubeMusic.artistOf(track.id, session)
+                }
+        }
+    }
+
+    /** Follows the playing song's artist on YouTube Music, or stops. Shown as done at once, undone if refused. */
+    fun toggleFollowArtist() {
+        val artist = mutableArtistFollow.value ?: return
+        val follow = artist.following != true
+        mutableArtistFollow.value = artist.copy(following = follow)
+        scope.launch {
+            val session = youTubeSession()?.takeIf { it.sapisid != null }
+            val result = session?.let { youTubeMusic.setFollowing(artist.channelId, follow, it) }
+            if (result?.ok != true) {
+                mutableArtistFollow.update { current ->
+                    if (current?.channelId == artist.channelId) current.copy(following = !follow) else current
+                }
+                likeMessage(result?.detail ?: "Sign in to YouTube Music under Settings first.")
+                return@launch
+            }
+            likeMessage(if (follow) "Following ${artist.name} on YouTube Music." else "Stopped following ${artist.name}.")
+        }
+    }
+
+    /**
+     * Moves a song within the open YouTube playlist: on screen at once, then on YouTube, and back if YouTube
+     * refuses. Only for the account's own playlists, which are the only ones it can reorder.
+     */
+    fun moveInYouTubePlaylist(from: Int, to: Int) {
+        val open = mutableLibrary.value.openPlaylist ?: return
+        if (open.provider !in YOUTUBE_PROVIDERS) return
+        if (from !in open.tracks.indices || to !in open.tracks.indices || from == to) return
+        val before = open.tracks
+        val after = before.toMutableList().apply { add(to, removeAt(from)) }
+        mutableLibrary.update { state -> state.copy(openPlaylist = state.openPlaylist?.copy(tracks = after)) }
+        scope.launch {
+            val session = youTubeSession()?.takeIf { it.sapisid != null }
+            val result = session?.let { youTubeMusic.movePlaylistItem(open.id, from, to, it) }
+            if (result?.ok != true) {
+                mutableLibrary.update { state ->
+                    if (state.openPlaylist?.id == open.id) state.copy(openPlaylist = state.openPlaylist.copy(tracks = before)) else state
+                }
+                libraryNotice(result?.detail ?: "Sign in to YouTube Music under Settings first.")
+            }
+        }
+    }
+
+    /** Where a sign-in coming over from the phone has got to. See [receiveYouTubeSignIn]. */
+    sealed interface SignInTransfer {
+        data object Idle : SignInTransfer
+        data class Waiting(val code: String) : SignInTransfer
+        data object Checking : SignInTransfer
+        data class Done(val channel: String?) : SignInTransfer
+        data class Failed(val message: String) : SignInTransfer
+    }
+
+    private val mutableTransfer = MutableStateFlow<SignInTransfer>(SignInTransfer.Idle)
+    val signInTransfer: StateFlow<SignInTransfer> = mutableTransfer.asStateFlow()
+    private var transferJob: Job? = null
+
+    /**
+     * Waits for Noctorium on the phone to send its YouTube Music sign-in over. [SignInTransfer.Waiting]
+     * carries the code for the QR; see [SessionTransfer] for why what crosses the network cannot be read.
+     */
+    fun receiveYouTubeSignIn() {
+        transferJob?.cancel()
+        transferJob = scope.launch {
+            val received = SessionTransfer.receive { invite ->
+                mutableTransfer.value = SignInTransfer.Waiting(invite.code())
+            }
+            if (received == null) {
+                mutableTransfer.value = SignInTransfer.Failed("Nothing arrived in time. Show a new code and scan it again.")
+                return@launch
+            }
+            mutableTransfer.value = SignInTransfer.Checking
+            val outcome = adoptYouTubeCookies(
+                received.cookies.map { it.toHarvested() },
+                authUser = received.authUser,
+                pageId = received.pageId,
+                channelName = received.channelName,
+            )
+            mutableTransfer.value = outcome?.let(SignInTransfer::Failed)
+                ?: SignInTransfer.Done(received.channelName.takeIf(String::isNotBlank))
+        }
+    }
+
+    fun cancelSignInTransfer() {
+        transferJob?.cancel()
+        mutableTransfer.value = SignInTransfer.Idle
+    }
+
+    /** On the phone: sends this device's YouTube Music sign-in to the computer showing [code]. */
+    fun sendYouTubeSignIn(code: String) {
+        scope.launch {
+            val invite = SessionTransfer.parseInvite(code)
+                ?: return@launch likeMessage("That is not a Noctorium sign-in code. Open the code on the computer and scan that.")
+            val preferences = mutableSettings.value.preferences
+            val file = preferences.youtubeCookies.cookieFile.takeIf(String::isNotBlank)
+                ?: return@launch likeMessage("Sign in to YouTube Music on this phone first.")
+            val cookies = withContext(Dispatchers.IO) { readCookieFile(Path.of(file)) }
+            if (!isYouTubeSignedIn(cookies)) return@launch likeMessage("Sign in to YouTube Music on this phone first.")
+            val problem = SessionTransfer.send(
+                invite,
+                TransferredSession(
+                    cookies = cookies.map { it.toTransferred() },
+                    authUser = preferences.youtubeAuthUser,
+                    pageId = preferences.youtubePageId,
+                    channelName = preferences.youtubeChannelName,
+                    fromDevice = deviceName(),
+                ),
+            )
+            likeMessage(problem ?: "Sent. The computer is signed in to YouTube Music now.")
+        }
+    }
+
+    /**
+     * Signs in from cookies pasted in by hand: a cookies.txt, a cookie-editor export, or a request header.
+     * See [parsePastedCookies]. The answer comes back through the same message as any sign-in.
+     */
+    fun importYouTubeCookies(text: String) {
+        scope.launch {
+            val cookies = parsePastedCookies(text)
+            if (!isYouTubeSignedIn(cookies)) {
+                return@launch likeMessage("Those cookies have no YouTube sign-in in them (no SAPISID). Copy them from music.youtube.com while signed in.")
+            }
+            likeMessage(adoptYouTubeCookies(cookies) ?: "Signed in to YouTube Music from the pasted cookies.")
+        }
+    }
+
+    /**
+     * Makes [cookies] this device's YouTube sign-in, if YouTube accepts them. Null on success, or why not.
+     *
+     * Written beside the working file first and only moved over it once YouTube has said the session is
+     * signed in, so a dead or mistyped set can never replace a session that works.
+     */
+    private suspend fun adoptYouTubeCookies(
+        cookies: List<HarvestedCookie>,
+        authUser: Int = 0,
+        pageId: String = "",
+        channelName: String = "",
+    ): String? {
+        val folder = dataDirectory() ?: return "There is nowhere to keep the session on this device."
+        val destination = folder.resolve("youtube.cookies")
+        val candidate = folder.resolve("youtube.cookies.checking")
+        withContext(Dispatchers.IO) { writeCookieFile(cookies, candidate) }
+        val keys = innertubeKeys.keys() ?: run {
+            withContext(Dispatchers.IO) { Files.deleteIfExists(candidate) }
+            return "Could not reach YouTube Music to check the session."
+        }
+        val header = withContext(Dispatchers.IO) { cookieHeaderFor(candidate, "youtube.com") }
+        val state = youTubeMusic.signInState(YouTubeSession(keys, header, pageId.ifBlank { null }, authUser))
+        if (state != YouTubeSignIn.SIGNED_IN) {
+            withContext(Dispatchers.IO) { Files.deleteIfExists(candidate) }
+            return if (state == YouTubeSignIn.SIGNED_OUT) {
+                "YouTube did not accept that session. Sign in again where it came from, then try once more."
+            } else {
+                "Could not reach YouTube Music to check the session."
+            }
+        }
+        withContext(Dispatchers.IO) {
+            Files.move(candidate, destination, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+        }
+        updatePreferences {
+            copy(youtubePageId = pageId, youtubeChannelName = channelName, youtubeAuthUser = authUser, youtubeChannelPhoto = "")
+        }
+        completeYouTubeSignIn(destination.toString())
+        return null
     }
 
     fun renameYouTubePlaylist(playlistId: String, title: String) {
@@ -3334,3 +3643,13 @@ data class NoctoriumAccountState(
 ) {
     val signedIn: Boolean get() = user != null
 }
+
+/** The two services whose songs are YouTube videos, and so have a YouTube history, artist and account. */
+private val YOUTUBE_PROVIDERS = setOf(ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO)
+
+/** How long a song plays before it is filed in YouTube Music history: long enough that a skip is not a listen. */
+private const val HISTORY_AFTER_MS = 5_000L
+
+/** The first sign-in check waits for launch to settle; after that, one every few hours is plenty. */
+private const val SIGN_IN_CHECK_AFTER_LAUNCH_MS = 15_000L
+private const val SIGN_IN_CHECK_EVERY_MS = 3 * 60 * 60_000L
