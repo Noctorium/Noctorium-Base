@@ -50,4 +50,8 @@ dependencies {
 
 tasks.test {
     useJUnitPlatform()
+    // Every test gets a folder of its own under build/, never the listener's. Tests that played
+    // something wrote it into the real playback log -- over a hundred invented failures in a week -- and
+    // the folder lookup also migrates an older application folder, which no test run should be doing.
+    systemProperty("noctorium.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
 }

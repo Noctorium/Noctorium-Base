@@ -75,6 +75,12 @@ interface MusicBackend {
      */
     fun forgetAudio(sourceUrl: String) {}
 
+    /**
+     * Drops every address this backend remembered, because the device has just changed networks and
+     * addresses bound to the old one will be refused. Better a lookup now than a stopped song later.
+     */
+    fun forgetAllAudio() {}
+
     /** SoundCloud's own API answers by numeric id; its pages are addressed by profile name. */
     suspend fun resolveSoundCloudPermalink(userId: String): String?
 

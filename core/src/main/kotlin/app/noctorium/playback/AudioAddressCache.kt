@@ -14,9 +14,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * Finding where a track's audio lives is the slow part of pressing play: on the phone it was two and a
  * half seconds of the five that a tap took, and it was being done twice. Once an address is known there
- * is no reason to ask again for the next half hour -- the services hand out addresses that last for
- * hours, and say so in the address itself -- so the second question, and the tap on the same track a
- * minute later, and the track the queue has lined up next, all get answered from here.
+ * is no reason to ask again while it lasts -- the services hand out addresses that last for hours, and
+ * say so in the address itself -- so the second question, and the tap on the same track an hour later,
+ * and the track the queue has lined up next, all get answered from here.
  *
  * Two lookups for the same address at the same moment are also made one. The queue prefetches what is
  * coming next while the listener may be tapping exactly that, and running the extraction twice in
@@ -24,11 +24,12 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * What is kept is an address, not a promise: a service can refuse one early, most often because the
  * device changed networks and the address was bound to the old one. [forget] is for the player to call
- * when that happens, so the next ask goes back to the service.
+ * when that happens, so the next ask goes back to the service, and [clear] for a device that knows it
+ * has just changed networks, which makes every address it holds suspect at once.
  */
 class AudioAddressCache(
     private val clock: () -> Long = System::currentTimeMillis,
-    /** How long an address is trusted when it does not say. Bounds the ones that do, too. */
+    /** How long an address is trusted when it does not say how long it lasts. */
     private val maxAgeMs: Long = DEFAULT_MAX_AGE_MS,
 ) {
     private class Entry(val address: String, val goodUntil: Long)
@@ -114,7 +115,7 @@ class AudioAddressCache(
 
     /** Keeps an address that arrived by some other route. */
     fun remember(sourceUrl: String, address: String) {
-        val until = minOf(clock() + maxAgeMs, expiryOf(address) ?: Long.MAX_VALUE)
+        val until = expiryOf(address) ?: (clock() + maxAgeMs)
         if (until > clock()) entries[sourceUrl] = Entry(address, until)
     }
 
@@ -124,6 +125,7 @@ class AudioAddressCache(
         failures.remove(sourceUrl)
     }
 
+    /** Drops everything, for a device that has just changed networks. See the class notes. */
     fun clear() {
         entries.clear()
         failures.clear()
@@ -131,15 +133,23 @@ class AudioAddressCache(
 
     companion object {
         /**
-         * Half an hour. Google's addresses are good for about six, but they are also tied to the address
-         * of the device that asked, and a phone that walks from Wi-Fi onto mobile data in that time gets
-         * refused with a 403. Half an hour covers the cases that matter -- the same track again, the one
-         * before it, the one lined up next -- without trusting an address across a whole afternoon.
+         * Half an hour, for an address that does not say when it stops working.
+         *
+         * One that does say is trusted until then. It used to be held to half an hour as well, because
+         * Google's addresses -- good for six -- are tied to the network of the device that asked, and a
+         * phone that walked from Wi-Fi onto mobile data was refused with a 403 and the song stopped. Both
+         * players now fetch a fresh address and carry on when that happens, and the phone clears this
+         * cache the moment its network changes, so a refusal no longer costs a song. What the half hour
+         * did cost was a four-second lookup on every replay after it.
          */
         const val DEFAULT_MAX_AGE_MS: Long = 30 * 60 * 1_000L
 
-        /** Kept back from the stated expiry, so an address is not handed over with seconds left on it. */
-        private const val EXPIRY_MARGIN_MS: Long = 60 * 1_000L
+        /**
+         * Kept back from the stated expiry, so an address is not handed over with too little left to
+         * play a song through. One that runs out halfway is refused halfway, and a join to recover from
+         * is worse than a lookup now.
+         */
+        const val EXPIRY_MARGIN_MS: Long = 15 * 60 * 1_000L
 
         /** How long a failure answers for the source. The two asks of one play are milliseconds apart. */
         const val FAILURE_MEMORY_MS: Long = 5_000L

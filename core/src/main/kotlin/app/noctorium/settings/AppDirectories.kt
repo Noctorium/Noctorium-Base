@@ -35,8 +35,21 @@ object AppDirectories {
         override = path
     }
 
+    /**
+     * The system property that names the folder outright, which is what the test suites set.
+     *
+     * Without it every test that touched the playback log wrote into the listener's real one: over a week
+     * a hundred and five invented failures -- "no audio", "simulated linkage failure", a track called
+     * "probe" -- sat in amongst the genuine ones, and made a player that failed twice look like one that
+     * failed a hundred and twenty times. Worse, the search below also *moves* a folder left by an earlier
+     * name of the application, and a test run is no business of the listener's data at all.
+     */
+    const val BASE_PROPERTY = "noctorium.home"
+
     /** Resolved once: the move is a one-time event and re-checking it on every path lookup is waste. */
-    private val root: Path? by lazy { override ?: locate() }
+    private val root: Path? by lazy {
+        override ?: System.getProperty(BASE_PROPERTY)?.takeIf(String::isNotBlank)?.let(Path::of) ?: locate()
+    }
 
     /** The folder itself, or null on a system that offers nowhere to put it. */
     fun base(): Path? = root

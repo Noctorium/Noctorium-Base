@@ -14,8 +14,9 @@ import kotlin.test.assertNull
  * The address cache against a clock the test moves.
  *
  * What it has to guarantee: an address is fetched once and answered from memory after that; it stops
- * being answered when the service said it would stop working, or after half an hour, whichever is
- * first; two asks at the same moment cost one lookup; and a failure is never remembered.
+ * being answered a while before the service said it would stop working, or after half an hour when the
+ * service did not say; two asks at the same moment cost one lookup; and a failure is only remembered for
+ * the few seconds that one play takes.
  */
 class AudioAddressCacheTest {
 
@@ -38,7 +39,7 @@ class AudioAddressCacheTest {
     }
 
     @Test
-    fun `an address is trusted for half an hour and no longer`() = runBlocking {
+    fun `an address that does not say how long it lasts is trusted for half an hour`() = runBlocking {
         cache.resolve("https://s/a", fetching("https://cdn/a"))
         now += 29 * 60_000L
         assertEquals("https://cdn/a", cache.peek("https://s/a"))
@@ -48,17 +49,40 @@ class AudioAddressCacheTest {
         assertEquals(2, fetches.get(), "did not go back to the service once the address had aged out")
     }
 
+    /**
+     * Google's addresses last six hours and say so. Holding them to half an hour meant a four-second
+     * lookup on every replay after it, for addresses that had five and a half hours left.
+     */
     @Test
-    fun `an address that says when it expires is dropped before then`() = runBlocking {
-        val expiresInFiveMinutes = (now / 1_000) + 5 * 60
-        val address = "https://rr1.googlevideo.com/videoplayback?expire=$expiresInFiveMinutes&id=x"
+    fun `an address that says it lasts for hours is trusted for hours`() = runBlocking {
+        val sixHours = (now / 1_000) + 6 * 60 * 60
+        val address = "https://rr1.googlevideo.com/videoplayback?expire=$sixHours&id=x"
+        cache.resolve("https://s/long", fetching(address))
+        now += 5 * 60 * 60_000L
+        assertEquals(address, cache.peek("https://s/long"), "thrown away hours before it stopped working")
+        assertEquals(1, fetches.get())
+    }
+
+    @Test
+    fun `an address is not handed over with too little left to play a song through`() = runBlocking {
+        val expiresInHalfAnHour = (now / 1_000) + 30 * 60
+        val address = "https://rr1.googlevideo.com/videoplayback?expire=$expiresInHalfAnHour&id=x"
         cache.resolve("https://s/b", fetching(address))
-        now += 3 * 60_000L
+        now += 10 * 60_000L
         assertEquals(address, cache.peek("https://s/b"))
-        // A minute before the stated expiry it is already gone: an address handed over with seconds
-        // left on it fails at the player, which is worse than fetching a new one now.
-        now += 90_000L
-        assertNull(cache.peek("https://s/b"), "trusted right up to the stated expiry")
+        // Twenty minutes left is still a song or three. Ten is not a margin worth betting a song on: an
+        // address that runs out halfway is refused halfway.
+        now += 10 * 60_000L
+        assertNull(cache.peek("https://s/b"), "handed over with ten minutes left on it")
+    }
+
+    @Test
+    fun `clearing drops every address at once, for a device that changed networks`() = runBlocking {
+        cache.resolve("https://s/1", fetching("https://cdn/1"))
+        cache.resolve("https://s/2", fetching("https://cdn/2"))
+        cache.clear()
+        assertNull(cache.peek("https://s/1"))
+        assertNull(cache.peek("https://s/2"))
     }
 
     @Test
@@ -136,11 +160,11 @@ class AudioAddressCacheTest {
     @Test
     fun `the expiry is read from Google's and CloudFront's parameters and from nothing else`() {
         assertEquals(
-            1_800_000_000_000L - 60_000L,
+            1_800_000_000_000L - AudioAddressCache.EXPIRY_MARGIN_MS,
             AudioAddressCache.expiryOf("https://rr2.googlevideo.com/videoplayback?a=1&expire=1800000000&ip=1.2.3.4"),
         )
         assertEquals(
-            1_800_000_000_000L - 60_000L,
+            1_800_000_000_000L - AudioAddressCache.EXPIRY_MARGIN_MS,
             AudioAddressCache.expiryOf("https://cf.sndcdn.com/x.m3u8?Policy=abc&Expires=1800000000"),
         )
         assertNull(AudioAddressCache.expiryOf("https://cdn/plain.m4a"))
