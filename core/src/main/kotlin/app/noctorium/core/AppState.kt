@@ -520,6 +520,15 @@ class AppState(
     private var libraryJob: Job? = null
     private var playlistJob: Job? = null
     private var lastFmApprovalJob: Job? = null
+    // Declared here, above init, because init starts the watchers that use them. Kotlin sets a class up in
+    // the order it is written, and one declared further down is still null when a watcher started in init
+    // first reaches for it -- which is how the artist watcher crashed the moment the desktop opened.
+    private val youTubeRefresh = YouTubeSessionRefresh()
+    private val mutableArtistFollow = MutableStateFlow<YouTubeArtist?>(null)
+
+    /** The artist of the YouTube song that is playing, and whether the account follows them. Null until known. */
+    val artistFollow: StateFlow<YouTubeArtist?> = mutableArtistFollow.asStateFlow()
+
     private val accountJobs = ConcurrentHashMap<ProviderType, Job>()
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -1165,7 +1174,13 @@ class AppState(
             ?: return null
         val keys = innertubeKeys.keys() ?: return null
         val preferences = mutableSettings.value.preferences
-        return YouTubeSession(keys, header, preferences.youtubePageId, preferences.youtubeAuthUser)
+        return YouTubeSession(
+            keys,
+            header,
+            preferences.youtubePageId,
+            preferences.youtubeAuthUser,
+            preferences.youtubeUserAgent.ifBlank { null },
+        )
     }
 
     /** Session cookies from the exported jar, which carry the browser's bot-protection clearance. */
@@ -1263,9 +1278,10 @@ class AppState(
      * yt-dlp reads, and the session token is what authorises likes, so one sign-in covers both.
      */
     /** Records a YouTube session captured by the in-app sign-in, which replaces the OAuth client entirely. */
-    fun completeYouTubeSignIn(cookieFilePath: String) {
+    fun completeYouTubeSignIn(cookieFilePath: String, userAgent: String? = null) {
         val source = CookieSource.ofFile(cookieFilePath).copy(verifiedAtEpochSeconds = Instant.now().epochSecond)
-        updatePreferences { copy(youtubeCookies = source) }
+        // What the sign-in browser called itself, kept so every later request says the same.
+        updatePreferences { copy(youtubeCookies = source, youtubeUserAgent = userAgent?.takeIf(String::isNotBlank) ?: youtubeUserAgent) }
         updateAccountState(
             ProviderType.YOUTUBE_MUSIC,
             AccountConnectionState(AccountConnectionStatus.CONNECTED, "Signed in inside Noctorium."),
@@ -1519,8 +1535,6 @@ class AppState(
 
     // --- YouTube Music: staying signed in, a sign-in from the phone, history, following, order ---
 
-    private val youTubeRefresh = YouTubeSessionRefresh()
-
     /**
      * Asks YouTube whether the saved session still works, renews it when it has only gone stale, and says
      * so plainly when it cannot be renewed.
@@ -1539,11 +1553,19 @@ class AppState(
         val session = youTubeSession() ?: return YouTubeSignIn.UNKNOWN
         var state = youTubeMusic.signInState(session)
         var renewed = false
-        if (state == YouTubeSignIn.SIGNED_OUT && youTubeRefresh.refresh(Path.of(file))) {
+        if (state == YouTubeSignIn.SIGNED_OUT && youTubeRefresh.refresh(Path.of(file), mutableSettings.value.preferences.youtubeUserAgent)) {
             renewed = true
             state = youTubeSession()?.let { youTubeMusic.signInState(it) } ?: YouTubeSignIn.UNKNOWN
         }
-        ScrobbleLog.event("youtube_sign_in_checked", mapOf("state" to state.name, "renewed" to renewed))
+        ScrobbleLog.event(
+            "youtube_sign_in_checked",
+            mapOf(
+                "state" to state.name,
+                // Whether the renewal wrote anything, which is not the same as having worked: the state says that.
+                "renewalWrote" to renewed,
+                "trip" to youTubeRefresh.lastTrip.joinToString(" > ").take(1_500),
+            ),
+        )
         when (state) {
             YouTubeSignIn.SIGNED_IN -> {
                 updatePreferences {
@@ -1567,7 +1589,7 @@ class AppState(
                     AccountConnectionState(
                         AccountConnectionStatus.ERROR,
                         "Your YouTube Music sign-in has expired.",
-                        "Sign in again, or send the sign-in over from Noctorium on your phone.",
+                        "Sign in again to keep your likes, playlists and history working.",
                     ),
                 )
                 mutableLikes.update { it.copy(youTubeReady = false) }
@@ -1618,11 +1640,6 @@ class AppState(
     }
 
     fun setYouTubeHistory(enabled: Boolean) = updatePreferences { copy(youtubeHistory = enabled) }
-
-    private val mutableArtistFollow = MutableStateFlow<YouTubeArtist?>(null)
-
-    /** The artist of the YouTube song that is playing, and whether the account follows them. Null until known. */
-    val artistFollow: StateFlow<YouTubeArtist?> = mutableArtistFollow.asStateFlow()
 
     private fun observeArtistFollow() {
         scope.launch {
@@ -1713,6 +1730,7 @@ class AppState(
                 authUser = received.authUser,
                 pageId = received.pageId,
                 channelName = received.channelName,
+                userAgent = received.userAgent,
             )
             mutableTransfer.value = outcome?.let(SignInTransfer::Failed)
                 ?: SignInTransfer.Done(received.channelName.takeIf(String::isNotBlank))
@@ -1742,6 +1760,7 @@ class AppState(
                     pageId = preferences.youtubePageId,
                     channelName = preferences.youtubeChannelName,
                     fromDevice = deviceName(),
+                    userAgent = preferences.youtubeUserAgent,
                 ),
             )
             likeMessage(problem ?: "Sent. The computer is signed in to YouTube Music now.")
@@ -1773,6 +1792,7 @@ class AppState(
         authUser: Int = 0,
         pageId: String = "",
         channelName: String = "",
+        userAgent: String = "",
     ): String? {
         val folder = dataDirectory() ?: return "There is nowhere to keep the session on this device."
         val destination = folder.resolve("youtube.cookies")
@@ -1783,7 +1803,7 @@ class AppState(
             return "Could not reach YouTube Music to check the session."
         }
         val header = withContext(Dispatchers.IO) { cookieHeaderFor(candidate, "youtube.com") }
-        val state = youTubeMusic.signInState(YouTubeSession(keys, header, pageId.ifBlank { null }, authUser))
+        val state = youTubeMusic.signInState(YouTubeSession(keys, header, pageId.ifBlank { null }, authUser, userAgent.ifBlank { null }))
         if (state != YouTubeSignIn.SIGNED_IN) {
             withContext(Dispatchers.IO) { Files.deleteIfExists(candidate) }
             return if (state == YouTubeSignIn.SIGNED_OUT) {
@@ -1798,7 +1818,7 @@ class AppState(
         updatePreferences {
             copy(youtubePageId = pageId, youtubeChannelName = channelName, youtubeAuthUser = authUser, youtubeChannelPhoto = "")
         }
-        completeYouTubeSignIn(destination.toString())
+        completeYouTubeSignIn(destination.toString(), userAgent)
         return null
     }
 

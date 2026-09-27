@@ -354,6 +354,13 @@ data class NoctoriumPreferences(
      * played on YouTube Music itself, so the service's own recommendations follow it.
      */
     val youtubeHistory: Boolean = true,
+    /**
+     * What the browser that signed in called itself. Every signed-in request is sent the same way, so the
+     * session is not seen coming from one browser at sign-in and another straight afterwards -- a phone
+     * signing in as Chrome on Android and then asking as Chrome on Windows looks, to Google, like a session
+     * that has turned up on a second device. Blank for sessions saved before this was kept.
+     */
+    val youtubeUserAgent: String = "",
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
     /**

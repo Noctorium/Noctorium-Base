@@ -55,6 +55,14 @@ class YouTubeAccountTest {
         assertNull(YouTubeMusicClient().context(session)["user"], "the default channel is named nowhere")
     }
 
+    /** A phone that signed in as Chrome on Android should not then ask as Chrome on Windows. */
+    @Test
+    fun `requests say what the browser that signed in said`() {
+        val android = "Mozilla/5.0 (Linux; Android 14; 23078PND5G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
+        assertEquals(android, session.copy(userAgent = android).headers(1_700_000_000)["User-Agent"])
+        assertNull(session.headers(1_700_000_000)["User-Agent"], "no identity of our own made up where none was kept")
+    }
+
     /** Two Google accounts in one session, the second with a brand channel, as the avatar menu lists them. */
     private val switcher = """)]}'
         {"code":"SUCCESS","data":{"actions":[{"getMultiPageMenuAction":{"menu":{"multiPageMenuRenderer":{"sections":[

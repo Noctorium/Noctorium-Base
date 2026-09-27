@@ -37,30 +37,52 @@ class YouTubeSessionRefresh(
      * Makes the trip and writes the cookies back into [cookieFile]. True when there was anything to write,
      * which is when a Google session was there to renew from.
      */
-    suspend fun refresh(cookieFile: Path): Boolean = withContext(Dispatchers.IO) {
+    suspend fun refresh(cookieFile: Path, userAgent: String? = null): Boolean = withContext(Dispatchers.IO) {
         val cookies = readCookieFile(cookieFile)
         // Without Google's own cookies there is nothing to renew from. Sessions saved before those were kept
         // are in this position, and have to be signed in again.
         if (cookies.none { it.domain.trimStart('.').endsWith("google.com") }) return@withContext false
         val jar = MemoryJar(cookies)
+        val hops = mutableListOf<String>()
         val client = base.newBuilder()
             .cookieJar(jar)
             .followRedirects(true)
             .followSslRedirects(true)
             .callTimeout(30, TimeUnit.SECONDS)
+            // Where the trip went, for the log: each address without its query, the status, and the names
+            // of the cookies set there. Never a value -- these are a Google session.
+            .addNetworkInterceptor { chain ->
+                val response = chain.proceed(chain.request())
+                val url = chain.request().url
+                val names = response.headers("Set-Cookie").map { it.substringBefore('=') }
+                hops += "${response.code} ${url.host}${url.encodedPath}" + if (names.isEmpty()) "" else " sets ${names.joinToString(",")}"
+                response
+            }
             .build()
         val reached = runCatching {
             client.newCall(
                 Request.Builder()
                     .url(start)
-                    .header("User-Agent", BROWSER_AGENT)
+                    .header("User-Agent", userAgent?.takeIf(String::isNotBlank) ?: BROWSER_AGENT)
                     .header("Accept-Language", "en-US,en;q=0.9")
                     .build(),
-            ).execute().use { it.isSuccessful || it.isRedirect }
+            ).execute().use { reply ->
+                // A trip that ends on a page telling the browser where to go next is one this cannot finish:
+                // a browser would follow it, and this has no browser. Said in the log rather than guessed at.
+                val page = runCatching { reply.peekBody(64 * 1024).string() }.getOrDefault("")
+                if ("http-equiv=\"refresh\"" in page || "SetSID" in page) hops += "ended on a page that continues in the browser"
+                reply.isSuccessful || reply.isRedirect
+            }
         }.getOrDefault(false)
+        lastTrip = hops.toList()
         if (!reached || !jar.changed) return@withContext false
         runCatching { writeCookieFile(jar.all(), cookieFile) }.isSuccess
     }
+
+    /** The last trip, hop by hop, as [refresh] logs it. Empty until one has been made. */
+    @Volatile
+    var lastTrip: List<String> = emptyList()
+        private set
 
     /** A cookie jar over the file's cookies, keeping track of whether anything replaced them. */
     private class MemoryJar(initial: List<HarvestedCookie>) : CookieJar {

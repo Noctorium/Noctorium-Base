@@ -211,6 +211,8 @@ data class TransferredSession(
     val pageId: String = "",
     val channelName: String = "",
     val fromDevice: String = "",
+    /** What the browser that signed in called itself, so the computer asks the same way the phone did. */
+    val userAgent: String = "",
 )
 
 fun HarvestedCookie.toTransferred() = TransferredCookie(domain, path, name, value, secure, expiresEpochSeconds)

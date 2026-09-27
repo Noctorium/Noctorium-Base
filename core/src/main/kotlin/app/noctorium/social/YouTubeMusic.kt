@@ -1237,6 +1237,8 @@ data class YouTubeSession(
      * account that owns it; sent with the wrong one, YouTube answers as though nobody were signed in.
      */
     val authUser: Int = 0,
+    /** What the browser that signed in called itself; see NoctoriumPreferences.youtubeUserAgent. */
+    val userAgent: String? = null,
 ) {
     val sapisid: String? get() = sapisidFrom(cookieHeader)
 
@@ -1256,6 +1258,7 @@ data class YouTubeSession(
         put("Origin", "https://music.youtube.com")
         put("Referer", "https://music.youtube.com/")
         pageId?.takeIf(String::isNotBlank)?.let { put("X-Goog-PageId", it) }
+        userAgent?.takeIf(String::isNotBlank)?.let { put("User-Agent", it) }
     }
 }
 
