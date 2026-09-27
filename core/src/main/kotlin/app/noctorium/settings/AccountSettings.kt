@@ -144,7 +144,7 @@ enum class StartPage(val displayName: String) {
     NOW_PLAYING("Now playing"),
 }
 
-/** Layout of the bar along the bottom of the window. */
+/** Layout of the desktop's player bar. The phone has its own, [PhonePlayerBarStyle]. */
 @Serializable
 enum class PlayerBarStyle(val displayName: String, val description: String) {
     INLINE(
@@ -154,6 +154,50 @@ enum class PlayerBarStyle(val displayName: String, val description: String) {
     STACKED(
         "Stacked",
         "Seek bar across the top, with the track on the left and controls centred beneath.",
+    ),
+    CENTERED(
+        "Centred",
+        "The track on the left, the controls in the middle with the seek bar under them, the tools on the right.",
+    ),
+    SLIM(
+        "Slim",
+        "One short row with every control and a hairline of progress, so the page gets as much of the window as it can.",
+    ),
+    SLIM_LEFT(
+        "Slim left",
+        "Slim with the controls on the left and the track after them.",
+    ),
+    SPOTLIGHT(
+        "Spotlight",
+        "A taller bar with a large cover, tinted with the colours of the artwork.",
+    ),
+}
+
+/**
+ * Layout of the phone's player bar, chosen apart from the desktop's: a bar across a wide window and a strip
+ * above a thumb want different things, and a choice that suited one would be a poor default for the other.
+ */
+@Serializable
+enum class PhonePlayerBarStyle(val displayName: String, val description: String) {
+    CLASSIC(
+        "Classic",
+        "The cover, the track, play and next.",
+    ),
+    SLIM(
+        "Slim",
+        "A short strip: the track, then shuffle, previous, play, next and repeat.",
+    ),
+    SLIM_LEFT(
+        "Slim left",
+        "Slim with the controls on the left, under the other thumb, and the track after them.",
+    ),
+    CONTROLS(
+        "Controls",
+        "Previous, play and next under the track, with a seek bar you can drag.",
+    ),
+    SPOTLIGHT(
+        "Spotlight",
+        "A larger cover, over a blur of the artwork.",
     ),
 }
 
@@ -434,6 +478,8 @@ data class PhonePreferences(
     val haptics: Boolean = true,
     /** Swiping the player bar sideways moves through the queue. */
     val swipeToChangeTrack: Boolean = true,
+    /** How the player bar above the tabs is laid out. */
+    val playerBarStyle: PhonePlayerBarStyle = PhonePlayerBarStyle.CLASSIC,
     /**
      * How far a double tap on the cover jumps, in seconds.
      *
@@ -511,7 +557,15 @@ data class SpotifyConnectionState(
 class SettingsRepository(
     private val settingsPath: Path? = defaultSettingsPath(),
 ) {
-    private val json = Json { ignoreUnknownKeys = true; prettyPrint = true }
+    /**
+     * Forgiving about what it does not know, in both directions.
+     *
+     * Unknown keys are skipped, and so, since [coerceInputValues], are unknown values: a choice this build
+     * has never heard of -- a player bar layout added in a later version, read by an earlier one -- falls
+     * back to that one setting's default. Without it the whole file failed to parse, and failing to parse
+     * means starting from defaults: every setting gone because of one.
+     */
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true; prettyPrint = true }
 
     fun load(): NoctoriumPreferences = runCatching {
         val path = settingsPath ?: return@runCatching NoctoriumPreferences()
