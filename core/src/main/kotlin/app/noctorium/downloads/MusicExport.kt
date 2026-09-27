@@ -13,8 +13,8 @@ import java.nio.file.Path
  */
 enum class ExportFormat(val extension: String, val displayName: String) {
     /**
-     * Converted to MP3, which needs ffmpeg. Plays on anything at all, including a car stereo old enough
-     * to have a CD slot, and is the one format nobody has to think about.
+     * Converted to MP3, by mpv on the desktop, and tagged with the cover. Plays on anything at all,
+     * including a car stereo old enough to have a CD slot, and is the one format nobody has to think about.
      */
     MP3("mp3", "MP3"),
 

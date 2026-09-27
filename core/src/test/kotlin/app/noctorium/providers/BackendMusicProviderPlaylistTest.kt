@@ -177,11 +177,9 @@ class BackendMusicProviderPlaylistTest {
             onProgress: (Float) -> Unit,
         ) = Unit
 
-        override fun canConvertAudio() = false
         override suspend fun exportAudio(
             sourceUrl: String,
             outputTemplate: String,
-            format: app.noctorium.downloads.ExportFormat,
             onProgress: (Float) -> Unit,
         ) = Unit
 

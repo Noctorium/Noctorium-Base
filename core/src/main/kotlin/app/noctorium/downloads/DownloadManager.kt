@@ -7,7 +7,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,6 +59,8 @@ class DownloadManager(
      * has no encoder and wants none — Android plays the m4a and opus the services serve.
      */
     private val converter: AudioTranscoder = NoTranscoder,
+    /** Where the cover for a saved MP3 comes from. A parameter only so a test can hand one over. */
+    private val covers: suspend (String?) -> ByteArray? = CoverArt::fetch,
 ) {
     private val mutableState = MutableStateFlow(DownloadsState())
     val state: StateFlow<DownloadsState> = mutableState.asStateFlow()
@@ -80,6 +84,9 @@ class DownloadManager(
     }
 
     fun localFile(track: Track): Path? = store.localFile(track)
+
+    /** Whether saving makes an MP3 here. Where it cannot, the audio is saved as the service serves it. */
+    fun canMakeMp3(): Boolean = converter.canMakeMp3()
 
     fun download(track: Track) {
         if (track.sourceUrl.isBlank()) return note("That track has nothing to download.")
@@ -167,8 +174,7 @@ class DownloadManager(
         val key = "export:${track.queueKey}"
         if (running.containsKey(key)) return note("\"${track.title}\" is already being saved.")
 
-        // MP3 either way it can be had: yt-dlp does it when ffmpeg is about, and mpv does it otherwise.
-        val format = if (ytDlp.canConvertAudio() || converter.canMakeMp3()) ExportFormat.MP3 else ExportFormat.ORIGINAL
+        val format = if (converter.canMakeMp3()) ExportFormat.MP3 else ExportFormat.ORIGINAL
         mutableState.update {
             it.copy(active = it.active + DownloadJob(track, DownloadStage.QUEUED, detail = "Saving as ${format.displayName}"), message = null)
         }
@@ -212,38 +218,44 @@ class DownloadManager(
         val name = withContext(Dispatchers.IO) { MusicExport.availableName(folder, wanted) }
         val stem = name.substringBeforeLast('.')
 
-        // With ffmpeg about, yt-dlp converts and embeds the cover art in the same pass, which is the best
-        // result available and not worth doing in two steps.
-        if (format != ExportFormat.MP3 || ytDlp.canConvertAudio()) {
+        if (format != ExportFormat.MP3) {
             ytDlp.exportAudio(
                 sourceUrl = track.sourceUrl,
-                // yt-dlp settles the extension itself, and converting changes it after the download.
+                // yt-dlp settles the extension itself, once it has chosen a stream.
                 outputTemplate = folder.resolve("$stem.%(ext)s").toString(),
-                format = format,
                 onProgress = { fraction -> stage(track, DownloadStage.DOWNLOADING, fraction) },
             )
             return producedFile(folder, stem)
         }
 
-        // Otherwise the audio comes down as it is and mpv makes the MP3. The intermediate is named apart
-        // from the finished file so a failure halfway cannot leave something that looks like the result.
+        // The audio comes down as it is, mpv makes the MP3, and the tag with the cover goes on last. The
+        // intermediate is named apart from the finished file so a failure halfway cannot leave something
+        // that looks like the result.
         val workingStem = "$stem.noctorium-part"
         try {
-            ytDlp.exportAudio(
-                sourceUrl = track.sourceUrl,
-                outputTemplate = folder.resolve("$workingStem.%(ext)s").toString(),
-                format = ExportFormat.ORIGINAL,
-                // The download is most of the wait, so it gets most of the bar; converting finishes it.
-                onProgress = { fraction -> stage(track, DownloadStage.DOWNLOADING, fraction * .85f) },
-            )
-            val downloaded = producedFile(folder, workingStem)
-            stage(track, DownloadStage.DOWNLOADING, .9f)
-            val converted = converter.toMp3(
-                input = downloaded,
-                output = folder.resolve(name),
-                title = track.title,
-                artist = track.artistLine,
-            )
+            val converted = coroutineScope {
+                // The cover is fetched while the audio downloads rather than after it: it is a second or
+                // so of waiting that nobody needs to sit through on its own.
+                val cover = async { covers(track.artworkUrl) }
+                ytDlp.exportAudio(
+                    sourceUrl = track.sourceUrl,
+                    outputTemplate = folder.resolve("$workingStem.%(ext)s").toString(),
+                    // The download is most of the wait, so it gets most of the bar; converting finishes it.
+                    onProgress = { fraction -> stage(track, DownloadStage.DOWNLOADING, fraction * .85f) },
+                )
+                val downloaded = producedFile(folder, workingStem)
+                stage(track, DownloadStage.DOWNLOADING, .9f)
+                converter.toMp3(
+                    input = downloaded,
+                    output = folder.resolve(name),
+                    tags = AudioTags(
+                        title = track.title,
+                        artist = track.artistLine,
+                        album = track.album?.title,
+                        cover = cover.await(),
+                    ),
+                )
+            }
             stage(track, DownloadStage.DOWNLOADING, 1f)
             return converted
         } finally {

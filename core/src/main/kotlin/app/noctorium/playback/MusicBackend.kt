@@ -3,7 +3,6 @@ package app.noctorium.playback
 import app.noctorium.domain.Playlist
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
-import app.noctorium.downloads.ExportFormat
 import app.noctorium.settings.CookieSource
 
 /** Something the backend could not do, worded for a reader rather than for a log. */
@@ -91,14 +90,16 @@ interface MusicBackend {
         onProgress: (Float) -> Unit = {},
     )
 
-    /** Whether audio can be re-encoded here, which is the only thing standing between us and MP3. */
-    fun canConvertAudio(): Boolean
-
-    /** Writes a file for the listener to keep and take elsewhere, rather than one for Noctorium to play. */
+    /**
+     * Writes a file for the listener to keep and take elsewhere, rather than one for Noctorium to play.
+     *
+     * The audio as the service serves it, m4a where there is a choice, because that plays on every phone.
+     * An MP3 is made from this afterwards by the platform's [app.noctorium.downloads.AudioTranscoder]; no
+     * backend converts anything itself.
+     */
     suspend fun exportAudio(
         sourceUrl: String,
         outputTemplate: String,
-        format: ExportFormat,
         onProgress: (Float) -> Unit = {},
     )
 

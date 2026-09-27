@@ -11,6 +11,7 @@ import app.noctorium.lyrics.LyricsProviderOutcome
 import app.noctorium.lyrics.LyricsProviderStatus
 import app.noctorium.lyrics.LyricsRepository
 import app.noctorium.lyrics.LyricsUiState
+import app.noctorium.playback.BackendException
 import app.noctorium.playback.MusicBackend
 import app.noctorium.playback.QueueManager
 import app.noctorium.playback.RepeatMode
@@ -81,6 +82,7 @@ import app.noctorium.connect.DeviceKind
 import app.noctorium.connect.NetworkPresence
 import app.noctorium.connect.PlaybackSnapshot
 import app.noctorium.connect.toWire
+import app.noctorium.net.ShortLinks
 import app.noctorium.net.networkFailureMessage
 import app.noctorium.net.readableFailure
 import app.noctorium.playback.SleepTimer
@@ -95,6 +97,7 @@ import app.noctorium.update.UpdateState
 import app.noctorium.update.shouldPromptAbout
 import app.noctorium.account.NoctoriumUser
 import app.noctorium.settings.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -107,6 +110,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.net.URI
@@ -119,7 +123,22 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
-enum class Destination { HOME, SEARCH, LIBRARY, NOW_PLAYING, QUEUE, SETTINGS }
+enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS }
+
+/** What to do with a pasted link. Playing it is what pasting means; the rest are one tap away. */
+enum class LinkAction { PLAY, QUEUE, DOWNLOAD, SAVE }
+
+enum class LinkStatus { IDLE, OPENING, DONE, FAILED }
+
+/** The link pasted last, and what came of it. */
+data class LinkState(
+    val status: LinkStatus = LinkStatus.IDLE,
+    val link: MusicLink? = null,
+    val action: LinkAction = LinkAction.PLAY,
+    /** What the link turned out to be: the one track, or a playlist's worth. */
+    val tracks: List<Track> = emptyList(),
+    val message: String? = null,
+)
 enum class ProviderFilter { ALL, YOUTUBE_MUSIC, SOUNDCLOUD }
 enum class SearchMode(val displayName: String) {
     HYBRID("Hybrid"),
@@ -2929,6 +2948,86 @@ class AppState(
         }
     }
 
+    // --- Pasted links ---
+
+    private val mutableLink = MutableStateFlow(LinkState())
+
+    /** What the link pasted last is doing. See [openLink]. */
+    val linkState: StateFlow<LinkState> = mutableLink.asStateFlow()
+
+    private var linkJob: Job? = null
+    private val shortLinks = ShortLinks()
+
+    /**
+     * Plays -- or queues, downloads or saves -- whatever a pasted link points at.
+     *
+     * [text] is whatever was pasted, link or not: [findMusicLink] finds the link in it, and says no to
+     * anything that is not a song or a playlist on one of the three services. A song is played at once, as
+     * the track the link names with nothing else known about it yet; the backend fills in the title, the
+     * artist and the cover on the way to playing it, exactly as it does for a track whose listing left
+     * them out, so there is no second lookup in front of the music. The other actions need those facts
+     * first -- a download is named after them -- so they are read before anything else happens.
+     *
+     * A playlist is read whole and played from the top, which is what somebody who shares a playlist
+     * means. Pasting again while one is still opening abandons the first.
+     */
+    fun openLink(text: String, action: LinkAction = LinkAction.PLAY) {
+        val found = findMusicLink(text)
+        if (found == null) {
+            mutableLink.update { it.copy(status = LinkStatus.FAILED, link = null, tracks = emptyList(), message = NOT_A_MUSIC_LINK) }
+            return
+        }
+        linkJob?.cancel()
+        mutableLink.value = LinkState(status = LinkStatus.OPENING, link = found, action = action)
+        linkJob = scope.launch {
+            try {
+                val link = shortLinks.expand(found)
+                    ?: throw BackendException("That share link does not lead to a song or a playlist.")
+                val tracks = when (link.kind) {
+                    LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
+                        .ifEmpty { throw BackendException("That playlist has nothing in it that can be played, or it is private.") }
+                    else -> link.placeholderTrack().let { placeholder ->
+                        if (action == LinkAction.PLAY) placeholder else ytDlp.enrichMetadata(placeholder)
+                    }.let(::listOf)
+                }
+                when (action) {
+                    LinkAction.PLAY -> play(
+                        tracks.first(),
+                        if (link.kind == LinkKind.PLAYLIST) PlaybackOrigin.PLAYLIST else PlaybackOrigin.SEARCH,
+                        tracks,
+                    )
+                    LinkAction.QUEUE -> tracks.forEach(::addToQueue)
+                    LinkAction.DOWNLOAD -> downloadAll(tracks)
+                    LinkAction.SAVE -> exportAll(tracks)
+                }
+                mutableLink.value = LinkState(LinkStatus.DONE, link, action, tracks, linkDoneMessage(action, link, tracks.size))
+                // A song played straight from its link is known only by its address until the player has
+                // read the page. Once it has, the title, artist and cover it found are kept here too, so the
+                // link's screen goes on showing the song after the next one has started.
+                if (action == LinkAction.PLAY && link.kind != LinkKind.PLAYLIST) {
+                    val key = tracks.first().queueKey
+                    withTimeoutOrNull(LINK_DETAILS_WAIT_MS) {
+                        playback.first { it.track?.queueKey == key && it.track.artists.isNotEmpty() }
+                    }?.track?.let { known ->
+                        mutableLink.update { if (it.link == link) it.copy(tracks = listOf(known)) else it }
+                    }
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                mutableLink.update {
+                    it.copy(status = LinkStatus.FAILED, message = readableFailure(error, "Could not open that link."))
+                }
+            }
+        }
+    }
+
+    /** Back to an empty box, for when the listener clears it. */
+    fun clearLink() {
+        linkJob?.cancel()
+        mutableLink.value = LinkState()
+    }
+
     // --- Keeping music on this machine ---
 
     val downloadState: StateFlow<DownloadsState> get() = downloads.state
@@ -2994,7 +3093,7 @@ class AppState(
     }
 
     /** Whether this machine can make an MP3, which decides what saving actually produces. */
-    fun canSaveAsMp3(): Boolean = ytDlp.canConvertAudio()
+    fun canSaveAsMp3(): Boolean = downloads.canMakeMp3()
 
     /** Where saved music goes: the chosen folder, or the desktop when none has been chosen. */
     fun exportFolder(): Path? = mutableSettings.value.preferences.exportFolder
@@ -3132,6 +3231,26 @@ private const val PREFETCH_AFTER_MS = 4_000L
 private const val WARM_UP_AFTER_MS = 2_500L
 
 /** The exception and its cause, since the outer message is often the less useful of the two. */
+/** How long a link that is playing is watched for the details the player reads. A slow page is seconds. */
+private const val LINK_DETAILS_WAIT_MS = 60_000L
+
+internal const val NOT_A_MUSIC_LINK =
+    "That isn't a link to a song or a playlist. Paste one from YouTube Music, YouTube or SoundCloud."
+
+/**
+ * What to say once a link has been dealt with, or null where the screen already shows it: a song that is
+ * playing is on the screen, and needs no sentence as well.
+ */
+internal fun linkDoneMessage(action: LinkAction, link: MusicLink, count: Int): String? {
+    val what = if (link.kind == LinkKind.PLAYLIST) "$count ${if (count == 1) "track" else "tracks"}" else "the song"
+    return when (action) {
+        LinkAction.PLAY -> if (link.kind == LinkKind.PLAYLIST) "Playing $what from ${link.provider.displayName}." else null
+        LinkAction.QUEUE -> "Added $what to the queue."
+        LinkAction.DOWNLOAD -> "Downloading $what. It will play with no connection once it is done."
+        LinkAction.SAVE -> "Saving $what as a file."
+    }
+}
+
 private fun describeFailure(error: Throwable): String =
     generateSequence(error) { it.cause }
         .take(3)
