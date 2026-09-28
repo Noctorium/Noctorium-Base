@@ -56,6 +56,14 @@ enum class ThemePreset(val displayName: String, val family: String, val colours:
     TOKYO_NIGHT("Tokyo Night", "Tokyo Night", ThemeColours(0xFF1A1B26, 0xFF16161E, 0xFF24283B, 0xFFC0CAF5, 0xFFA9B1D6, 0xFF7AA2F7)),
     SOLARIZED_DARK("Solarized Dark", "Solarized", ThemeColours(0xFF002B36, 0xFF073642, 0xFF0D3D49, 0xFFEEE8D5, 0xFF93A1A1, 0xFF268BD2)),
     SOLARIZED_LIGHT("Solarized Light", "Solarized", ThemeColours(0xFFFDF6E3, 0xFFEEE8D5, 0xFFE7E0C9, 0xFF073642, 0xFF586E75, 0xFF268BD2, light = true)),
+    /*
+     * Two desktops everybody of a certain age can picture. 98 is the grey of its window face with white
+     * where a list sat and the navy of a title bar for the accent; XP is Luna's beige page, the pale blue of
+     * Explorer's task pane and the blue of its taskbar. The system colours those releases shipped with,
+     * as near as a six-colour theme can hold them. Sharp corners and the Classic seek bar finish the look.
+     */
+    WINDOWS_98("98", "Windows", ThemeColours(0xFFC0C0C0, 0xFFB4B4B4, 0xFFFFFFFF, 0xFF000000, 0xFF3A3A3A, 0xFF000080, light = true)),
+    WINDOWS_XP("XP", "Windows", ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true)),
     CUSTOM("Custom", "Yours", null),
 }
 

@@ -41,6 +41,21 @@ class ThemesTest {
     }
 
     @Test
+    fun `the Windows themes are light, with their system colours`() {
+        val windows = ThemePreset.entries.filter { it.family == "Windows" }
+        assertEquals(listOf(ThemePreset.WINDOWS_98, ThemePreset.WINDOWS_XP), windows)
+        assertEquals(0xFFC0C0C0, ThemePreset.WINDOWS_98.colours?.background, "98's window face")
+        assertEquals(0xFF000080, ThemePreset.WINDOWS_98.colours?.accent, "98's title bar")
+        assertEquals(0xFFECE9D8, ThemePreset.WINDOWS_XP.colours?.background, "Luna's window face")
+        windows.forEach { assertTrue(it.colours?.light == true, "${it.name} is a light theme") }
+        // The accent is also a colour for links and highlights on the page, so it has to read there too.
+        windows.forEach { preset ->
+            val colours = preset.colours!!
+            assertTrue(contrastRatio(colours.accent, colours.background) >= 4.5, "${preset.name}: accent on the page")
+        }
+    }
+
+    @Test
     fun `the accent in force follows the choice`() {
         val mocha = NoctoriumPreferences(theme = ThemePreset.CATPPUCCIN_MOCHA)
         assertEquals(0xFFCBA6F7, mocha.resolvedAccent(artworkArgb = null))

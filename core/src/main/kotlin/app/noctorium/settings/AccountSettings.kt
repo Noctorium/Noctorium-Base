@@ -244,6 +244,10 @@ enum class ProgressBarStyle(val displayName: String, val description: String) {
         "Capsule",
         "One thick rounded bar, filled from the left. No handle, nothing else.",
     ),
+    CLASSIC(
+        "Classic",
+        "The old Windows kind: a sunken well filling with square blocks, and a raised slab for a handle.",
+    ),
     ;
 
     /** Whether this one is drawn rather than handed to Material's own slider. */
@@ -287,6 +291,20 @@ object SeekBar {
 
     /** Thickness of the capsule. Fat enough to be the bar rather than a line under the title. */
     const val CAPSULE_DP = 10
+
+    /** The classic bar's sunken well, top to bottom, bevel included. */
+    const val CLASSIC_WELL_DP = 14
+
+    /** One of the square blocks that fill it, and the gap after each, as Windows 98's progress bar had them. */
+    const val CLASSIC_BLOCK_DP = 8
+    const val CLASSIC_BLOCK_GAP_DP = 2
+
+    /** The raised slab that is the classic bar's handle. Taller than the well, as a trackbar's thumb was. */
+    const val CLASSIC_THUMB_WIDTH_DP = 11
+    const val CLASSIC_THUMB_HEIGHT_DP = 22
+
+    /** The face of that slab: the grey every button and scroll box of the time was made of. */
+    const val CLASSIC_FACE = 0xFFC0C0C0
 
     /** What an unplayed track is drawn at, against the writing colour. */
     const val TRACK_ALPHA = .22f
