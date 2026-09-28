@@ -26,6 +26,21 @@ class ThemesTest {
     }
 
     @Test
+    fun `the crimson themes are pure black pages with a red accent`() {
+        val crimson = ThemePreset.entries.filter { it.family == "Crimson" }
+        assertEquals(3, crimson.size)
+        crimson.forEach { preset ->
+            val colours = preset.colours ?: error("${preset.name} has no colours")
+            assertEquals(0xFF000000, colours.background, "${preset.name}: an OLED page is black")
+            val red = (colours.accent shr 16) and 0xFF
+            val green = (colours.accent shr 8) and 0xFF
+            val blue = colours.accent and 0xFF
+            assertTrue(red > 2 * green && red > 2 * blue, "${preset.name}: ${colours.accent.toHexColour()} is not red")
+        }
+        assertEquals(3, crimson.map { it.colours }.distinct().size, "three reds, not one under three names")
+    }
+
+    @Test
     fun `the accent in force follows the choice`() {
         val mocha = NoctoriumPreferences(theme = ThemePreset.CATPPUCCIN_MOCHA)
         assertEquals(0xFFCBA6F7, mocha.resolvedAccent(artworkArgb = null))

@@ -75,12 +75,14 @@ import app.noctorium.social.cookieHeaderFor
 import app.noctorium.social.SoundCloudRefreshResult
 import app.noctorium.social.SoundCloudTokenRefresh
 import app.noctorium.spotify.SpotifyAccess
+import app.noctorium.spotify.SpotifyApplication
 import app.noctorium.spotify.SpotifyAuth
 import app.noctorium.spotify.SpotifyClient
 import app.noctorium.spotify.SpotifyMatch
 import app.noctorium.spotify.SpotifyMatchStore
 import app.noctorium.spotify.SpotifyMusicProvider
 import app.noctorium.spotify.SpotifyRead
+import app.noctorium.spotify.usesOwnSpotifyApp
 import app.noctorium.account.AccountResult
 import app.noctorium.account.ListeningStats
 import app.noctorium.account.PlayReport
@@ -338,7 +340,7 @@ class AppState(
      */
     private val spotifyAccess = SpotifyAccess(
         refresh = SpotifyAuth(openBrowser = ::browseSecureUrl)::refresh,
-        clientId = { mutableSettings.value.preferences.spotifyClientId },
+        clientId = { SpotifyApplication.clientId(mutableSettings.value.preferences.spotifyClientId) },
         readRefreshToken = { runCatching { credentials.get(SPOTIFY_REFRESH_TOKEN) }.getOrNull() },
         writeRefreshToken = { token -> runCatching { credentials.put(SPOTIFY_REFRESH_TOKEN, token) } },
         clearRefreshToken = { runCatching { credentials.remove(SPOTIFY_REFRESH_TOKEN) } },
@@ -697,27 +699,35 @@ class AppState(
     fun updatePhone(transform: PhonePreferences.() -> PhonePreferences) =
         updatePreferences { copy(phone = phone.transform()) }
 
+    fun updateDesktop(transform: DesktopPreferences.() -> DesktopPreferences) =
+        updatePreferences { copy(desktop = desktop.transform()) }
+
     // --- Spotify, which is read and never played from ---
 
     /**
-     * Stores the client id of the Spotify app the listener registered.
+     * Signs in through a Spotify app the listener registered, or, given a blank, through Noctorium's again.
      *
-     * This is the whole of Spotify's setup, and it exists because Spotify has no way to be read without one.
-     * A client id identifies an application rather than authorising anything, which is why it can simply be
-     * typed in and saved.
+     * Optional now: Noctorium brings a Spotify app of its own (see [SpotifyApplication]). A client id
+     * identifies an application rather than authorising anything, which is why it can simply be typed in
+     * and saved.
      */
     fun setSpotifyClientId(clientId: String) {
         val cleaned = clientId.trim().take(64)
-        if (cleaned == mutableSettings.value.preferences.spotifyClientId) return
+        val previous = mutableSettings.value.preferences.spotifyClientId
+        if (cleaned == previous) return
         updatePreferences { copy(spotifyClientId = cleaned) }
         // A different application means the stored sign-in belongs to something else and cannot be
         // refreshed against this one. Dropping it here is what stops that showing up later as a refusal.
-        if (cleaned.isBlank() || spotifyAccess.isConnected()) {
+        if (SpotifyApplication.clientId(cleaned) != SpotifyApplication.clientId(previous) && spotifyAccess.isConnected()) {
             scope.launch(Dispatchers.IO) { spotifyAccess.disconnect() }
             updatePreferences { copy(spotifyAccountName = "") }
         }
         publishSpotifyState(
-            message = if (cleaned.isBlank()) "Spotify client id cleared." else "Client id saved. Connect Spotify next.",
+            message = if (cleaned.isBlank()) {
+                "Back to Noctorium's own Spotify app. Connect Spotify to read your library."
+            } else {
+                "Your client id is saved. Connect Spotify to sign in through your own app."
+            },
         )
         mutableLibrary.update { it.withoutProvider(ProviderType.SPOTIFY).copy(loaded = false) }
     }
@@ -725,23 +735,22 @@ class AppState(
     /** Takes the listener through Spotify's own consent page, then reads whose library it is. */
     fun connectSpotify() {
         if (mutableSettings.value.spotify.connecting) return
-        val clientId = mutableSettings.value.preferences.spotifyClientId
-        if (clientId.isBlank()) {
-            publishSpotifyState(message = "Add your Spotify client id first.")
-            return
-        }
+        val clientId = SpotifyApplication.clientId(mutableSettings.value.preferences.spotifyClientId)
         scope.launch {
             publishSpotifyState(connecting = true, message = "Finish signing in to Spotify in your browser.")
             when (val result = SpotifyAuth(openBrowser = ::browseSecureUrl).authorize(clientId)) {
                 is SpotifyAuth.Result.Success -> {
                     withContext(Dispatchers.IO) { spotifyAccess.adopt(result.tokens) }
-                    val name = spotifyClient.displayName(result.tokens.accessToken).valueOrNull().orEmpty()
+                    val profile = spotifyClient.displayName(result.tokens.accessToken)
+                    val name = profile.valueOrNull().orEmpty()
                     updatePreferences { copy(spotifyAccountName = name) }
                     publishSpotifyState(
-                        message = if (name.isBlank()) {
-                            "Spotify connected. Your playlists are in the library."
-                        } else {
-                            "Spotify connected as $name. Your playlists are in the library."
+                        message = when {
+                            // Signed in, and still not allowed to read anything: the account is not one the app
+                            // may read yet. Saying "connected" here would be the last true thing it heard.
+                            profile is SpotifyRead.Failed -> spotifyRefusal(profile.detail)
+                            name.isBlank() -> "Spotify connected. Your playlists are in the library."
+                            else -> "Spotify connected as $name. Your playlists are in the library."
                         },
                     )
                     refreshLibrary(force = true)
@@ -750,6 +759,22 @@ class AppState(
             }
         }
     }
+
+    /**
+     * What a refusal from Spotify means, said for the app it came through.
+     *
+     * A Spotify app in development mode reads only the accounts added to it by hand, and answers every other
+     * account with 403. Through the listener's own app that is theirs to fix in the dashboard; through
+     * Noctorium's it is not, so the way out is named instead.
+     */
+    private fun spotifyRefusal(detail: String): String =
+        if (detail.contains("(403)") && !mutableSettings.value.preferences.usesOwnSpotifyApp) {
+            "Spotify signed you in, but it only lets Noctorium's Spotify app read the accounts added to it so " +
+                "far, and yours is not one yet. You can use a Spotify app of your own instead, under Use your " +
+                "own Spotify app in Settings."
+        } else {
+            detail
+        }
 
     /**
      * Forgets the Spotify sign-in.
@@ -781,7 +806,8 @@ class AppState(
         mutableSettings.update {
             it.copy(
                 spotify = SpotifyConnectionState(
-                    configured = preferences.spotifyClientId.isNotBlank(),
+                    configured = true,
+                    ownApp = preferences.usesOwnSpotifyApp,
                     connected = spotifyAccess.isConnected(),
                     connecting = connecting,
                     accountName = preferences.spotifyAccountName,
@@ -893,11 +919,14 @@ class AppState(
             }.awaitAll() + listOfNotNull(youTube?.let { ProviderType.YOUTUBE_MUSIC to it })
             val playlists = soundCloudOwn.orEmpty() + results.flatMap { (_, result) -> result.getOrDefault(emptyList()) }
             val failures = results.mapNotNull { (type, result) ->
-                result.exceptionOrNull()?.let { libraryFailureMessage(type, it) }
+                result.exceptionOrNull()?.let { error ->
+                    libraryFailureMessage(type, error).let { if (type == ProviderType.SPOTIFY) spotifyRefusal(it) else it }
+                }
             }
-            // A client id saved but never connected is a half-finished setup, and it otherwise ends in an
-            // empty library that explains nothing — the provider has no session to fail with.
-            val spotifyHalfWay = preferences.spotifyClientId.isNotBlank() &&
+            // A client id of the listener's own saved but never connected is a half-finished setup, and it
+            // otherwise ends in an empty library that explains nothing — the provider has no session to fail
+            // with. Not connecting through Noctorium's own app is simply not using Spotify, and says nothing.
+            val spotifyHalfWay = preferences.usesOwnSpotifyApp &&
                 !withContext(Dispatchers.IO) { spotifyAccess.isConnected() }
             mutableLibrary.update {
                 it.withRefreshedPlaylists(playlists).copy(
@@ -2467,21 +2496,37 @@ class AppState(
         )
         lyricsJob = scope.launch {
             val outcomes = lyricsRepository.findAll(track, forceRefresh)
-            val firstAvailable = outcomes.firstOrNull { it.result?.lines?.isNotEmpty() == true }
-                ?: outcomes.firstOrNull { it.result != null }
+            val opening = openingLyrics(outcomes, mutableSettings.value.preferences.lyricsProvider)
             mutableLyrics.value = LyricsUiState(
                 trackKey = lookupKey,
                 loading = false,
                 outcomes = outcomes,
-                selectedProvider = firstAvailable?.provider,
-                errorMessage = if (firstAvailable == null) "No lyrics provider found a match for this track." else null,
+                selectedProvider = opening?.provider,
+                errorMessage = if (opening == null) "No lyrics provider found a match for this track." else null,
             )
         }
     }
 
+    /**
+     * Shows [provider]'s lyrics, and makes it the source every later song opens on when it has an answer.
+     *
+     * One choice rather than two. Picking a source only for the song in front of you, while Settings held
+     * a separate preference that the next song ignored anyway, is what made switching a trip to Settings
+     * that did not stick.
+     */
     fun selectLyricsProvider(provider: LyricsProviderId) {
         if (mutableLyrics.value.outcomes.any { it.provider == provider }) {
             mutableLyrics.update { it.copy(selectedProvider = provider) }
+        }
+        if (mutableSettings.value.preferences.lyricsProvider != provider) {
+            updatePreferences { copy(lyricsProvider = provider) }
+        }
+    }
+
+    /** Goes back to opening every song on whichever source has the best answer. */
+    fun clearPreferredLyricsProvider() {
+        if (mutableSettings.value.preferences.lyricsProvider != null) {
+            updatePreferences { copy(lyricsProvider = null) }
         }
     }
 
@@ -3481,11 +3526,23 @@ private fun ProviderType.accountSlot(): ProviderType? = when (this) {
 internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolean = when (provider) {
     ProviderType.YOUTUBE_MUSIC -> youtubeCookies.isConfigured
     ProviderType.SOUNDCLOUD -> soundCloudUsername.isNotBlank()
-    // Spotify needs no profile name and no cookies, only the client id its API refuses to answer without.
-    // Whether anybody has signed in is a separate question, and one the provider answers with silence.
-    ProviderType.SPOTIFY -> spotifyClientId.isNotBlank()
+    // Always possible now that Noctorium brings a Spotify app of its own. Whether anybody has signed in is
+    // a separate question, and one the provider answers with silence rather than a request.
+    ProviderType.SPOTIFY -> true
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
+
+/**
+ * The source a song's lyrics open on.
+ *
+ * The preferred one when it found lines for this song; otherwise the first that did; otherwise the first
+ * that answered at all, since a link to the lyrics on a site is still an answer. A preferred source with
+ * nothing for this song is passed over rather than shown empty -- the next song may well be one it has.
+ */
+internal fun openingLyrics(outcomes: List<LyricsProviderOutcome>, preferred: LyricsProviderId?): LyricsProviderOutcome? =
+    outcomes.firstOrNull { it.provider == preferred && it.result?.lines?.isNotEmpty() == true }
+        ?: outcomes.firstOrNull { it.result?.lines?.isNotEmpty() == true }
+        ?: outcomes.firstOrNull { it.result != null }
 
 private fun NoctoriumPreferences.cookiesFor(slot: ProviderType): CookieSource =
     if (slot == ProviderType.SOUNDCLOUD) soundCloudCookies else youtubeCookies

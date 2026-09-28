@@ -3,6 +3,7 @@ package app.noctorium.settings
 import app.noctorium.platform.TextFiles
 
 import app.noctorium.discord.DiscordPresenceSettings
+import app.noctorium.lyrics.LyricsProviderId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -327,6 +328,13 @@ data class NoctoriumPreferences(
     val skipNonMusic: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
     /**
+     * The lyrics source to read first, whenever it has an answer for the song.
+     *
+     * Set by picking a source, in Settings or right on the lyrics themselves; every source is still asked,
+     * and a song this one has nothing for opens on the best of the others. Null means always the best.
+     */
+    val lyricsProvider: LyricsProviderId? = null,
+    /**
      * How long the sleep timer ran last time, in minutes.
      *
      * Remembered rather than configured: the picker on either player is where it is chosen, and this
@@ -364,11 +372,12 @@ data class NoctoriumPreferences(
     /** Profile name from soundcloud.com/<name>; SoundCloud addresses a listener's own playlists by it. */
     val soundCloudUsername: String = "",
     /**
-     * Client id of the Spotify app the listener registered, which is the whole of Spotify's setup here.
+     * Client id of a Spotify app the listener registered themselves, to sign in through instead of
+     * Noctorium's own.
      *
      * It is an identifier rather than a secret — the flow Noctorium uses is the one built for programs that
      * cannot keep one — so unlike a token it lives in the settings file instead of the credential store.
-     * Blank means Spotify is not set up, which is the ordinary state.
+     * Blank, the ordinary state, means Noctorium's own app (see SpotifyApplication).
      */
     val spotifyClientId: String = "",
     /** Name of the connected Spotify account, kept only so Settings can say whose library is showing. */
@@ -380,6 +389,8 @@ data class NoctoriumPreferences(
      * a desktop reading these simply ignores them. Grouped so it stays obvious which is which.
      */
     val phone: PhonePreferences = PhonePreferences(),
+    /** The same, for a desktop: choices about a window a phone has not got. */
+    val desktop: DesktopPreferences = DesktopPreferences(),
     /** Noctorium Connect: this device on the local network. */
     val connect: ConnectPreferences = ConnectPreferences(),
     val updates: UpdatePreferences = UpdatePreferences(),
@@ -519,6 +530,26 @@ data class PhonePreferences(
     val sleepTimerMinutes: Int = 30,
 )
 
+/**
+ * Settings a phone has no use for.
+ *
+ * Whether Noctorium starts when the computer does is not among them: that lives with the operating system,
+ * which is where the listener can also switch it off, so it is read from there rather than remembered here
+ * and left to disagree.
+ */
+@Serializable
+data class DesktopPreferences(
+    /**
+     * Closing the window leaves Noctorium playing in the system tray instead of quitting it.
+     *
+     * Off by default, because the close button has always quit and somebody who never asked for a tray
+     * should not find the music still going after they closed the window.
+     */
+    val closeToTray: Boolean = false,
+    /** The one-time note from the tray that Noctorium is still running, so it is said once and not nagged. */
+    val trayHintShown: Boolean = false,
+)
+
 enum class ScrobbleConnectionStatus { DISCONNECTED, CONNECTING, AWAITING_APPROVAL, CONNECTED, ERROR }
 
 data class ScrobbleServiceState(
@@ -563,8 +594,10 @@ data class SettingsState(
  * reading and nothing else.
  */
 data class SpotifyConnectionState(
-    /** A client id has been entered, so connecting is possible. */
-    val configured: Boolean = false,
+    /** A client id is in force, so connecting is possible. Always, now that Noctorium brings its own. */
+    val configured: Boolean = true,
+    /** The sign-in goes through a Spotify app the listener registered, rather than Noctorium's. */
+    val ownApp: Boolean = false,
     /** A sign-in is stored. Spotify may still refuse it, which shows up as a message when it does. */
     val connected: Boolean = false,
     /** True while the browser is open on Spotify's consent page and the reply has not arrived. */

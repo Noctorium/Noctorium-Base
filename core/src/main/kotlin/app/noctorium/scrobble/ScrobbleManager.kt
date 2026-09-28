@@ -50,12 +50,34 @@ class ScrobbleManager internal constructor(
         listenBrainzToken = credentials.get(LISTENBRAINZ_TOKEN)
         lastFmSessionKey = credentials.get(LASTFM_SESSION)
         pendingLastFmToken = credentials.get(LASTFM_PENDING)
+        /*
+         * A sign-in made through another Last.fm application than the one this build signs in as.
+         *
+         * Last.fm ties a session to the application that asked for it, so when Noctorium's own changes --
+         * a new name means a new application -- every stored sign-in stops working at once, and each
+         * scrobble would fail into the queue with nobody told why. Caught here instead, and said once. The
+         * sign-ins saved before this was recorded all came from the application Noctorium first shipped,
+         * unless the listener had set up one of their own.
+         */
+        val sessionApplication = credentials.get(LASTFM_SESSION_APPLICATION)
+            ?: storedLastFmApiKey
+            ?: LastFmApplication.FIRST_API_KEY
+        val madeElsewhere = (lastFmSessionKey != null || pendingLastFmToken != null) && sessionApplication != lastFm.apiKey
+        if (madeElsewhere) {
+            credentials.remove(LASTFM_SESSION)
+            credentials.remove(LASTFM_PENDING)
+            credentials.remove(LASTFM_SESSION_APPLICATION)
+            lastFmSessionKey = null
+            pendingLastFmToken = null
+            ScrobbleLog.event("lastfm_session_from_other_application")
+        }
         mutableState.update { it.copy(
             lastFmConfigured = lastFm.configured,
             listenBrainz = if (listenBrainzToken != null) {
                 ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, listenBrainzUsername.ifBlank { null })
             } else ScrobbleServiceState(),
             lastFm = when {
+                madeElsewhere -> ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = RECONNECT_LASTFM)
                 lastFmSessionKey != null -> ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, lastFmUsername.ifBlank { null })
                 pendingLastFmToken != null -> ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = "Approve Noctorium in your browser, then finish sign-in.")
                 else -> ScrobbleServiceState()
@@ -171,6 +193,7 @@ class ScrobbleManager internal constructor(
         val session = lastFm.completeAuthorization(token)
         withContext(Dispatchers.IO) {
             credentials.put(LASTFM_SESSION, session.key)
+            lastFm.apiKey?.let { credentials.put(LASTFM_SESSION_APPLICATION, it) }
             credentials.remove(LASTFM_PENDING)
         }
         lastFmSessionKey = session.key
@@ -185,10 +208,29 @@ class ScrobbleManager internal constructor(
     fun disconnectLastFm() {
         credentials.remove(LASTFM_SESSION)
         credentials.remove(LASTFM_PENDING)
+        credentials.remove(LASTFM_SESSION_APPLICATION)
         lastFmSessionKey = null
         pendingLastFmToken = null
         mutableState.update { it.copy(lastFm = ScrobbleServiceState()) }
         ScrobbleLog.event("lastfm_disconnected")
+    }
+
+    /**
+     * Lets go of a Last.fm sign-in that Last.fm has said is no good, and asks for a new one.
+     *
+     * Only for error 9, the one that means the session itself is dead: anything else is a bad moment and
+     * is retried from the queue. The scrobble that found out stays queued, and goes once Last.fm is
+     * connected again.
+     */
+    private suspend fun dropRefusedLastFmSession(error: Throwable) {
+        if ((error as? LastFmException)?.invalidSession != true || lastFmSessionKey == null) return
+        withContext(Dispatchers.IO) {
+            credentials.remove(LASTFM_SESSION)
+            credentials.remove(LASTFM_SESSION_APPLICATION)
+        }
+        lastFmSessionKey = null
+        mutableState.update { it.copy(lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = RECONNECT_LASTFM)) }
+        ScrobbleLog.event("lastfm_session_refused")
     }
 
     fun observe(playback: StateFlow<PlaybackState>, scope: CoroutineScope) {
@@ -253,6 +295,7 @@ class ScrobbleManager internal constructor(
         }
         results.mapNotNull(Result<String>::exceptionOrNull).forEach { error ->
             ScrobbleLog.event("now_playing_failed", mapOf("track" to track.queueKey, "message" to safeMessage(error)))
+            dropRefusedLastFmSession(error)
         }
     }
 
@@ -275,6 +318,7 @@ class ScrobbleManager internal constructor(
             pendingRepository.enqueue(PendingScrobble(target, track, startedAt))
             mutableState.update { it.copy(lastEvent = "Scrobble failed: ${safeMessage(error)}") }
             ScrobbleLog.event("scrobble_queued", mapOf("track" to track.queueKey, "service" to target.name, "message" to safeMessage(error)))
+            dropRefusedLastFmSession(error)
         }
         mutableState.update { it.copy(pendingScrobbles = pendingRepository.list().size) }
     }
@@ -291,7 +335,10 @@ class ScrobbleManager internal constructor(
             when {
                 result == null -> remaining += item
                 result.isSuccess -> ScrobbleLog.event("queued_scrobble_sent", mapOf("track" to item.track.queueKey, "service" to item.target.name))
-                else -> remaining += item.copy(attempts = item.attempts + 1)
+                else -> {
+                    remaining += item.copy(attempts = item.attempts + 1)
+                    result.exceptionOrNull()?.let { dropRefusedLastFmSession(it) }
+                }
             }
         }
         pendingRepository.replace(remaining)
@@ -304,6 +351,10 @@ class ScrobbleManager internal constructor(
         const val LASTFM_PENDING = "lastfm.pending"
         const val LASTFM_API_KEY = "lastfm.api_key"
         const val LASTFM_SHARED_SECRET = "lastfm.shared_secret"
+        /** The API key of the Last.fm application the stored session was made through. */
+        const val LASTFM_SESSION_APPLICATION = "lastfm.session_application"
+        const val RECONNECT_LASTFM = "Last.fm needs connecting again: it no longer accepts the old sign-in. " +
+            "Anything played meanwhile is kept and sent once you do."
         const val APPROVAL_POLL_ATTEMPTS = 60
         const val APPROVAL_POLL_DELAY_MS = 2_000L
 

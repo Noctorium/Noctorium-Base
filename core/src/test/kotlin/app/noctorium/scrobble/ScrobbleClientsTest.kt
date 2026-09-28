@@ -85,6 +85,120 @@ class ScrobbleClientsTest {
     }
 
     @Test
+    fun `a Last_fm sign-in made through another application asks to be made again`() {
+        val directory = Files.createTempDirectory("noctorium-lastfm-application")
+        try {
+            // Saved before sign-ins recorded their application: it came from the first one Noctorium shipped.
+            val credentials = InMemorySecretStore().apply { put(ScrobbleManager.LASTFM_SESSION, "old-session") }
+            val manager = ScrobbleManager(
+                credentials = credentials,
+                lastFm = LastFmClient(RecordingHttpClient(), apiKey = "renamed-application-key", sharedSecret = "secret"),
+                pendingRepository = PendingScrobbleRepository(directory.resolve("pending.json")),
+            )
+
+            runBlocking { manager.initialize(lastFmUsername = "listener", listenBrainzUsername = "") }
+
+            assertEquals(ScrobbleConnectionStatus.ERROR, manager.state.value.lastFm.status)
+            assertContains(manager.state.value.lastFm.message.orEmpty(), "connecting again")
+            assertNull(credentials.get(ScrobbleManager.LASTFM_SESSION))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `sign-ins from before the rename are asked to be made again, through the new application`() {
+        // Only meaningful for the application this build ships, which a machine can point elsewhere.
+        if (System.getenv("NOCTORIUM_LASTFM_API_KEY") != null) return
+        assertNotEquals(LastFmApplication.FIRST_API_KEY, LastFmApplication.apiKey, "this build signs in as the renamed application")
+        val directory = Files.createTempDirectory("noctorium-lastfm-rename")
+        try {
+            val credentials = InMemorySecretStore().apply { put(ScrobbleManager.LASTFM_SESSION, "session-from-before") }
+            val manager = ScrobbleManager(
+                credentials = credentials,
+                lastFm = LastFmClient(RecordingHttpClient()),
+                pendingRepository = PendingScrobbleRepository(directory.resolve("pending.json")),
+            )
+            runBlocking { manager.initialize(lastFmUsername = "listener", listenBrainzUsername = "") }
+            assertEquals(ScrobbleConnectionStatus.ERROR, manager.state.value.lastFm.status)
+            assertNull(credentials.get(ScrobbleManager.LASTFM_SESSION))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `a Last_fm sign-in from the application in use is kept`() {
+        val directory = Files.createTempDirectory("noctorium-lastfm-application")
+        try {
+            listOf(
+                // Recorded with the application it came from.
+                InMemorySecretStore().apply {
+                    put(ScrobbleManager.LASTFM_SESSION, "session")
+                    put(ScrobbleManager.LASTFM_SESSION_APPLICATION, "current-key")
+                } to "current-key",
+                // From before that was recorded, through the application every such sign-in came from.
+                InMemorySecretStore().apply { put(ScrobbleManager.LASTFM_SESSION, "session") } to LastFmApplication.FIRST_API_KEY,
+            ).forEach { (credentials, key) ->
+                val manager = ScrobbleManager(
+                    credentials = credentials,
+                    lastFm = LastFmClient(RecordingHttpClient(), apiKey = key, sharedSecret = "secret"),
+                    pendingRepository = PendingScrobbleRepository(directory.resolve("pending-$key.json")),
+                )
+                runBlocking { manager.initialize(lastFmUsername = "listener", listenBrainzUsername = "") }
+                assertEquals(ScrobbleConnectionStatus.CONNECTED, manager.state.value.lastFm.status, key)
+                assertEquals("session", credentials.get(ScrobbleManager.LASTFM_SESSION))
+            }
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Last_fm refusing the session drops it and keeps the scrobble for later`() {
+        val directory = Files.createTempDirectory("noctorium-lastfm-refused")
+        try {
+            val credentials = InMemorySecretStore().apply {
+                put(ScrobbleManager.LASTFM_SESSION, "dead-session")
+                put(ScrobbleManager.LASTFM_SESSION_APPLICATION, "key")
+            }
+            val pending = PendingScrobbleRepository(directory.resolve("pending.json"))
+            pending.enqueue(
+                PendingScrobble(
+                    ScrobbleTarget.LASTFM,
+                    ScrobbleTrack("key", "Song", "Artist", null, 180, "https://soundcloud.com/x", ProviderType.SOUNDCLOUD),
+                    1_700_000_000,
+                ),
+            )
+            val manager = ScrobbleManager(
+                credentials = credentials,
+                lastFm = LastFmClient(
+                    RecordingHttpClient(postResponse = ScrobbleHttpResponse(200, """{"error":9,"message":"Invalid session key - Please re-authenticate"}""")),
+                    apiKey = "key",
+                    sharedSecret = "secret",
+                ),
+                pendingRepository = pending,
+            )
+
+            // Initialising flushes the queue, which is where the dead session is found out.
+            runBlocking { manager.initialize(lastFmUsername = "listener", listenBrainzUsername = "") }
+
+            assertEquals(ScrobbleConnectionStatus.ERROR, manager.state.value.lastFm.status)
+            assertNull(credentials.get(ScrobbleManager.LASTFM_SESSION))
+            assertEquals(1, pending.list().size, "the scrobble waits for the next sign-in")
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `Last_fm errors keep their number`() {
+        val error = LastFmException(9, "Last.fm error 9: Invalid session key")
+        assertTrue(error.invalidSession)
+        assertFalse(LastFmException(11, "Last.fm error 11: Service Offline").invalidSession)
+    }
+
+    @Test
     fun `the version reported to a service is the one the build actually is`() = runBlocking {
         // It used to be the literal "0.1.0", which was true for exactly one release and then quietly
         // became a lie -- the kind nothing fails on, because a wrong version is still a valid one.

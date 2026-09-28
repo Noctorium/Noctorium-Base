@@ -1,5 +1,9 @@
 package app.noctorium.lyrics
 
+import kotlinx.serialization.Serializable
+
+/** Saved by name as the listener's preferred source, so an entry is never renamed, only added. */
+@Serializable
 enum class LyricsProviderId(
     val displayName: String,
     val keyEnvironment: String? = null,

@@ -29,7 +29,8 @@ import java.util.Base64
  *
  * Spotify's own web-player token endpoint would need no registration at all, but it answered 403 to a
  * request from here and is not a documented interface — so the sanctioned route is the one worth building
- * on, at the cost of one client id the listener has to create.
+ * on, at the cost of one client id. Noctorium brings its own ([SpotifyApplication]); a listener can still
+ * register an app and use that instead.
  */
 class SpotifyAuth internal constructor(
     private val http: Http = Http(),

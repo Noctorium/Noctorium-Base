@@ -140,13 +140,39 @@ internal class ListenBrainzClient(
 internal data class LastFmSession(val username: String, val key: String)
 
 /**
+ * A refusal from Last.fm, with its error number kept.
+ *
+ * The number is what tells a sign-in Last.fm no longer honours from a bad moment on its side, and the two
+ * want opposite handling: one needs the listener to connect again, the other only needs a retry.
+ */
+internal class LastFmException(val code: Int, message: String) : IllegalStateException(message) {
+    /** Error 9: the session key is not valid, as one made through a different Last.fm application is not. */
+    val invalidSession: Boolean get() = code == INVALID_SESSION
+
+    companion object {
+        const val INVALID_SESSION = 9
+    }
+}
+
+/**
  * Application identifiers for this Noctorium build. They identify the installation to Last.fm, never a listener —
  * account approval always happens in the browser. Set NOCTORIUM_LASTFM_API_KEY and NOCTORIUM_LASTFM_SHARED_SECRET to
  * run against a different Last.fm application.
  */
 internal object LastFmApplication {
-    private const val BUILT_IN_API_KEY = "f7765ba2282c58fa77a26b39443e50f5"
-    private const val BUILT_IN_SHARED_SECRET = "4a69efbfd3090841a5deaf3ae3ec5860"
+    // Noctorium's own Last.fm application, registered under its current name. Sign-ins made through the
+    // previous one (FIRST_API_KEY, below) are recognised as belonging to it and asked to be made again.
+    private const val BUILT_IN_API_KEY = "394c9c370aa8da3149db90cd4d9261a0"
+    private const val BUILT_IN_SHARED_SECRET = "42b92ec5de8336e67701467d51b03e49"
+
+    /**
+     * The application every Last.fm sign-in was made through before sign-ins recorded which one.
+     *
+     * A session key belongs to the application that asked for it, so a build that signs in through another
+     * one has to know which a stored session came from. Those saved before that was written down all came
+     * from this key, the first one Noctorium shipped with; it stays this value whatever the key becomes.
+     */
+    const val FIRST_API_KEY = "f7765ba2282c58fa77a26b39443e50f5"
 
     val apiKey: String get() = env("NOCTORIUM_LASTFM_API_KEY") ?: BUILT_IN_API_KEY
     val sharedSecret: String get() = env("NOCTORIUM_LASTFM_SHARED_SECRET") ?: BUILT_IN_SHARED_SECRET
@@ -163,6 +189,9 @@ internal class LastFmClient(
     @Volatile private var activeApiKey: String? = apiKey
     @Volatile private var activeSharedSecret: String? = sharedSecret
     val configured: Boolean get() = activeApiKey != null && activeSharedSecret != null
+
+    /** The application this client signs in and scrobbles as. */
+    val apiKey: String? get() = activeApiKey
 
     fun updateCredentials(apiKey: String, sharedSecret: String) {
         activeApiKey = apiKey.trim()
@@ -236,7 +265,7 @@ internal class LastFmClient(
             error("Last.fm returned an invalid response (${response.status})")
         }
         root["error"]?.jsonPrimitive?.intOrNull?.let { code ->
-            error("Last.fm error $code: ${root["message"]?.jsonPrimitive?.contentOrNull ?: "request failed"}")
+            throw LastFmException(code, "Last.fm error $code: ${root["message"]?.jsonPrimitive?.contentOrNull ?: "request failed"}")
         }
         check(response.status in 200..299) { "Last.fm returned ${response.status}" }
         return root

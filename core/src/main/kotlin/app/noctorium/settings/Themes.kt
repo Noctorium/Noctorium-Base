@@ -25,17 +25,26 @@ data class ThemeColours(
 /**
  * The themes on offer.
  *
- * Noctorium's own three come first. The rest are palettes people already know from their editors and
- * terminals and will want their music player to match: Catppuccin's four flavours, which SpMp shipped
- * in-app, and a few others of the same standing. The colour values are the published ones; a palette
- * is a set of numbers, and these are the numbers. CUSTOM has no colours of its own -- the listener's are
- * kept in the preferences beside the choice.
+ * Noctorium's own three come first, then its three crimson ones. The rest are palettes people already
+ * know from their editors and terminals and will want their music player to match: Catppuccin's four
+ * flavours, which SpMp shipped in-app, and a few others of the same standing. The colour values are the
+ * published ones; a palette is a set of numbers, and these are the numbers. CUSTOM has no colours of its
+ * own -- the listener's are kept in the preferences beside the choice.
  */
 @Serializable
 enum class ThemePreset(val displayName: String, val family: String, val colours: ThemeColours?) {
     NOCTORIUM_NIGHT("Night", "Noctorium", ThemeColours(0xFF000000, 0xFF07050A, 0xFF15101C, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF)),
     NOCTORIUM_DUSK("Dusk", "Noctorium", ThemeColours(0xFF0D0B12, 0xFF141019, 0xFF1D1826, 0xFFF3F1F8, 0xFFC9C2D6, 0xFFB47CFF)),
     NOCTORIUM_DAY("Day", "Noctorium", ThemeColours(0xFFFAF7FF, 0xFFFFFFFF, 0xFFECE6F6, 0xFF1A1425, 0xFF5B5470, 0xFF7C3AED, light = true)),
+    /*
+     * Pure black pages with red in everything laid on them, for an OLED screen: the page stays off and
+     * only the panels, the cards and the accent light up. Three reds, so they are told apart by more than
+     * a name -- Crimson keeps the panels all but black and puts the colour in the accent, Scarlet warms
+     * the panels and brightens the accent, Garnet sinks both into a deep wine.
+     */
+    CRIMSON("Crimson", "Crimson", ThemeColours(0xFF000000, 0xFF080203, 0xFF170609, 0xFFFFF1F3, 0xFFD6B4BA, 0xFFE0243F)),
+    CRIMSON_SCARLET("Scarlet", "Crimson", ThemeColours(0xFF000000, 0xFF110404, 0xFF230A0B, 0xFFFFF4F1, 0xFFE0BBB5, 0xFFFF3B36)),
+    CRIMSON_GARNET("Garnet", "Crimson", ThemeColours(0xFF000000, 0xFF0F0307, 0xFF2A0B15, 0xFFFAEAEE, 0xFFCFA7B1, 0xFFC81E45)),
     CATPPUCCIN_LATTE("Latte", "Catppuccin", ThemeColours(0xFFEFF1F5, 0xFFE6E9EF, 0xFFCCD0DA, 0xFF4C4F69, 0xFF6C6F85, 0xFF8839EF, light = true)),
     CATPPUCCIN_FRAPPE("Frappé", "Catppuccin", ThemeColours(0xFF303446, 0xFF292C3C, 0xFF414559, 0xFFC6D0F5, 0xFFA5ADCE, 0xFFCA9EE6)),
     CATPPUCCIN_MACCHIATO("Macchiato", "Catppuccin", ThemeColours(0xFF24273A, 0xFF1E2030, 0xFF363A4F, 0xFFCAD3F5, 0xFFA5ADCB, 0xFFC6A0F6)),
