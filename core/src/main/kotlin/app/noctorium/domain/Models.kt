@@ -67,6 +67,19 @@ data class Playlist(
     val playlistKey: String get() = "${provider.name}:$id"
 }
 
+/**
+ * A playlist Noctorium can change on the service it came from: rename, delete, make public or private.
+ *
+ * SoundCloud numbers its playlists, while YouTube ids start with PL or VL; the likes listing on either service
+ * is a view rather than a playlist, so it is excluded. Shared by both players, so the same playlists can be
+ * edited from the phone as from the desktop.
+ */
+fun Playlist.editableOnService(): Boolean = when (provider) {
+    ProviderType.SOUNDCLOUD -> id.isNotEmpty() && id.all(Char::isDigit)
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id.startsWith("PL") || id.startsWith("VL")
+    ProviderType.SPOTIFY, ProviderType.LOCAL -> false
+}
+
 @Serializable
 enum class PlaybackOrigin { HOME, SEARCH, ALBUM, ARTIST, PLAYLIST, LIBRARY, QUEUE }
 

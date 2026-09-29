@@ -54,6 +54,7 @@ import app.noctorium.social.SoundCloudAccountClient
 import app.noctorium.social.PlaylistWriteResult
 import app.noctorium.social.SoundCloudClientIdProvider
 import app.noctorium.social.SoundCloudPlaylistClient
+import app.noctorium.social.secretOf
 import app.noctorium.social.InnertubeKeyProvider
 import app.noctorium.social.YouTubeArtist
 import app.noctorium.social.YouTubeSignIn
@@ -688,6 +689,7 @@ class AppState(
     fun setHoverControls(controls: HoverControls) = updatePreferences { copy(hoverControls = controls) }
     fun setTimeDisplay(display: TimeDisplay) = updatePreferences { copy(timeDisplay = display) }
     fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
+    fun setAnimations(enabled: Boolean) = updatePreferences { copy(animations = enabled) }
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
 
     /**
@@ -1183,15 +1185,29 @@ class AppState(
     }
 
     /**
-     * SoundCloud's likes, which the extractor will not open.
+     * SoundCloud's likes and private sets, which the extractor will not open.
      *
-     * A likes page is not a playlist as far as NewPipe is concerned and the address is refused before
-     * any request is made, so the session asks SoundCloud directly. Everything else about SoundCloud --
-     * a set, somebody's profile -- the extractor handles perfectly well, and is left to it.
+     * A likes page is not a playlist as far as NewPipe is concerned, and a private set's address ends in
+     * its secret, which NewPipe does not expect either; both are refused before any request is made, "URL
+     * not accepted". So SoundCloud is asked directly: the likes with the session, a private set through the
+     * secret its address carries. A public set the extractor handles perfectly well, and is left to it.
      */
     private suspend fun soundCloudPlaylistTracks(playlist: Playlist, limit: Int): List<Track>? {
-        if (playlist.sourceUrl?.endsWith("/likes") != true) return null
-        return soundCloudAccount.likes(soundCloudToken() ?: return null, limit)
+        val url = playlist.sourceUrl ?: return null
+        if (url.endsWith("/likes")) return soundCloudAccount.likes(soundCloudToken() ?: return null, limit)
+        if (secretOf(url) == null && playlist.isPublic != false) return null
+        return soundCloudAccount.playlistTracks(url, soundCloudToken().orEmpty(), soundCloudClientIds.clientId(), limit)
+    }
+
+    /**
+     * An address for a private SoundCloud track, which a backend's own extractor may refuse.
+     *
+     * Handed to the backend at construction by the platforms that need it; null for a public track, so the
+     * backend's usual way is taken for everything else.
+     */
+    suspend fun soundCloudPrivateStream(trackUrl: String): String? {
+        if (secretOf(trackUrl) == null) return null
+        return soundCloudAccount.streamAddress(trackUrl, soundCloudToken().orEmpty(), soundCloudClientIds.clientId())
     }
 
     private suspend fun youTubeSession(): YouTubeSession? {
@@ -1852,15 +1868,19 @@ class AppState(
     }
 
     fun renameYouTubePlaylist(playlistId: String, title: String) {
-        withYouTubeWrite { session -> youTubeMusic.renamePlaylist(playlistId, title, session) }
+        withYouTubeWrite({ reflectPlaylistChange(playlistId) { it.copy(title = title.trim()) } }) { session ->
+            youTubeMusic.renamePlaylist(playlistId, title, session)
+        }
     }
 
     fun deleteYouTubePlaylist(playlistId: String) {
-        withYouTubeWrite { session -> youTubeMusic.deletePlaylist(playlistId, session) }
+        withYouTubeWrite({ reflectPlaylistChange(playlistId) { null } }) { session -> youTubeMusic.deletePlaylist(playlistId, session) }
     }
 
     fun setYouTubePlaylistVisibility(playlistId: String, isPublic: Boolean) {
-        withYouTubeWrite { session -> youTubeMusic.setPlaylistVisibility(playlistId, isPublic, session) }
+        withYouTubeWrite({ reflectPlaylistChange(playlistId) { it.copy(isPublic = isPublic) } }) { session ->
+            youTubeMusic.setPlaylistVisibility(playlistId, isPublic, session)
+        }
     }
 
     fun removeTrackFromYouTubePlaylist(playlistId: String, videoId: String) {
@@ -1912,7 +1932,10 @@ class AppState(
         withYouTubeWrite { session -> youTubeMusic.addToPlaylist(playlistId, track.id, session) }
     }
 
-    private fun withYouTubeWrite(write: suspend (YouTubeSession) -> PlaylistWriteResult) {
+    private fun withYouTubeWrite(
+        succeeded: () -> Unit = {},
+        write: suspend (YouTubeSession) -> PlaylistWriteResult,
+    ) {
         scope.launch {
             val session = youTubeSession()
             if (session?.sapisid == null) {
@@ -1925,9 +1948,27 @@ class AppState(
                 mapOf("detail" to result.detail),
             )
             if (result.ok) {
+                succeeded()
                 mutableLibrary.update { it.copy(loaded = false) }
                 refreshLibrary(force = true)
             }
+        }
+    }
+
+    /**
+     * Shows a change the service has just accepted, on the open playlist and in the list, at once.
+     *
+     * The library is read again afterwards and will say the same, but that takes seconds, and a badge that
+     * still says "Private" after the service said "public" reads as the button not having worked. [change]
+     * answers null for a playlist that is gone, which also closes it if it was the one open.
+     */
+    private fun reflectPlaylistChange(playlistId: String, change: (Playlist) -> Playlist?) {
+        mutableLibrary.update { state ->
+            val open = state.openPlaylist
+            state.copy(
+                playlists = state.playlists.mapNotNull { if (it.id == playlistId) change(it) else it },
+                openPlaylist = if (open?.id == playlistId) change(open) else open,
+            )
         }
     }
 
@@ -1996,19 +2037,19 @@ class AppState(
     }
 
     fun setSoundCloudPlaylistVisibility(playlistId: String, isPublic: Boolean) {
-        withSoundCloudWrite { token, clientId, cookies ->
+        withSoundCloudWrite({ reflectPlaylistChange(playlistId) { it.copy(isPublic = isPublic) } }) { token, clientId, cookies ->
             playlistClient.setVisibility(playlistId, isPublic, token, clientId, cookies)
         }
     }
 
     fun renameSoundCloudPlaylist(playlistId: String, title: String) {
-        withSoundCloudWrite { token, clientId, cookies ->
+        withSoundCloudWrite({ reflectPlaylistChange(playlistId) { it.copy(title = title.trim()) } }) { token, clientId, cookies ->
             playlistClient.rename(playlistId, title, token, clientId, cookies)
         }
     }
 
     fun deleteSoundCloudPlaylist(playlistId: String) {
-        withSoundCloudWrite { token, clientId, cookies ->
+        withSoundCloudWrite({ reflectPlaylistChange(playlistId) { null } }) { token, clientId, cookies ->
             playlistClient.delete(playlistId, token, clientId, cookies)
         }
     }
@@ -2035,7 +2076,10 @@ class AppState(
      * Runs a write against SoundCloud with the session it needs, then reports the outcome and reloads the
      * library so what the listener sees matches the account.
      */
-    private fun withSoundCloudWrite(write: suspend (String, String?, String?) -> PlaylistWriteResult) {
+    private fun withSoundCloudWrite(
+        succeeded: () -> Unit = {},
+        write: suspend (String, String?, String?) -> PlaylistWriteResult,
+    ) {
         scope.launch {
             val token = soundCloudToken()
             if (token.isNullOrBlank()) {
@@ -2048,6 +2092,7 @@ class AppState(
                 mapOf("detail" to result.detail),
             )
             if (result.ok) {
+                succeeded()
                 mutableLibrary.update { it.copy(loaded = false) }
                 refreshLibrary(force = true)
             }
@@ -2102,6 +2147,17 @@ class AppState(
     fun removeTrackFromPlaylist(playlistId: String, queueKey: String) {
         editPlaylist(playlistId) { playlist ->
             playlist.copy(tracks = playlist.tracks.filterNot { it.queueKey == queueKey })
+        }
+    }
+
+    /** Moves one track of a playlist made in Noctorium from [from] to [to], both positions in its order. */
+    fun moveInLocalPlaylist(playlistId: String, from: Int, to: Int) {
+        editPlaylist(playlistId) { playlist ->
+            if (from == to || from !in playlist.tracks.indices || to !in playlist.tracks.indices) {
+                playlist
+            } else {
+                playlist.copy(tracks = playlist.tracks.toMutableList().apply { add(to, removeAt(from)) })
+            }
         }
     }
 

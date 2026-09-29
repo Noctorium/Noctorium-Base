@@ -339,6 +339,13 @@ data class NoctoriumPreferences(
     val timeDisplay: TimeDisplay = TimeDisplay.TOTAL,
     val ambientBackdrop: Boolean = true,
     /**
+     * Whether things move: screens easing in, pages sliding, a track's name giving way to the next one.
+     *
+     * On by default, and one switch for all of it on both players. Off is for anybody who finds motion
+     * distracting or worse, and it means off -- every change happens at once, as it did before there was any.
+     */
+    val animations: Boolean = true,
+    /**
      * Whether a YouTube video jumps past the parts SponsorBlock's contributors have marked as not the
      * music: the intro, the outro, the sponsor read, the minute of talking before the song. YouTube Music
      * tracks have none of these and are never touched.
@@ -546,6 +553,13 @@ data class PhonePreferences(
     val skipSilence: Boolean = false,
     /** Superseded by [NoctoriumPreferences.sleepTimerMinutes]; read once so an old choice is kept. */
     val sleepTimerMinutes: Int = 30,
+    /**
+     * Whether the listener has been asked, once, to let Noctorium run in the background.
+     *
+     * Asked the first time something plays on a phone that could stop it at the lock screen, and not again:
+     * the choice is theirs, and Settings keeps the way to change it.
+     */
+    val askedAboutBackground: Boolean = false,
 )
 
 /**
