@@ -1999,7 +1999,7 @@ class AppState(
 
     /**
      * Adds one track to a SoundCloud playlist. Their API replaces a playlist's contents wholesale, so the
-     * current order is read first and the new track appended to it.
+     * current order is read first and the new track appended to it, and a read that fails changes nothing.
      */
     fun addTrackToSoundCloudPlaylist(playlistId: String, track: Track) {
         if (track.provider != ProviderType.SOUNDCLOUD) {
@@ -2015,24 +2015,13 @@ class AppState(
                     false,
                     "SoundCloud would not say which track that is, so it was not added.",
                 )
-            val existing = playlistClient.trackIds(playlistId, token, clientId, cookies)
-            if (existing.contains(id)) {
-                PlaylistWriteResult(true, "${track.title} is already in that playlist.")
-            } else {
-                playlistClient.setTracks(playlistId, existing + id, token, clientId, cookies)
-                    .let { if (it.ok) it.copy(detail = "Added ${track.title} on SoundCloud.") else it }
-            }
+            playlistClient.addTrack(playlistId, id, track.title, token, clientId, cookies)
         }
     }
 
     fun removeTrackFromSoundCloudPlaylist(playlistId: String, trackId: String) {
         withSoundCloudWrite { token, clientId, cookies ->
-            val existing = playlistClient.trackIds(playlistId, token, clientId, cookies)
-            if (!existing.contains(trackId)) {
-                PlaylistWriteResult(true, "That track is not in the playlist.")
-            } else {
-                playlistClient.setTracks(playlistId, existing - trackId, token, clientId, cookies)
-            }
+            playlistClient.removeTrack(playlistId, trackId, token, clientId, cookies)
         }
     }
 

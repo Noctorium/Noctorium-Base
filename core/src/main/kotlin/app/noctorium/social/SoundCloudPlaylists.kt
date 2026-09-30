@@ -192,28 +192,72 @@ class SoundCloudPlaylistClient internal constructor(
         }
     }.getOrDefault(emptyList())
 
-    /** Current contents, in order, which an edit has to preserve. */
+    /**
+     * Puts one track on the end of a playlist. [title] is only for the message.
+     *
+     * SoundCloud has no append, so this reads the current order and writes it back with the track added.
+     * When that read fails nothing is written at all: saved as though it were empty, an order that could not
+     * be read would leave the playlist holding this one track and nothing else.
+     */
+    suspend fun addTrack(
+        playlistId: String,
+        trackId: String,
+        title: String,
+        token: String,
+        clientId: String?,
+        cookies: String? = null,
+    ): PlaylistWriteResult {
+        guard(token, clientId) ?: return PlaylistWriteResult(false, guardMessage(token, clientId))
+        val existing = trackIds(playlistId, token, clientId, cookies) ?: return unreadable()
+        if (trackId in existing) return PlaylistWriteResult(true, "$title is already in that playlist.")
+        return setTracks(playlistId, existing + trackId, token, clientId, cookies)
+            .let { if (it.ok) it.copy(detail = "Added $title on SoundCloud.") else it }
+    }
+
+    /** Takes one track out of a playlist, on the same terms as [addTrack]: no order read, nothing written. */
+    suspend fun removeTrack(
+        playlistId: String,
+        trackId: String,
+        token: String,
+        clientId: String?,
+        cookies: String? = null,
+    ): PlaylistWriteResult {
+        guard(token, clientId) ?: return PlaylistWriteResult(false, guardMessage(token, clientId))
+        val existing = trackIds(playlistId, token, clientId, cookies) ?: return unreadable()
+        if (trackId !in existing) return PlaylistWriteResult(true, "That track is not in the playlist.")
+        return setTracks(playlistId, existing - trackId, token, clientId, cookies)
+    }
+
+    /**
+     * Current contents, in order, which an edit has to preserve, or null when SoundCloud would not say.
+     *
+     * The two must not be confused. A refused or unreachable read that came back as an empty order would be
+     * written back with one track added, and the playlist would lose everything else it held. An empty list
+     * means the playlist really is empty.
+     */
     suspend fun trackIds(
         playlistId: String,
         token: String,
         clientId: String?,
         cookies: String? = null,
-    ): List<String> {
-        val guard = guard(token, clientId) ?: return emptyList()
-        val response = call("GET", playlistUrl(playlistId, guard), token, cookies, null) ?: return emptyList()
-        if (response.status !in 200..299) return emptyList()
+    ): List<String>? {
+        val guard = guard(token, clientId) ?: return null
+        val response = call("GET", playlistUrl(playlistId, guard), token, cookies, null) ?: return null
+        if (response.status !in 200..299) return null
         return parseTrackIds(response.body)
     }
 
-    internal fun parseTrackIds(body: String): List<String> = runCatching {
-        json.parseToJsonElement(body).jsonObject["tracks"]?.jsonArray.orEmpty().mapNotNull { element ->
+    /** Null for a body that has no list of tracks at all, such as a captcha page answered with a 200. */
+    internal fun parseTrackIds(body: String): List<String>? = runCatching {
+        val tracks = json.parseToJsonElement(body).jsonObject["tracks"] as? JsonArray ?: return null
+        tracks.mapNotNull { element ->
             when (element) {
                 is JsonPrimitive -> element.longOrNull?.toString()
                 is JsonObject -> (element["id"] as? JsonPrimitive)?.longOrNull?.toString()
                 else -> null
             }
         }
-    }.getOrDefault(emptyList())
+    }.getOrNull()
 
     internal fun playlistUrl(playlistId: String, clientId: String): String =
         "https://api-v2.soundcloud.com/playlists/$playlistId?client_id=$clientId"
@@ -250,6 +294,9 @@ class SoundCloudPlaylistClient internal constructor(
         clientId.isNullOrBlank() -> "Could not read SoundCloud's public client id. Check your connection and try again."
         else -> "SoundCloud is unavailable."
     }
+
+    private fun unreadable() =
+        PlaylistWriteResult(false, "SoundCloud would not say what is in that playlist, so nothing was changed.")
 
     private fun describe(response: LikeHttpResponse): String = when (response.status) {
         401 -> "SoundCloud rejected the session (401). Sign in again under Settings › SoundCloud."

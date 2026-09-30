@@ -119,6 +119,83 @@ class SoundCloudPlaylistTest {
     }
 
     @Test
+    fun `a read that fails is not mistaken for an empty playlist`() = runBlocking {
+        suspend fun read(vararg replies: LikeHttpResponse, id: String? = clientId) =
+            SoundCloudPlaylistClient(RecordingPlaylistClient(*replies)).trackIds("1", token, id)
+
+        assertEquals(null, read(LikeHttpResponse(403, "captcha")))
+        assertEquals(null, read(LikeHttpResponse(500, "")))
+        // No scripted reply stands in for a network failure: the send throws.
+        assertEquals(null, read())
+        assertEquals(null, read(LikeHttpResponse(200, """{"tracks":[1]}"""), id = null))
+        assertEquals(null, read(LikeHttpResponse(200, "<html>Please verify you are human</html>")))
+        assertEquals(null, read(LikeHttpResponse(200, """{"id":1}""")))
+
+        assertEquals(emptyList<String>(), read(LikeHttpResponse(200, """{"tracks":[]}""")))
+    }
+
+    /**
+     * SoundCloud replaces a playlist wholesale, so a refused read followed by an add would have left the
+     * playlist holding that one track and nothing else. Nothing may be written when the order is unknown.
+     */
+    @Test
+    fun `adding to a playlist whose contents could not be read writes nothing`() = runBlocking {
+        for (http in listOf(RecordingPlaylistClient(LikeHttpResponse(403, "captcha")), RecordingPlaylistClient())) {
+            val result = SoundCloudPlaylistClient(http).addTrack("123456", "7", "Forgive", token, clientId)
+
+            assertFalse(result.ok)
+            assertContains(result.detail, "nothing was changed")
+            assertEquals("GET https://api-v2.soundcloud.com/playlists/123456?client_id=$clientId", http.calls.single())
+        }
+    }
+
+    @Test
+    fun `removing from a playlist whose contents could not be read writes nothing`() = runBlocking {
+        for (http in listOf(RecordingPlaylistClient(LikeHttpResponse(404, "")), RecordingPlaylistClient())) {
+            val result = SoundCloudPlaylistClient(http).removeTrack("123456", "7", token, clientId)
+
+            assertFalse(result.ok)
+            assertContains(result.detail, "nothing was changed")
+            assertTrue(http.calls.none { it.startsWith("PUT ") })
+        }
+    }
+
+    @Test
+    fun `adding keeps the order it read and puts the track on the end`() = runBlocking {
+        val http = RecordingPlaylistClient(
+            LikeHttpResponse(200, """{"tracks":[{"id":3},{"id":1}]}"""),
+            LikeHttpResponse(200, "{}"),
+        )
+
+        val result = SoundCloudPlaylistClient(http).addTrack("123456", "7", "Forgive", token, clientId)
+
+        assertTrue(result.ok)
+        assertEquals("Added Forgive on SoundCloud.", result.detail)
+        assertEquals("PUT https://api-v2.soundcloud.com/playlists/123456?client_id=$clientId", http.calls.last())
+        assertContains(http.bodies.last().orEmpty(), """"tracks":[3,1,7]""")
+    }
+
+    @Test
+    fun `a playlist that really is empty still takes its first track`() = runBlocking {
+        val http = RecordingPlaylistClient(LikeHttpResponse(200, """{"tracks":[]}"""), LikeHttpResponse(200, "{}"))
+
+        val result = SoundCloudPlaylistClient(http).addTrack("123456", "7", "Forgive", token, clientId)
+
+        assertTrue(result.ok)
+        assertContains(http.bodies.last().orEmpty(), """"tracks":[7]""")
+    }
+
+    @Test
+    fun `removing writes the order back without that track`() = runBlocking {
+        val http = RecordingPlaylistClient(LikeHttpResponse(200, """{"tracks":[3,7,1]}"""), LikeHttpResponse(200, "{}"))
+
+        val result = SoundCloudPlaylistClient(http).removeTrack("123456", "7", token, clientId)
+
+        assertTrue(result.ok)
+        assertContains(http.bodies.last().orEmpty(), """"tracks":[3,1]""")
+    }
+
+    @Test
     fun `refusals explain themselves by status`() = runBlocking {
         suspend fun attempt(status: Int) = SoundCloudPlaylistClient(RecordingPlaylistClient(LikeHttpResponse(status, "")))
             .delete("1", token, clientId)
