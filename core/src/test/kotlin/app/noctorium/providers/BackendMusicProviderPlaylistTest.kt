@@ -91,6 +91,25 @@ class BackendMusicProviderPlaylistTest {
         assertEquals(listOf("https://music.youtube.com/playlist?list=LM"), backend.listed)
     }
 
+    /** A playlist of eight hundred opened as its first two hundred, because two hundred was all it asked for. */
+    @Test
+    fun `a playlist is asked for whole, not cut at two hundred`() = runBlocking {
+        var asked = 0
+        val reader = BackendMusicProvider(
+            ProviderType.YOUTUBE_MUSIC,
+            RecordingBackend(),
+            playlistTracks = { _, limit -> asked = limit; emptyList() },
+        )
+        reader.getPlaylistTracks(likedMusic)
+        assertTrue(asked >= 5_000, "YouTube Music was asked for only $asked")
+
+        // The backend, when it is the one answering, is asked for the same.
+        val backend = RecordingBackend()
+        BackendMusicProvider(ProviderType.YOUTUBE_MUSIC, backend, playlistTracks = { _, _ -> null })
+            .getPlaylistTracks(likedMusic)
+        assertTrue(backend.limits.single() >= 5_000, "the backend was asked for only ${backend.limits.single()}")
+    }
+
     @Test
     fun `a reader that throws is also a fallback rather than an empty playlist`() = runBlocking {
         val backend = RecordingBackend(tracks = listOf(track("fallback")))
@@ -148,6 +167,7 @@ class BackendMusicProviderPlaylistTest {
     /** Answers nothing, and remembers what it was asked to list. */
     private class RecordingBackend(private val tracks: List<Track> = emptyList()) : MusicBackend {
         val listed = mutableListOf<String>()
+        val limits = mutableListOf<Int>()
 
         override fun useSession(provider: ProviderType, source: CookieSource) = Unit
         override fun useSoundCloudProfile(username: String) = Unit
@@ -158,6 +178,7 @@ class BackendMusicProviderPlaylistTest {
 
         override suspend fun listTracks(provider: ProviderType, url: String, limit: Int): List<Track> {
             listed += url
+            limits += limit
             return tracks
         }
 

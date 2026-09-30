@@ -133,7 +133,7 @@ class YouTubeLikedSongsTest {
         assertEquals(null, client.continuationToken("not json at all"))
     }
 
-    /** A token that never changes would otherwise spin forever; the page count is the backstop. */
+    /** A token that never changes would otherwise ask for the same page again and again. */
     @Test
     fun `a repeating continuation token cannot loop without end`() = runBlocking {
         val repeating = (1..200).map { LikeHttpResponse(200, page("v$it", continuation = "SAME")) }
@@ -141,8 +141,19 @@ class YouTubeLikedSongsTest {
 
         val result = YouTubeMusicClient(http).likedVideoIds(session)
 
-        assertTrue(http.bodies.size <= 40, "asked for ${http.bodies.size} pages")
+        assertEquals(2, http.bodies.size, "asked for ${http.bodies.size} pages")
         assertTrue(result.ids.isNotEmpty())
+    }
+
+    /** One that changes every time and never runs out is stopped by the page count instead. */
+    @Test
+    fun `a continuation that never runs out is bounded`() = runBlocking {
+        val endless = (1..300).map { LikeHttpResponse(200, page("v$it", continuation = "TOKEN_$it")) }
+        val http = RecordingInnertube(*endless.toTypedArray())
+
+        YouTubeMusicClient(http).likedVideoIds(session)
+
+        assertTrue(http.bodies.size <= 100, "asked for ${http.bodies.size} pages")
     }
 
     @Test

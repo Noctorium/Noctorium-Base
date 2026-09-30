@@ -71,6 +71,9 @@ class SoundCloudAccountClient internal constructor(
      *
      * An empty list is an answer as much as a full one; a failure is null, so the caller can tell a
      * listener with no likes from a service that would not say.
+     *
+     * Every page is followed up to [limit]. SoundCloud gives two hundred at most per reply, and stopping
+     * at the first cut the list off there -- the likes before that simply were not in it.
      */
     suspend fun likes(token: String, limit: Int = 200): List<Track>? {
         if (token.isBlank()) return null
@@ -81,24 +84,38 @@ class SoundCloudAccountClient internal constructor(
         // Both shapes of token carry the id -- the old one in the middle of its dashes, the web token in
         // its subject -- so asking the account is only for a shape neither reader recognises.
         val id = SoundCloudToken.userIdFrom(token) ?: profile(token)?.id ?: return null
+        val page = limit.coerceAtMost(SoundCloudLikeClient.LIKES_PAGE)
         val urls = listOf(
-            "https://api-v2.soundcloud.com/users/$id/track_likes?limit=$limit&linked_partitioning=1",
-            "https://api-v2.soundcloud.com/users/$id/likes?limit=$limit&linked_partitioning=1",
+            "https://api-v2.soundcloud.com/users/$id/track_likes?limit=$page&linked_partitioning=1",
+            "https://api-v2.soundcloud.com/users/$id/likes?limit=$page&linked_partitioning=1",
         )
-        for (url in urls) {
-            val reply = get(url, token) ?: continue
-            if (reply.status !in 200..299) continue
-            val root = runCatching { json.parseToJsonElement(reply.body) }.getOrNull() ?: continue
-            val rows = (root as? JsonArray)
-                ?: (root as? JsonObject)?.get("collection") as? JsonArray
-                ?: continue
-            return rows.mapNotNull { entry ->
+        for (url in urls) likedPages(url, token, limit)?.let { return it }
+        return null
+    }
+
+    /** One likes listing read page by page, or null when its first page is refused or unreadable. */
+    private suspend fun likedPages(first: String, token: String, limit: Int): List<Track>? {
+        val found = mutableListOf<Track>()
+        var url: String? = first
+        var pages = 0
+        while (url != null && found.size < limit && pages < SoundCloudLikeClient.MAX_LIKE_PAGES) {
+            val reply = get(url, token)?.takeIf { it.status in 200..299 }
+            val root = reply?.let { runCatching { json.parseToJsonElement(it.body) }.getOrNull() }
+            val rows = (root as? JsonArray) ?: (root as? JsonObject)?.get("collection") as? JsonArray
+            // The first page failing is "could not say"; a later one, what arrived already is the answer.
+            if (reply == null || rows == null) {
+                if (pages == 0) return null
+                break
+            }
+            found += rows.mapNotNull { entry ->
                 val row = entry as? JsonObject ?: return@mapNotNull null
                 // A like is the track itself; a stream item wraps one. Both shapes read the same way.
-                trackFrom(row["track"]?.jsonObject ?: row)
-            }.distinctBy { it.queueKey }
+                trackFrom(row["track"] as? JsonObject ?: row)
+            }
+            pages++
+            url = nextPageOf(reply.body)?.takeIf { it != url }
         }
-        return null
+        return found.distinctBy { it.queueKey }.take(limit)
     }
 
     /**

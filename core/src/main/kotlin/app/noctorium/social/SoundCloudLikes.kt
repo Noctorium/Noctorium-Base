@@ -188,28 +188,44 @@ class SoundCloudLikeClient internal constructor(
      * Addressed by account rather than through `me`, which answered with an empty collection even though the
      * request succeeded. Likes are public, so this route needs only the site's client id — meaning the hearts
      * keep working even if the session token lapses.
+     *
+     * The listing is paged, and every page is followed. SoundCloud answers at most two hundred likes at a
+     * time however many are asked for, plus a `next_href` for the rest, so reading only the first reply
+     * left every older like showing an empty heart. The next address leaves the client id off, and is
+     * refused without it, so it is put back on.
      */
     suspend fun likedTrackIds(
         userId: String,
         token: String,
         clientId: String?,
         cookies: String? = null,
-        limit: Int = 200,
     ): LikedIds {
         if (userId.isBlank() || clientId.isNullOrBlank()) return LikedIds(0, emptySet())
-        val url = "https://api-v2.soundcloud.com/users/$userId/track_likes?limit=$limit&client_id=$clientId"
-        val response = try {
-            http.send("GET", url, token, cookies)
-        } catch (cancellation: CancellationException) {
-            throw cancellation
-        } catch (error: Exception) {
-            return LikedIds(0, emptySet())
+        val found = LinkedHashSet<String>()
+        var url: String? = "https://api-v2.soundcloud.com/users/$userId/track_likes?limit=$LIKES_PAGE&client_id=$clientId"
+        var status = 0
+        var sample: String? = null
+        var pages = 0
+        while (url != null && pages < MAX_LIKE_PAGES) {
+            val response = try {
+                http.send("GET", url, token, cookies)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                return LikedIds(status, found)
+            }
+            // A later page failing still leaves the earlier ones, which are a better answer than none.
+            if (response.status !in 200..299) return LikedIds(response.status, found)
+            status = response.status
+            val ids = parseLikedIds(response.body)
+            // A first page that yields nothing means the shape changed, so keep a little of it for the log.
+            if (pages == 0 && ids.isEmpty()) sample = response.body.replace(Regex("""\s+"""), " ").take(160)
+            found += ids
+            pages++
+            // An address that repeats would loop until the page limit, so it ends the list instead.
+            url = nextPageOf(response.body)?.let { withClientId(it, clientId) }?.takeIf { it != url }
         }
-        if (response.status !in 200..299) return LikedIds(response.status, emptySet())
-        val ids = parseLikedIds(response.body)
-        // A successful call that yields nothing means the shape changed, so keep a little of it for the log.
-        val sample = if (ids.isEmpty()) response.body.replace(Regex("""\s+"""), " ").take(160) else null
-        return LikedIds(response.status, ids, sample)
+        return LikedIds(status, found, sample.takeIf { found.isEmpty() })
     }
 
     /**
@@ -255,7 +271,31 @@ class SoundCloudLikeClient internal constructor(
 
     internal fun likeUrl(userId: String, trackId: String, clientId: String): String =
         "https://api-v2.soundcloud.com/users/$userId/track_likes/$trackId?client_id=$clientId"
+
+    internal companion object {
+        /** The most SoundCloud answers in one page of likes; asking for more still returns this many. */
+        const val LIKES_PAGE = 200
+
+        /** Ten thousand likes, bounded so a listing that never ends cannot keep asking. */
+        const val MAX_LIKE_PAGES = 50
+    }
 }
+
+/**
+ * The address of the next page of a SoundCloud listing, or null on the last one.
+ *
+ * Only an address on SoundCloud's own API is followed. The session travels with the request, so a
+ * reply naming somewhere else is not somewhere to send it.
+ */
+internal fun nextPageOf(body: String): String? = runCatching {
+    (Json.parseToJsonElement(body) as? JsonObject)
+        ?.get("next_href")?.jsonPrimitive?.contentOrNull
+        ?.takeIf { it.startsWith("https://api-v2.soundcloud.com/") }
+}.getOrNull()
+
+/** [url] with the site's client id on it, which a `next_href` leaves off and SoundCloud then refuses. */
+internal fun withClientId(url: String, clientId: String): String =
+    if ("client_id=" in url) url else url + (if ('?' in url) '&' else '?') + "client_id=" + clientId
 
 /**
  * A write made by the device's own browser, where there is one.

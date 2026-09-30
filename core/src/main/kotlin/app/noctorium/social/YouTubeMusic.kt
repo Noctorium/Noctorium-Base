@@ -371,7 +371,9 @@ class YouTubeMusicClient internal constructor(
             if (page.isEmpty()) {
                 return LikedIds(status, found, response.body.take(SAMPLE_LENGTH).takeIf { found.isEmpty() }, browseId)
             }
-            continuation = continuationToken(response.body) ?: return LikedIds(status, found, source = browseId)
+            // A token that comes back unchanged would ask for the same page until the limit; it is the end.
+            continuation = continuationToken(response.body)?.takeIf { it != token }
+                ?: return LikedIds(status, found, source = browseId)
         }
         return LikedIds(status, found, source = browseId)
     }
@@ -446,7 +448,7 @@ class YouTubeMusicClient internal constructor(
             if (page.isEmpty()) return found.take(limit)
             found += page
             if (found.size >= limit) return found.take(limit)
-            continuation = continuationToken(response.body) ?: return found.take(limit)
+            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return found.take(limit)
         }
         return found.take(limit)
     }
@@ -1073,7 +1075,7 @@ class YouTubeMusicClient internal constructor(
             val page = parseEntries(response.body)
             if (page.isEmpty()) return found
             found += page
-            continuation = continuationToken(response.body) ?: return found
+            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return found
         }
         return found
     }
@@ -1170,8 +1172,12 @@ class YouTubeMusicClient internal constructor(
             listOf("musicImmersiveCarouselShelfRenderer", "header", "musicCarouselShelfBasicHeaderRenderer", "title"),
         )
 
-        /** Enough pages for a very large liked list, bounded so a repeating token cannot loop forever. */
-        const val MAX_LIKED_PAGES = 40
+        /**
+         * Enough pages for a very large liked list or playlist, bounded so a token that never runs out
+         * cannot keep asking. A page is about a hundred songs, so this is ten thousand, which is past the
+         * five thousand YouTube lets a playlist hold.
+         */
+        const val MAX_LIKED_PAGES = 100
 
         /** How much of an unexpected reply to keep so the reason shows up in the log. */
         const val SAMPLE_LENGTH = 300

@@ -978,15 +978,20 @@ class AppState(
                 )
             }
             if (tracks.none { it.artworkUrl == null }) return@launch
-            resolveArtwork(playlist, provider, tracks.size)
+            resolveArtwork(playlist, provider, tracks)
         }
     }
 
-    private suspend fun resolveArtwork(playlist: Playlist, provider: MusicProvider, total: Int) {
+    private suspend fun resolveArtwork(playlist: Playlist, provider: MusicProvider, tracks: List<Track>) {
+        val total = tracks.size
         var start = 1
         while (start <= total) {
             val end = min(start + ARTWORK_SLICE - 1, total)
-            val resolved = runCatching { provider.resolvePlaylistTracks(playlist, start, end) }.getOrNull()
+            // Only a slice with something missing is looked up. The rest cost a request and change nothing,
+            // and now that a playlist is listed whole rather than cut at two hundred, that is most of them.
+            val missing = tracks.subList(start - 1, end).any { it.artworkUrl == null }
+            val resolved = if (!missing) null
+            else runCatching { provider.resolvePlaylistTracks(playlist, start, end) }.getOrNull()
             if (!resolved.isNullOrEmpty()) {
                 updateOpenPlaylist(playlist) { state ->
                     val open = state.openPlaylist ?: return@updateOpenPlaylist state
@@ -1185,17 +1190,22 @@ class AppState(
     }
 
     /**
-     * SoundCloud's likes and private sets, which the extractor will not open.
+     * SoundCloud's likes and sets, read through SoundCloud's own API rather than the extractor.
      *
      * A likes page is not a playlist as far as NewPipe is concerned, and a private set's address ends in
      * its secret, which NewPipe does not expect either; both are refused before any request is made, "URL
-     * not accepted". So SoundCloud is asked directly: the likes with the session, a private set through the
-     * secret its address carries. A public set the extractor handles perfectly well, and is left to it.
+     * not accepted". So SoundCloud is asked directly: the likes with the session, a set through the secret
+     * its address carries, if it has one.
+     *
+     * Public sets come this way too. The extractor was thought to handle them, but it reads only the first
+     * page, and for a set that is just the handful SoundCloud sends in full -- on the phone a set of four
+     * hundred opened as four tracks. Paging it costs a request per fifteen tracks, fifteen seconds for that
+     * set, where the API asks for fifty at a time and has the artwork already: three seconds. A null still
+     * falls back to the extractor.
      */
     private suspend fun soundCloudPlaylistTracks(playlist: Playlist, limit: Int): List<Track>? {
         val url = playlist.sourceUrl ?: return null
         if (url.endsWith("/likes")) return soundCloudAccount.likes(soundCloudToken() ?: return null, limit)
-        if (secretOf(url) == null && playlist.isPublic != false) return null
         return soundCloudAccount.playlistTracks(url, soundCloudToken().orEmpty(), soundCloudClientIds.clientId(), limit)
     }
 

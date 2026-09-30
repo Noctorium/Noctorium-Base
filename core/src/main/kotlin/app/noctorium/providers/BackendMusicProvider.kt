@@ -119,7 +119,7 @@ class BackendMusicProvider(
             // could not say, and only then is the backend worth asking.
             runCatching { read(playlist, PLAYLIST_LIMIT) }.getOrNull()?.let { return it }
         }
-        return backend.listTracks(type, url)
+        return backend.listTracks(type, url, PLAYLIST_LIMIT)
     }
 
     override suspend fun resolvePlaylistTracks(playlist: Playlist, from: Int, to: Int): List<Track> {
@@ -140,8 +140,15 @@ class BackendMusicProvider(
         /** youtube:tab serves the signed-in account's own playlists here, YouTube Music ones included. */
         const val YOUTUBE_PLAYLISTS_FEED = "https://www.youtube.com/feed/playlists"
 
-        /** As many as anybody scrolls in one sitting; the list pages, so this only bounds the reading. */
-        const val PLAYLIST_LIMIT = 200
+        /**
+         * The whole playlist, for any playlist a service will hold.
+         *
+         * This was two hundred, on the reasoning that nobody scrolls further in one sitting. But the list
+         * is the playlist -- what plays, what shuffles, what downloads -- so a playlist of eight hundred
+         * opened as its first two hundred and the rest could not be reached at all. YouTube stops a
+         * playlist at five thousand; this only keeps a list that never ends from being read forever.
+         */
+        const val PLAYLIST_LIMIT = 5_000
     }
 
     override suspend fun getRecommendations(context: PlaybackContext): List<Track> {
