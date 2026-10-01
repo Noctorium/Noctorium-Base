@@ -704,6 +704,21 @@ class AppState(
     fun updateDesktop(transform: DesktopPreferences.() -> DesktopPreferences) =
         updatePreferences { copy(desktop = desktop.transform()) }
 
+    /** The now playing screen's arrangement, one field at a time, the same way. */
+    fun updateNowPlaying(transform: NowPlayingPreferences.() -> NowPlayingPreferences) =
+        updateDesktop { copy(nowPlaying = nowPlaying.transform()) }
+
+    /**
+     * Chooses what is behind the now playing screen. Plain also switches the ambient backdrop off, and the
+     * others on, so the one switch the phone reads keeps saying the same thing as the choice made here.
+     */
+    fun setNowPlayingBackdrop(backdrop: NowPlayingBackdrop) = updatePreferences {
+        copy(
+            ambientBackdrop = backdrop != NowPlayingBackdrop.PLAIN,
+            desktop = desktop.copy(nowPlaying = desktop.nowPlaying.copy(backdrop = backdrop)),
+        )
+    }
+
     // --- Spotify, which is read and never played from ---
 
     /**

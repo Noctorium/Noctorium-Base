@@ -580,7 +580,127 @@ data class DesktopPreferences(
     val closeToTray: Boolean = false,
     /** The one-time note from the tray that Noctorium is still running, so it is said once and not nagged. */
     val trayHintShown: Boolean = false,
+    /** How the now playing screen is laid out and dressed. */
+    val nowPlaying: NowPlayingPreferences = NowPlayingPreferences(),
 )
+
+/**
+ * The desktop's now playing screen, arranged the listener's way.
+ *
+ * Everything here is about where things sit and how they look; nothing changes what plays. The defaults are
+ * the screen as it was before any of it was a choice, so an older settings file opens on the same screen.
+ */
+@Serializable
+data class NowPlayingPreferences(
+    val layout: NowPlayingLayout = NowPlayingLayout.SIDE_BY_SIDE,
+    /** How much of the window the queue and lyrics panel takes, in the layouts that put it at the side. */
+    val panelWidth: NowPlayingPanelWidth = NowPlayingPanelWidth.NORMAL,
+    /** Which of the panel's tabs is showing when the screen opens. */
+    val openOn: NowPlayingTab = NowPlayingTab.UP_NEXT,
+    val cover: CoverStyle = CoverStyle.ROUNDED,
+    val coverSize: CoverSize = CoverSize.STANDARD,
+    /**
+     * What is behind it all. Read through [nowPlayingBackdrop] rather than directly: whether there is a
+     * backdrop at all is still [NoctoriumPreferences.ambientBackdrop], which the phone shares.
+     */
+    val backdrop: NowPlayingBackdrop = NowPlayingBackdrop.WASH,
+    /** The line being sung, under the cover. Off shows the album there instead. */
+    val lyricLine: Boolean = true,
+    /** The button to follow the artist, under their name. */
+    val followButton: Boolean = true,
+    /** The panel tucked away, from the button on the screen itself, so the record has the room. */
+    val panelHidden: Boolean = false,
+)
+
+/** Where the cover, the controls and the panel go on the now playing screen. */
+@Serializable
+enum class NowPlayingLayout(val displayName: String, val description: String, val hasPanel: Boolean) {
+    SIDE_BY_SIDE(
+        "Side by side",
+        "The track, the controls and the cover on the left, with the queue and lyrics beside them.",
+        hasPanel = true,
+    ),
+    PANEL_LEFT(
+        "Panel left",
+        "The same, turned round: the queue and lyrics on the left and the record on the right.",
+        hasPanel = true,
+    ),
+    STAGE(
+        "Centre stage",
+        "A large cover in the middle of the screen with the track and controls beside it, and nothing else.",
+        hasPanel = false,
+    ),
+    FOCUS(
+        "Focus",
+        "The cover, the track and the controls stacked down the middle, like a record on a shelf.",
+        hasPanel = false,
+    ),
+    BANNER(
+        "Banner",
+        "The track in one band across the top, and the queue and lyrics the full width beneath it.",
+        hasPanel = true,
+    ),
+    SING_ALONG(
+        "Sing along",
+        "The lyrics large across most of the screen, with the cover and controls in a column beside them.",
+        hasPanel = true,
+    ),
+}
+
+/** Width of the panel beside the record. */
+@Serializable
+enum class NowPlayingPanelWidth(val displayName: String, val widthDp: Int) {
+    NARROW("Narrow", 360),
+    NORMAL("Normal", 430),
+    WIDE("Wide", 520),
+}
+
+/** The panel's tabs. */
+@Serializable
+enum class NowPlayingTab(val displayName: String) {
+    UP_NEXT("Up next"),
+    LYRICS("Lyrics"),
+    RELATED("Related"),
+}
+
+/** How the cover is drawn on the now playing screen. */
+@Serializable
+enum class CoverStyle(val displayName: String, val description: String) {
+    ROUNDED("Rounded", "Softened corners and a shadow, as it has always been."),
+    SQUARE("Square", "Sharp corners, the way the sleeve was printed."),
+    CIRCLE("Circle", "Cut round, like a badge."),
+    RECORD("Record", "Set into a vinyl disc that turns while the music plays."),
+}
+
+/** How large the cover is drawn, against what the layout would give it. */
+@Serializable
+enum class CoverSize(val displayName: String, val scale: Float) {
+    SMALLER("Smaller", .8f),
+    STANDARD("Standard", 1f),
+    LARGER("Larger", 1.18f),
+}
+
+/** What is behind the now playing screen. */
+@Serializable
+enum class NowPlayingBackdrop(val displayName: String, val description: String) {
+    WASH("Colour wash", "A gradient of two colours taken from the cover."),
+    COVER("Blurred cover", "The cover itself, enlarged and blurred behind everything."),
+    PLAIN("Plain", "The theme's own background, and nothing else."),
+}
+
+/**
+ * The backdrop the now playing screen actually draws.
+ *
+ * Plain whenever the ambient backdrop is switched off, which is how settings saved before there was a choice
+ * of backdrop said they wanted none; otherwise the chosen one, with a stored Plain read as the wash because
+ * the switch says there should be something.
+ */
+val NoctoriumPreferences.nowPlayingBackdrop: NowPlayingBackdrop
+    get() = when {
+        !ambientBackdrop -> NowPlayingBackdrop.PLAIN
+        desktop.nowPlaying.backdrop == NowPlayingBackdrop.PLAIN -> NowPlayingBackdrop.WASH
+        else -> desktop.nowPlaying.backdrop
+    }
 
 enum class ScrobbleConnectionStatus { DISCONNECTED, CONNECTING, AWAITING_APPROVAL, CONNECTED, ERROR }
 
