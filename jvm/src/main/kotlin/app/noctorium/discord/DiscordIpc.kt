@@ -112,12 +112,22 @@ private fun connectToEndpoint(index: Int): DiscordTransport? {
         val pipe = RandomAccessFile("""\\.\pipe\discord-ipc-$index""", "rw")
         NamedPipeTransport(pipe)
     } else {
-        val directory = listOfNotNull(
+        val bases = listOfNotNull(
             System.getenv("XDG_RUNTIME_DIR"),
             System.getenv("TMPDIR"),
             "/tmp",
-        ).first()
-        val address = UnixDomainSocketAddress.of(Path.of(directory, "discord-ipc-$index"))
+        )
+        // Discord itself installed as a Flatpak or a Snap puts its socket in a folder of its own, under the
+        // same runtime folder; the plain one is still the default when none of them exists yet.
+        val candidates = bases.flatMap { base ->
+            listOf(
+                Path.of(base, "discord-ipc-$index"),
+                Path.of(base, "app", "com.discordapp.Discord", "discord-ipc-$index"),
+                Path.of(base, "snap.discord", "discord-ipc-$index"),
+            )
+        }
+        val socket = candidates.firstOrNull { java.nio.file.Files.exists(it) } ?: candidates.first()
+        val address = UnixDomainSocketAddress.of(socket)
         val channel = SocketChannel.open(StandardProtocolFamily.UNIX)
         if (!channel.connect(address)) {
             channel.close()

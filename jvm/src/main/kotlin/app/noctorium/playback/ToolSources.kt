@@ -91,8 +91,8 @@ fun linuxInstallHint(tool: PlaybackTool): String {
         PlaybackTool.MPV -> "mpv"
         PlaybackTool.YT_DLP -> "yt-dlp"
     }
-    return "Install it with your package manager: sudo apt install $package_ " +
-        "(Debian, Ubuntu) or sudo dnf install $package_ (Fedora)."
+    return "Install it with your package manager: sudo apt install $package_ (Debian, Ubuntu), " +
+        "sudo dnf install $package_ (Fedora), sudo pacman -S $package_ (Arch) or sudo zypper install $package_ (openSUSE)."
 }
 
 /** Reads the `sha256sum` output yt-dlp publishes beside its releases. */
