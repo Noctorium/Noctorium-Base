@@ -64,6 +64,11 @@ object AppDirectories {
             return adopt(windowsBase.resolve(CURRENT), PREVIOUS.map(windowsBase::resolve))
         }
         val home = System.getProperty("user.home")?.takeIf(String::isNotBlank)?.let(Path::of) ?: return null
+        // Inside a Flatpak, ~/.local/share is the host's and out of reach; the sandbox's own data folder is
+        // named in XDG_DATA_HOME, and that is where an application in one is meant to keep its things.
+        if (!System.getenv("FLATPAK_ID").isNullOrBlank()) {
+            System.getenv("XDG_DATA_HOME")?.takeIf(String::isNotBlank)?.let { return Path.of(it).resolve(CURRENT.lowercase()) }
+        }
         val share = home.resolve(".local").resolve("share")
         return adopt(
             share.resolve(CURRENT.lowercase()),

@@ -226,3 +226,41 @@ class AssetArchitectureTest {
         assertFalse(UpdateChannel.WINDOWS_INSTALLER.matches("Noctorium-1.2.3-windows-x64.msi", "x64"))
     }
 }
+
+/** The three Linux formats added in 0.7, and the installers, which never count as the update. */
+class LinuxFormatsTest {
+    private val release = listOf(
+        "Noctorium-0.7.0-windows-x64-setup.exe",
+        "noctorium_0.7.0_amd64.deb",
+        "noctorium-0.7.0.x86_64.rpm",
+        "noctorium-0.7.0-1-x86_64.pkg.tar.zst",
+        "Noctorium-0.7.0-x86_64.AppImage",
+        "Noctorium-0.7.0-x86_64.flatpak",
+        "Noctorium-0.7.0.apk",
+        "Noctorium-Installer-android.apk",
+        "Noctorium-Installer-x86_64.AppImage",
+        "noctorium-installer-cli-linux-x64",
+    )
+
+    private fun chosen(channel: UpdateChannel) = release.filter { channel.matches(it, "x64") }
+
+    @kotlin.test.Test
+    fun `each format finds its own file and nothing else`() {
+        kotlin.test.assertEquals(listOf("noctorium-0.7.0-1-x86_64.pkg.tar.zst"), chosen(UpdateChannel.ARCH_PACKAGE))
+        kotlin.test.assertEquals(listOf("Noctorium-0.7.0-x86_64.AppImage"), chosen(UpdateChannel.APPIMAGE))
+        kotlin.test.assertEquals(listOf("Noctorium-0.7.0-x86_64.flatpak"), chosen(UpdateChannel.FLATPAK))
+        kotlin.test.assertEquals(listOf("noctorium_0.7.0_amd64.deb"), chosen(UpdateChannel.DEBIAN_PACKAGE))
+    }
+
+    @kotlin.test.Test
+    fun `the installer's own apk is never taken for the app`() {
+        kotlin.test.assertEquals(listOf("Noctorium-0.7.0.apk"), chosen(UpdateChannel.ANDROID_APK))
+    }
+
+    @kotlin.test.Test
+    fun `a Flatpak is told about updates but does not install them`() {
+        kotlin.test.assertEquals(false, UpdateChannel.FLATPAK.canInstallItself)
+        kotlin.test.assertEquals(true, UpdateChannel.APPIMAGE.canInstallItself)
+        kotlin.test.assertEquals(true, UpdateChannel.ARCH_PACKAGE.canInstallItself)
+    }
+}

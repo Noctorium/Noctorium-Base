@@ -12,16 +12,18 @@ scrobbling, lyrics, the account, Connect between devices, and the update check.
 
 | Repository | What it is |
 | --- | --- |
-| **Noctorium-Base** (this one) | `core`: the shared Kotlin library. A plain JVM library, because Android runs the same bytecode the desktop does. |
-| [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop) | The Windows and Linux application. Compose Desktop, mpv for audio, yt-dlp for the services, an embedded Chromium for sign-in. |
+| **Noctorium-Base** (this one) | `core`: the shared Kotlin library. A plain JVM library, because Android runs the same bytecode the desktop does. `jvm`: what every computer build shares under its window or terminal — yt-dlp and mpv, saving as MP3, Discord, the credential store. |
+| [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop) | The Windows and Linux application. Compose Desktop on `jvm`, an embedded Chromium for sign-in. |
+| [Noctorium-cli](https://github.com/Noctorium/Noctorium-cli) | The terminal player, on `jvm`, and `noctorium web`, which serves the web player to the browsers in the house. |
+| [noctorium-web-player](https://github.com/Noctorium/noctorium-web-player) | The page `noctorium web` serves: React, talking only to the Noctorium that served it. |
 | [Noctorium-Mobile](https://github.com/Noctorium/Noctorium-Mobile) | The Android application. Compose, Media3 for audio, NewPipeExtractor for the services, the system WebView for sign-in. |
 | [Noctorium-Installer](https://github.com/Noctorium/Noctorium-Installer) | The release pipeline and the releases themselves: installers, packages and the APK, with checksums. This is what the in-app updater watches. |
 | [Noctorium-Service](https://github.com/Noctorium/Noctorium-Service) | Accounts and listening statistics, on Vercel. One account works in the player and on the website. |
 
 ## How the applications use this
 
-Each application's `settings.gradle.kts` includes `core` from a checkout of this repository, found in this
-order:
+Each application's `settings.gradle.kts` includes `core` — and on a computer `jvm` beside it — from a
+checkout of this repository, found in this order:
 
 1. `NOCTORIUM_BASE`, an environment variable naming the checkout, when set.
 2. `../Noctorium-Base`, a checkout beside the application's own. This is the arrangement for working on
@@ -35,7 +37,7 @@ and commit the new pointer).
 
 ## The rule this module lives by
 
-Nothing in `core` may touch an API a phone does not have. That rules out `java.awt`, `javax.imageio`,
+Nothing in `core` may touch an API a phone does not have; `jvm` is the place for what a computer has. That rules out `java.awt`, `javax.imageio`,
 `java.net.http` (absent from Android at every API level) and `com.sun.net.httpserver`. It does not rule out
 `java.nio.file`, which Android has had since API 26, the minimum the phone sets. Where the platforms
 genuinely differ — where audio is decoded, how a stream address is found, where a sign-in happens, where a
@@ -44,7 +46,7 @@ secret is kept — `core` declares an interface and the application answers it.
 ## Building and testing
 
 ```bash
-./gradlew :core:test
+./gradlew :core:test :jvm:test
 ```
 
 JDK 21. Nothing else is needed; there is no application here to run.

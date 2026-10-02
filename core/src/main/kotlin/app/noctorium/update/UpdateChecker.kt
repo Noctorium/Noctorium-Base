@@ -18,12 +18,21 @@ enum class UpdateChannel {
     WINDOWS_INSTALLER,
     DEBIAN_PACKAGE,
     FEDORA_PACKAGE,
+    /** Installed with pacman, from the release's .pkg.tar.zst. */
+    ARCH_PACKAGE,
+    /** Run as an AppImage, which an update replaces where it lies. */
+    APPIMAGE,
+    /**
+     * Installed from the release's Flatpak bundle. Told about updates and not able to install them: the
+     * sandbox it runs in cannot reach the host's flatpak, and asking for that would undo the point of it.
+     */
+    FLATPAK,
     ANDROID_APK,
     UNMANAGED,
     ;
 
     /** Whether Noctorium can carry the update out itself, rather than only pointing at it. */
-    val canInstallItself: Boolean get() = this != UNMANAGED
+    val canInstallItself: Boolean get() = this != UNMANAGED && this != FLATPAK
 }
 
 /** One file attached to a release. */
@@ -168,12 +177,17 @@ class UpdateChecker(
  */
 internal fun UpdateChannel.matches(fileName: String, architecture: String = hostArchitecture()): Boolean {
     val name = fileName.lowercase()
+    // The installers ride along in every release, and one of them is an .apk too: never the update.
+    if ("installer" in name) return false
     val extensionFits = when (this) {
         // The exe is preferred over the msi: it is what the workflow builds for people to run, and the
         // msi is there for deployment, where an updater is not what does the updating.
         UpdateChannel.WINDOWS_INSTALLER -> name.endsWith("-setup.exe")
         UpdateChannel.DEBIAN_PACKAGE -> name.endsWith(".deb")
         UpdateChannel.FEDORA_PACKAGE -> name.endsWith(".rpm")
+        UpdateChannel.ARCH_PACKAGE -> name.endsWith(".pkg.tar.zst")
+        UpdateChannel.APPIMAGE -> name.endsWith(".appimage")
+        UpdateChannel.FLATPAK -> name.endsWith(".flatpak")
         UpdateChannel.ANDROID_APK -> name.endsWith(".apk")
         UpdateChannel.UNMANAGED -> false
     }
