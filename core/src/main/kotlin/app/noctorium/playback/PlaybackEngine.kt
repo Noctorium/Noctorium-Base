@@ -1,6 +1,7 @@
 package app.noctorium.playback
 
 import app.noctorium.domain.Track
+import app.noctorium.settings.EqualizerSettings
 import kotlinx.coroutines.flow.StateFlow
 
 enum class PlaybackStatus { IDLE, RESOLVING, PLAYING, PAUSED, ERROR }
@@ -47,4 +48,10 @@ interface PlaybackEngine : AutoCloseable {
      * engine that cannot loop leaves this alone, and the queue's way still works for it.
      */
     suspend fun setLooping(enabled: Boolean) {}
+
+    /**
+     * The listener's equaliser, to be applied from now on and to every track after. Told at start and on
+     * every change. An engine with no way of shaping the sound -- a browser tab, say -- leaves this alone.
+     */
+    suspend fun setEqualizer(settings: EqualizerSettings) {}
 }

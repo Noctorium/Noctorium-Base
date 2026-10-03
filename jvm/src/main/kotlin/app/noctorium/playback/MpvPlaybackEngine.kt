@@ -1,6 +1,8 @@
 package app.noctorium.playback
 
 import app.noctorium.settings.AppDirectories
+import app.noctorium.settings.Equalizer
+import app.noctorium.settings.EqualizerSettings
 import app.noctorium.domain.Track
 import app.noctorium.platform.isMacOs
 import kotlinx.coroutines.Dispatchers
@@ -56,6 +58,38 @@ internal const val NORMAL_MAX_VOLUME = 1f
  * loudness follows -- up from 8.8% to 63.8%. Seven times, and not a clipped sample in it.
  */
 internal const val BOOST_FILTER = "lavfi=[acompressor=threshold=-20dB:ratio=4:makeup=8,alimiter=limit=0.95]"
+
+/**
+ * Every filter Noctorium puts in front of the speakers, as one chain for mpv's af: the equaliser, then the
+ * boost, then one limiter for whatever either of them pushed towards the ceiling. Empty when there is
+ * nothing to do, which is how most tracks play.
+ *
+ * One chain, set whole, because both are changed while a track plays: setting the property replaces what
+ * was there, so the equaliser cannot pile up copies of itself, or knock the boost off by being set.
+ *
+ * Each band is ffmpeg's peaking filter an octave wide at the band's centre. A curve that lifts anything is
+ * given half its highest lift back as headroom before the bands -- most of what is lifted is quieter
+ * than the loudest part of the record -- and the limiter catches the rest, so no preset ever clips.
+ */
+internal fun audioFilterChain(equalizer: EqualizerSettings, boost: Boolean): String {
+    val stages = mutableListOf<String>()
+    var lifts = false
+    if (equalizer.shapesSound) {
+        val gains = equalizer.gains
+        val highest = gains.maxOrNull() ?: 0f
+        val preamp = equalizer.preampDb - (highest.coerceAtLeast(0f) / 2f)
+        if (preamp != 0f) stages += "volume=${decibels(preamp)}dB"
+        Equalizer.BANDS_HZ.zip(gains).filter { (_, gain) -> gain != 0f }.forEach { (hz, gain) ->
+            stages += "equalizer=f=$hz:t=o:w=1:g=${decibels(gain)}"
+        }
+        lifts = highest > 0f || equalizer.preampDb > 0f
+    }
+    if (boost) stages += "acompressor=threshold=-20dB:ratio=4:makeup=8"
+    if (boost || lifts) stages += "alimiter=limit=0.95"
+    return if (stages.isEmpty()) "" else "lavfi=[${stages.joinToString(",")}]"
+}
+
+private fun decibels(value: Float): String = String.format(Locale.ROOT, "%.1f", value)
 
 /**
  * The line out of an mpv log that says what went wrong, or null if nothing did.
@@ -396,9 +430,9 @@ class MpvPlaybackEngine(
                     log?.let { add("--log-file=$it") }
                     add("--input-ipc-server=${ipcEndpoint!!}")
                     add("--volume=${(mutableState.value.volume * 100).toInt()}")
-                    // A new process for every track, so the boost has to be asked for again each
-                    // time or it would quietly lapse at the end of every song.
-                    if (mutableState.value.volumeBoostEnabled) add("--af=$BOOST_FILTER")
+                    // A new process for every track, so the boost and the equaliser have to be asked for
+                    // again each time or they would quietly lapse at the end of every song.
+                    audioFilterChain(equalizer, mutableState.value.volumeBoostEnabled).takeIf { it.isNotEmpty() }?.let { add("--af=$it") }
                     add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
                     // Repeat-one, done by the player: it seeks back to the start out of its own
                     // cache instead of exiting, so there is no gap and nothing is fetched again.
@@ -459,15 +493,32 @@ class MpvPlaybackEngine(
         if (mutableState.value.volumeBoostEnabled == enabled) return
         try {
             if (process?.isAlive == true) {
-                // Replacing the whole chain rather than adding to it: this is the only filter Noctorium
-                // sets, and toggling twice should not leave two compressors in series.
-                sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(if (enabled) BOOST_FILTER else ""))
+                // Replacing the whole chain rather than adding to it, so toggling twice cannot leave two
+                // compressors in series; the equaliser is part of the same chain and goes back in with it.
+                sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(audioFilterChain(equalizer, enabled)))
             }
             mutableState.update { it.copy(volumeBoostEnabled = enabled, errorMessage = null) }
-            PlaybackLog.event("volume_boost_changed", mapOf("enabled" to enabled, "filter" to if (enabled) BOOST_FILTER else ""))
+            PlaybackLog.event("volume_boost_changed", mapOf("enabled" to enabled, "filter" to audioFilterChain(equalizer, enabled)))
         } catch (error: Exception) {
             mutableState.update { it.copy(errorMessage = error.message ?: "Volume boost failed") }
             PlaybackLog.event("volume_boost_failed", mapOf("enabled" to enabled, "message" to (error.message ?: "unknown")))
+        }
+    }
+
+    @Volatile
+    private var equalizer = EqualizerSettings()
+
+    /** The equaliser: kept for the next track, and put into the one playing now if there is one. */
+    override suspend fun setEqualizer(settings: EqualizerSettings) {
+        if (settings == equalizer) return
+        equalizer = settings
+        if (process?.isAlive != true) return
+        val chain = audioFilterChain(settings, mutableState.value.volumeBoostEnabled)
+        try {
+            sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(chain))
+            PlaybackLog.event("equalizer_changed", mapOf("filter" to chain))
+        } catch (error: Exception) {
+            PlaybackLog.event("equalizer_failed", mapOf("message" to (error.message ?: "unknown")))
         }
     }
 

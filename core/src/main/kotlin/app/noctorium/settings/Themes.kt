@@ -79,6 +79,7 @@ fun NoctoriumPreferences.themeColours(): ThemeColours = theme.colours ?: customT
 fun NoctoriumPreferences.resolvedAccent(artworkArgb: Long?): Long = when (accent) {
     AccentPreset.THEME -> themeColours().accent
     AccentPreset.ARTWORK -> artworkArgb ?: themeColours().accent
+    AccentPreset.CUSTOM -> customAccent or 0xFF000000L
     else -> accent.argb ?: themeColours().accent
 }
 

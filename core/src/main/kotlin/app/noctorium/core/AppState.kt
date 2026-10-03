@@ -139,6 +139,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
+@kotlinx.serialization.Serializable
 enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS }
 
 /** What to do with a pasted link. Playing it is what pasting means; the rest are one tap away. */
@@ -549,6 +550,7 @@ class AppState(
         refreshHome()
         observeTrackCompletion()
         observeLooping()
+        observeEqualizer()
         observeUpcoming()
         observeNonMusicSegments()
         warmUpForTheLikeliestPlay()
@@ -684,6 +686,32 @@ class AppState(
     fun setSurfaceStyle(style: SurfaceStyle) = updatePreferences { copy(surfaceStyle = style) }
     fun setCornerStyle(style: CornerStyle) = updatePreferences { copy(cornerStyle = style) }
     fun setTextSize(size: TextSize) = updatePreferences { copy(textSize = size) }
+
+    // --- Making it the listener's own: the accent, the typeface, the lyrics, Home, the equaliser ---
+
+    /** The listener's own accent colour, which also chooses it. Kept opaque: an accent you can see through is no accent. */
+    fun setCustomAccent(argb: Long) = updatePreferences { copy(customAccent = argb or 0xFF000000L, accent = AccentPreset.CUSTOM) }
+    fun setFont(font: FontChoice) = updatePreferences { copy(font = font) }
+    fun updateLyricsLook(transform: LyricsLook.() -> LyricsLook) = updatePreferences { copy(lyrics = lyrics.transform()) }
+    fun setHomePartHidden(part: HomePart, hidden: Boolean) =
+        updatePreferences { copy(hiddenHomeParts = if (hidden) hiddenHomeParts + part else hiddenHomeParts - part) }
+
+    /** Changes the equaliser; the player in use follows within a moment (see the collector in init). */
+    fun updateEqualizer(transform: EqualizerSettings.() -> EqualizerSettings) =
+        updatePreferences { copy(equalizer = equalizer.transform().let { it.copy(customGains = Equalizer.normalise(it.customGains)) }) }
+
+    /** Picks a preset, switching the equaliser on. */
+    fun setEqualizerPreset(preset: EqualizerPreset) = updateEqualizer { copy(preset = preset, enabled = true) }
+
+    /**
+     * Moves one band, which makes the curve the listener's own: starting from whatever preset was showing,
+     * so nudging Rock's bass leaves the rest of Rock where it was.
+     */
+    fun setEqualizerBand(index: Int, gainDb: Float) = updateEqualizer {
+        val start = gains.toMutableList()
+        if (index in start.indices) start[index] = gainDb.coerceIn(-Equalizer.MAX_GAIN_DB, Equalizer.MAX_GAIN_DB)
+        copy(preset = EqualizerPreset.CUSTOM, customGains = start, enabled = true)
+    }
     fun setCardSize(size: CardSize) = updatePreferences { copy(cardSize = size) }
     fun setBadgePolicy(policy: BadgePolicy) = updatePreferences { copy(badgePolicy = policy) }
     fun setHoverControls(controls: HoverControls) = updatePreferences { copy(hoverControls = controls) }
@@ -2940,6 +2968,18 @@ class AppState(
                 queued.repeatMode == RepeatMode.ONE && timer != SleepTimerState.EndOfTrack
             }.distinctUntilChanged().collect { looping ->
                 runCatching { playbackEngine.setLooping(looping) }
+            }
+        }
+    }
+
+    /**
+     * Keeps the player's equaliser in step with the settings: told once at start, and again on every change.
+     * A player that has no equaliser leaves it alone.
+     */
+    private fun observeEqualizer() {
+        scope.launch {
+            mutableSettings.map { it.preferences.equalizer }.distinctUntilChanged().collect { equalizer ->
+                runCatching { playbackEngine.setEqualizer(equalizer) }
             }
         }
     }

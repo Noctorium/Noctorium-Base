@@ -2,6 +2,7 @@ package app.noctorium.settings
 
 import app.noctorium.platform.TextFiles
 
+import app.noctorium.core.Destination
 import app.noctorium.discord.DiscordPresenceSettings
 import app.noctorium.lyrics.LyricsProviderId
 import kotlinx.serialization.Serializable
@@ -103,6 +104,8 @@ enum class AccentPreset(val displayName: String, val argb: Long?) {
     AZURE("Azure", 0xFF5AB2FF),
     MINT("Mint", 0xFF5FE3B0),
     ARTWORK("Match the artwork", null),
+    /** The listener's own colour, kept in [NoctoriumPreferences.customAccent]. */
+    CUSTOM("Your own", null),
 }
 
 @Serializable
@@ -317,6 +320,16 @@ data class NoctoriumPreferences(
     val playerBarStyle: PlayerBarStyle = PlayerBarStyle.INLINE,
     val playerBarPosition: PlayerBarPosition = PlayerBarPosition.BOTTOM,
     val accent: AccentPreset = AccentPreset.THEME,
+    /** The colour [AccentPreset.CUSTOM] means, as opaque ARGB. Kept when another accent is chosen, for coming back to. */
+    val customAccent: Long = 0xFFB47CFF,
+    /** The typeface the interface is set in. */
+    val font: FontChoice = FontChoice.DEFAULT,
+    /** How the lyrics are set, on the now playing screen and wherever else they appear. */
+    val lyrics: LyricsLook = LyricsLook(),
+    /** The equaliser, applied by whichever player is playing. */
+    val equalizer: EqualizerSettings = EqualizerSettings(),
+    /** The parts of Home the listener put away. Empty is Home as it has always been. */
+    val hiddenHomeParts: Set<HomePart> = emptySet(),
     /**
      * The theme, and the colours for it when the theme is the listener's own.
      *
@@ -533,6 +546,10 @@ data class PhonePreferences(
     val haptics: Boolean = true,
     /** Swiping the player bar sideways moves through the queue. */
     val swipeToChangeTrack: Boolean = true,
+    /** Buttons left off the phone's player, the bar and the full screen both. */
+    val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
+    /** Tabs left off the bar along the bottom. Home and Settings are always reachable whatever is here. */
+    val hiddenDestinations: Set<Destination> = emptySet(),
     /** How the player bar above the tabs is laid out. */
     val playerBarStyle: PhonePlayerBarStyle = PhonePlayerBarStyle.CLASSIC,
     /**
@@ -582,6 +599,12 @@ data class DesktopPreferences(
     val trayHintShown: Boolean = false,
     /** How the now playing screen is laid out and dressed. */
     val nowPlaying: NowPlayingPreferences = NowPlayingPreferences(),
+    /** Buttons left off the player bar. */
+    val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
+    /** Items left off the sidebar. Home and Settings are always there whatever is here. */
+    val hiddenDestinations: Set<Destination> = emptySet(),
+    /** A note from the tray, or the system's notifications, each time a new track starts. Off unless asked for. */
+    val announceTracks: Boolean = false,
 )
 
 /**
