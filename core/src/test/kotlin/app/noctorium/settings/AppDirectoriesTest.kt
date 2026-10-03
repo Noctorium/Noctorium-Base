@@ -158,6 +158,110 @@ class AppDirectoriesTest {
 }
 
 /**
+ * Where the folder goes on each kind of machine.
+ *
+ * Every platform is asked from whichever machine runs the tests, with a temporary folder as the home
+ * folder, so the Mac's answer is checked on Windows and Linux -- and the Windows and Linux answers, which
+ * must not have moved, are checked on a Mac.
+ */
+class PlatformFolderTest {
+    private val home: Path = Files.createTempDirectory("noctorium-home")
+
+    @AfterTest
+    fun cleanUp() {
+        home.toFile().deleteRecursively()
+    }
+
+    private fun environment(vararg values: Pair<String, String>): (String) -> String? = mapOf(*values)::get
+
+    private val applicationSupport: Path get() = home.resolve("Library").resolve("Application Support")
+
+    @Test
+    fun `a Mac keeps it in Application Support, under the name as it is written`() {
+        val chosen = AppDirectories.locate("Mac OS X", environment(), home.toString())
+
+        assertEquals(applicationSupport.resolve("Noctorium"), chosen)
+    }
+
+    @Test
+    fun `a Mac takes over a folder an earlier name left in Application Support`() {
+        val old = applicationSupport.resolve("Spicetify").also { it.createDirectories() }
+        old.resolve("settings.json").writeText("from Spicetify")
+
+        val chosen = AppDirectories.locate("Mac OS X", environment(), home.toString())
+
+        assertEquals(applicationSupport.resolve("Noctorium"), chosen)
+        assertEquals("from Spicetify", chosen!!.resolve("settings.json").readText())
+        assertFalse(Files.exists(old))
+    }
+
+    /**
+     * A terminal player that ran on a Mac before Macs were supported kept its things under ~/.local/share,
+     * and may still be using them. Moving that folder away would pull it out from under that player.
+     */
+    @Test
+    fun `a Mac leaves a Linux-style folder where it is`() {
+        val linuxStyle = home.resolve(".local").resolve("share").resolve("noctorium").also { it.createDirectories() }
+        linuxStyle.resolve("settings.json").writeText("left alone")
+
+        val chosen = AppDirectories.locate("Mac OS X", environment(), home.toString())
+
+        assertEquals(applicationSupport.resolve("Noctorium"), chosen)
+        assertEquals("left alone", linuxStyle.resolve("settings.json").readText())
+    }
+
+    @Test
+    fun `a Mac is not talked out of it by variables that belong to other platforms`() {
+        val chosen = AppDirectories.locate(
+            "Mac OS X",
+            environment(
+                "LOCALAPPDATA" to home.resolve("AppData").toString(),
+                "FLATPAK_ID" to "app.noctorium.Noctorium",
+                "XDG_DATA_HOME" to home.resolve("xdg").toString(),
+            ),
+            home.toString(),
+        )
+
+        assertEquals(applicationSupport.resolve("Noctorium"), chosen)
+    }
+
+    @Test
+    fun `Windows is still LOCALAPPDATA`() {
+        val local = home.resolve("AppData").resolve("Local")
+
+        val chosen = AppDirectories.locate("Windows 11", environment("LOCALAPPDATA" to local.toString()), home.toString())
+
+        assertEquals(local.resolve("Noctorium"), chosen)
+    }
+
+    @Test
+    fun `Linux is still under local share, in lower case`() {
+        val chosen = AppDirectories.locate("Linux", environment(), home.toString())
+
+        assertEquals(home.resolve(".local").resolve("share").resolve("noctorium"), chosen)
+    }
+
+    @Test
+    fun `a Flatpak is still its own data folder`() {
+        val xdg = home.resolve("xdg")
+
+        val chosen = AppDirectories.locate(
+            "Linux",
+            environment("FLATPAK_ID" to "app.noctorium.Noctorium", "XDG_DATA_HOME" to xdg.toString()),
+            home.toString(),
+        )
+
+        assertEquals(xdg.resolve("noctorium"), chosen)
+    }
+
+    @Test
+    fun `with no home folder at all there is nowhere, rather than somewhere wrong`() {
+        assertEquals(null, AppDirectories.locate("Mac OS X", environment(), null))
+        assertEquals(null, AppDirectories.locate("Linux", environment(), ""))
+    }
+}
+
+/**
  * A session is stored as an absolute path to a cookie jar, so renaming the folder moves the jar out from
  * under it. Left alone that reads to the listener as being signed out of both services for no visible
  * reason — the exact failure the folder move was meant to avoid.

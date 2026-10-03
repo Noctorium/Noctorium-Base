@@ -48,7 +48,9 @@ object AppDirectories {
 
     /** Resolved once: the move is a one-time event and re-checking it on every path lookup is waste. */
     private val root: Path? by lazy {
-        override ?: System.getProperty(BASE_PROPERTY)?.takeIf(String::isNotBlank)?.let(Path::of) ?: locate()
+        override
+            ?: System.getProperty(BASE_PROPERTY)?.takeIf(String::isNotBlank)?.let(Path::of)
+            ?: locate(System.getProperty("os.name").orEmpty(), System::getenv, System.getProperty("user.home"))
     }
 
     /** The folder itself, or null on a system that offers nowhere to put it. */
@@ -58,16 +60,32 @@ object AppDirectories {
     fun resolve(vararg parts: String): Path? =
         root?.let { start -> parts.fold(start) { path, part -> path.resolve(part) } }
 
-    private fun locate(): Path? {
-        val windowsBase = System.getenv("LOCALAPPDATA")?.takeIf(String::isNotBlank)?.let(Path::of)
+    /**
+     * Where the folder belongs on this kind of machine, taking over one an earlier name left there.
+     *
+     * Given the operating system's name, the environment and the home folder rather than reading them, so
+     * that every platform's answer can be tested from any one of them. Visible for testing for that reason.
+     */
+    internal fun locate(osName: String, environment: (String) -> String?, userHome: String?): Path? {
+        // A Mac keeps an application's data in ~/Library/Application Support, under the application's
+        // own name as it is written. First, because nothing else here applies to a Mac: it has no
+        // LOCALAPPDATA, and ~/.local/share is a Linux convention that Finder hides and nothing on a Mac
+        // looks in. Only the earlier names under Application Support are adopted -- not a ~/.local/share
+        // folder an older terminal player may have made, which that player may still be using.
+        if (osName.trim().lowercase().startsWith("mac")) {
+            val home = userHome?.takeIf(String::isNotBlank)?.let(Path::of) ?: return null
+            val support = home.resolve("Library").resolve("Application Support")
+            return adopt(support.resolve(CURRENT), PREVIOUS.map(support::resolve))
+        }
+        val windowsBase = environment("LOCALAPPDATA")?.takeIf(String::isNotBlank)?.let(Path::of)
         if (windowsBase != null) {
             return adopt(windowsBase.resolve(CURRENT), PREVIOUS.map(windowsBase::resolve))
         }
-        val home = System.getProperty("user.home")?.takeIf(String::isNotBlank)?.let(Path::of) ?: return null
+        val home = userHome?.takeIf(String::isNotBlank)?.let(Path::of) ?: return null
         // Inside a Flatpak, ~/.local/share is the host's and out of reach; the sandbox's own data folder is
         // named in XDG_DATA_HOME, and that is where an application in one is meant to keep its things.
-        if (!System.getenv("FLATPAK_ID").isNullOrBlank()) {
-            System.getenv("XDG_DATA_HOME")?.takeIf(String::isNotBlank)?.let { return Path.of(it).resolve(CURRENT.lowercase()) }
+        if (!environment("FLATPAK_ID").isNullOrBlank()) {
+            environment("XDG_DATA_HOME")?.takeIf(String::isNotBlank)?.let { return Path.of(it).resolve(CURRENT.lowercase()) }
         }
         val share = home.resolve(".local").resolve("share")
         return adopt(

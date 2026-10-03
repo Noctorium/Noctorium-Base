@@ -85,6 +85,9 @@ class ToolSourcesTest {
         // Not the bare "yt-dlp" asset, which is a zipimport archive needing a Python on the machine.
         assertEquals("yt-dlp_linux", ytDlpAsset(HostPlatform.LINUX_X64))
         assertEquals("yt-dlp_linux_aarch64", ytDlpAsset(HostPlatform.LINUX_ARM64))
+        // The same universal build for both kinds of Mac, and again not the bare Python one.
+        assertEquals("yt-dlp_macos", ytDlpAsset(HostPlatform.MAC_ARM64))
+        assertEquals("yt-dlp_macos", ytDlpAsset(HostPlatform.MAC_X64))
         assertNull(ytDlpAsset(HostPlatform.UNSUPPORTED))
     }
 
@@ -108,9 +111,87 @@ class ToolSourcesTest {
         assertEquals(HostPlatform.WINDOWS_ARM64, hostPlatform("Windows 11", "aarch64"))
         assertEquals(HostPlatform.LINUX_X64, hostPlatform("Linux", "x86_64"))
         assertEquals(HostPlatform.LINUX_ARM64, hostPlatform("Linux", "arm64"))
-        // 32-bit x86, and macOS, get nothing rather than a 64-bit download that cannot run.
+        // 32-bit x86, and a system nobody publishes for, get nothing rather than a download that cannot run.
         assertEquals(HostPlatform.UNSUPPORTED, hostPlatform("Windows 10", "x86"))
-        assertEquals(HostPlatform.UNSUPPORTED, hostPlatform("Mac OS X", "aarch64"))
+        assertEquals(HostPlatform.UNSUPPORTED, hostPlatform("FreeBSD", "amd64"))
+    }
+
+    @Test
+    fun `a Mac is recognised by the name Java gives every version of it`() {
+        // Apple silicon reports aarch64, an Intel Mac x86_64; Java has said "Mac OS X" throughout.
+        assertEquals(HostPlatform.MAC_ARM64, hostPlatform("Mac OS X", "aarch64"))
+        assertEquals(HostPlatform.MAC_X64, hostPlatform("Mac OS X", "x86_64"))
+        assertEquals(HostPlatform.MAC_ARM64, hostPlatform("Mac OS X", "arm64"))
+        assertEquals(HostPlatform.MAC_X64, hostPlatform("Mac OS X", "amd64"))
+        assertEquals(HostPlatform.UNSUPPORTED, hostPlatform("Mac OS X", "ppc"))
+        assertTrue(HostPlatform.MAC_ARM64.isMac && HostPlatform.MAC_X64.isMac)
+        assertTrue(!HostPlatform.MAC_ARM64.isWindows && !HostPlatform.MAC_ARM64.isLinux)
+        assertTrue(HostPlatform.entries.filter { it.isMac }.none { it.isWindows || it.isLinux })
+    }
+
+    /** One eko5624/mpv-mac release, in full, as GitHub listed it. */
+    private val macMpvRelease = listOf(
+        "ffmpeg-arm64-1de217ad4b.zip",
+        "ffmpeg-x86_64-3e6580db5b.zip",
+        "libmpv-arm64-e470f8986e.zip",
+        "libmpv-x86_64-e470f8986e.zip",
+        "mpv-arm64-git-e470f8986e.zip",
+        "mpv-x86_64-git-e470f8986e.zip",
+    )
+
+    @Test
+    fun `each kind of Mac gets the mpv bundle built for it`() {
+        assertEquals("mpv-arm64-git-e470f8986e.zip", macMpvAsset(macMpvRelease, HostPlatform.MAC_ARM64))
+        assertEquals("mpv-x86_64-git-e470f8986e.zip", macMpvAsset(macMpvRelease, HostPlatform.MAC_X64))
+    }
+
+    @Test
+    fun `never libmpv or FFmpeg, which sit in the same release and hold no player`() {
+        // The listing order puts both ahead of mpv itself, so taking the first near match would get one.
+        listOf(HostPlatform.MAC_ARM64, HostPlatform.MAC_X64).forEach { platform ->
+            val chosen = macMpvAsset(macMpvRelease, platform)
+            assertTrue(chosen?.startsWith("mpv-") == true, "$chosen was chosen for $platform")
+        }
+        assertNull(macMpvAsset(macMpvRelease.filterNot { it.startsWith("mpv-") }, HostPlatform.MAC_ARM64))
+    }
+
+    @Test
+    fun `the Mac release is asked only for Macs, and shinchiro's never for one`() {
+        assertNull(macMpvAsset(macMpvRelease, HostPlatform.WINDOWS_X64))
+        assertNull(macMpvAsset(macMpvRelease, HostPlatform.LINUX_ARM64))
+        assertNull(macMpvAsset(macMpvRelease, HostPlatform.UNSUPPORTED))
+        assertNull(shinchiroAsset(mpvRelease, "mpv", HostPlatform.MAC_X64))
+        assertNull(shinchiroAsset(mpvRelease, "mpv", HostPlatform.MAC_ARM64))
+    }
+
+    @Test
+    fun `mpv is fetched on Windows and on a Mac, and only named on Linux`() {
+        assertTrue(fetchesItself(PlaybackTool.MPV, HostPlatform.WINDOWS_X64))
+        assertTrue(fetchesItself(PlaybackTool.MPV, HostPlatform.MAC_ARM64))
+        assertTrue(fetchesItself(PlaybackTool.MPV, HostPlatform.MAC_X64))
+        assertTrue(!fetchesItself(PlaybackTool.MPV, HostPlatform.LINUX_X64))
+        assertTrue(!fetchesItself(PlaybackTool.MPV, HostPlatform.LINUX_ARM64))
+        // yt-dlp everywhere there is a build of it, which is everywhere but the unsupported.
+        HostPlatform.entries.filter { it != HostPlatform.UNSUPPORTED }.forEach { platform ->
+            assertTrue(fetchesItself(PlaybackTool.YT_DLP, platform), "yt-dlp is not fetched on $platform")
+        }
+        PlaybackTool.entries.forEach { assertTrue(!fetchesItself(it, HostPlatform.UNSUPPORTED)) }
+    }
+
+    @Test
+    fun `the Mac hint names Homebrew and the tool being asked about`() {
+        assertEquals("Install it with Homebrew: brew install mpv.", macInstallHint(PlaybackTool.MPV))
+        assertEquals("Install it with Homebrew: brew install yt-dlp.", macInstallHint(PlaybackTool.YT_DLP))
+    }
+
+    @Test
+    fun `the hint for doing it by hand follows the platform`() {
+        assertEquals(linuxInstallHint(PlaybackTool.MPV), manualInstallHint(PlaybackTool.MPV, HostPlatform.LINUX_X64))
+        assertEquals(macInstallHint(PlaybackTool.MPV), manualInstallHint(PlaybackTool.MPV, HostPlatform.MAC_ARM64))
+        assertEquals(macInstallHint(PlaybackTool.YT_DLP), manualInstallHint(PlaybackTool.YT_DLP, HostPlatform.MAC_X64))
+        // Windows has nothing to add to "not installed": the button beside it installs it.
+        assertNull(manualInstallHint(PlaybackTool.MPV, HostPlatform.WINDOWS_X64))
+        assertNull(manualInstallHint(PlaybackTool.MPV, HostPlatform.UNSUPPORTED))
     }
 
     @Test

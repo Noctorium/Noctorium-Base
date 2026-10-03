@@ -1,6 +1,7 @@
 package app.noctorium.playback
 
 import app.noctorium.net.Http
+import app.noctorium.platform.CommandRunner
 import app.noctorium.settings.AppDirectories
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -44,6 +45,10 @@ import kotlin.io.path.name
  * Linux gets told, not served. There is no portable mpv for Linux -- it links against whatever the
  * distribution ships -- so Noctorium prints the apt or dnf line instead of dropping a binary somewhere and
  * hoping. yt-dlp does publish a self-contained Linux build, so that one is fetched.
+ *
+ * A Mac is served like Windows. There is a portable mpv for it -- an application bundle carrying its own
+ * libraries -- and yt-dlp publishes a standalone build. When fetching fails there, the Homebrew command is
+ * offered as well, because the locator finds Homebrew's copies too.
  */
 object PlaybackToolInstaller {
 
@@ -54,6 +59,9 @@ object PlaybackToolInstaller {
     private val gate = Mutex()
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    /** How the programs a Mac install needs -- ditto and xattr -- are run. */
+    private val commands: CommandRunner = CommandRunner.system
 
     /** Where Noctorium puts what it fetched. The same folder [BackendLocator] has always looked in. */
     fun binDirectory(): Path? = AppDirectories.resolve("bin")
@@ -146,7 +154,7 @@ object PlaybackToolInstaller {
             return@withLock fail("Noctorium does not have a ${tool.displayName} build for this kind of machine.")
         }
         // Linux mpv comes from the distribution, not from here.
-        if (!platform.isWindows && tool != PlaybackTool.YT_DLP) {
+        if (!fetchesItself(tool, platform)) {
             return@withLock fail("${tool.displayName} is not installed. ${linuxInstallHint(tool)}")
         }
 
@@ -156,10 +164,14 @@ object PlaybackToolInstaller {
                 Files.createDirectories(bin)
                 when (tool) {
                     PlaybackTool.YT_DLP -> installYtDlp(platform, bin)
-                    PlaybackTool.MPV -> installArchived(platform, bin, "mpv", tool)
+                    PlaybackTool.MPV ->
+                        if (platform.isMac) installMacMpv(platform, bin) else installArchived(platform, bin, "mpv", tool)
                 }
             }
         }.getOrElse { error -> error.message ?: "The download did not finish." }
+            // On a Mac a failed download is not the end of it: a copy installed with Homebrew is found as
+            // well as Noctorium's own, so the command for that is the useful thing to add.
+            ?.let { problem -> if (platform.isMac) "$problem ${macInstallHint(tool)}" else problem }
 
         mutableState.update { it.copy(installing = null, progress = null) }
         refresh()
@@ -197,7 +209,42 @@ object PlaybackToolInstaller {
         val destination = bin.resolve(PlaybackTool.YT_DLP.executableName(platform.isWindows))
         download(asset, expected, destination)?.let { return it }
         makeExecutable(destination)
+        // As for mpv: a quarantined program is stopped by a dialog no one sees. Rarely there, never harmful
+        // to clear, and a failure means only that there was nothing to clear.
+        if (platform.isMac) {
+            runCatching {
+                commands.run(listOf(MacMpvBundle.XATTR, "-d", MacMpvBundle.QUARANTINE, destination.toString()), null, 30)
+            }
+        }
         return null
+    }
+
+    /**
+     * mpv for a Mac, which comes as one zip holding a whole application bundle.
+     *
+     * eko5624's weekly builds, the macOS counterpart of shinchiro's: mpv with its libraries inside
+     * `mpv.app`, so it runs on a Mac with nothing else installed. Unpacked with `ditto`, which every Mac
+     * has, for the same reason Windows uses its own tar -- nothing to install before the installer can
+     * install anything. [MacMpvBundle] does the unpacking and the putting in place.
+     */
+    private suspend fun installMacMpv(platform: HostPlatform, bin: Path): String? {
+        val release = latestRelease(MAC_MPV_REPOSITORY) ?: return "Could not reach GitHub to find mpv."
+        val assetName = macMpvAsset(release.keys.toList(), platform)
+            ?: return "That release has no mpv build for this Mac."
+        val url = release.getValue(assetName)
+
+        val work = Files.createTempDirectory("noctorium-mpv")
+        try {
+            val archive = work.resolve(assetName)
+            // Published without a checksum, as shinchiro's builds are. What is unpacked is searched for the
+            // one bundle that is wanted rather than taken wholesale.
+            download(url, expectedSha256 = null, destination = archive)?.let { return it }
+
+            mutableState.update { it.copy(progress = null) }
+            return MacMpvBundle.install(archive, work.resolve("out"), bin, commands)
+        } finally {
+            runCatching { MacMpvBundle.deleteTree(work) }
+        }
     }
 
     /**
@@ -381,6 +428,7 @@ object PlaybackToolInstaller {
 
     internal const val YT_DLP_REPOSITORY = "yt-dlp/yt-dlp"
     internal const val MPV_REPOSITORY = "shinchiro/mpv-winbuild-cmake"
+    internal const val MAC_MPV_REPOSITORY = "eko5624/mpv-mac"
     private const val YT_DLP_SUMS = "SHA2-256SUMS"
     private const val D3D_COMPILER = "d3dcompiler_43.dll"
     private const val BUFFER_BYTES = 1 shl 16

@@ -264,3 +264,71 @@ class LinuxFormatsTest {
         kotlin.test.assertEquals(true, UpdateChannel.ARCH_PACKAGE.canInstallItself)
     }
 }
+
+/**
+ * The Mac's disk images, one per architecture, in a release that also carries the terminal player's Mac
+ * builds and its installer -- which say "macos" just as loudly and must never be taken for the app.
+ */
+class MacFormatsTest {
+    private val release = listOf(
+        "Noctorium-0.8.0-windows-x64-setup.exe",
+        "Noctorium-0.8.0-windows-x64.msi",
+        "noctorium_0.8.0_amd64.deb",
+        "noctorium-0.8.0.x86_64.rpm",
+        "noctorium-0.8.0-1-x86_64.pkg.tar.zst",
+        "Noctorium-0.8.0-x86_64.AppImage",
+        "Noctorium-0.8.0-x86_64.flatpak",
+        "Noctorium-0.8.0-macos-arm64.dmg",
+        "Noctorium-0.8.0-macos-x64.dmg",
+        "noctorium-cli-0.8.0-macos-arm64.tar.gz",
+        "noctorium-cli-0.8.0-macos-x64.tar.gz",
+        "Noctorium-0.8.0.apk",
+        "Noctorium-Installer-android.apk",
+        "Noctorium-Installer-x86_64.AppImage",
+        "noctorium-installer-cli-linux-x64",
+        "noctorium-installer-cli-macos",
+        "SHA256SUMS.txt",
+    )
+
+    private fun chosen(channel: UpdateChannel, architecture: String) = release.filter { channel.matches(it, architecture) }
+
+    @Test
+    fun `Apple silicon gets the arm64 disk image and an Intel Mac the x64 one`() {
+        assertEquals(listOf("Noctorium-0.8.0-macos-arm64.dmg"), chosen(UpdateChannel.MAC_DMG, "arm64"))
+        assertEquals(listOf("Noctorium-0.8.0-macos-x64.dmg"), chosen(UpdateChannel.MAC_DMG, "x64"))
+    }
+
+    @Test
+    fun `neither the terminal player's Mac builds nor any installer is ever the update`() {
+        listOf("x64", "arm64").forEach { architecture ->
+            UpdateChannel.entries.forEach { channel ->
+                val taken = chosen(channel, architecture)
+                assertTrue(taken.none { it.startsWith("noctorium-cli-") }, "$channel on $architecture took $taken")
+                assertTrue(taken.none { "installer" in it.lowercase() }, "$channel on $architecture took $taken")
+            }
+        }
+        // Not even an installer that came as a disk image.
+        assertFalse(UpdateChannel.MAC_DMG.matches("Noctorium-Installer-macos-arm64.dmg", "arm64"))
+    }
+
+    @Test
+    fun `the other platforms find exactly what they did before the disk images arrived`() {
+        assertEquals(listOf("Noctorium-0.8.0-windows-x64-setup.exe"), chosen(UpdateChannel.WINDOWS_INSTALLER, "x64"))
+        assertEquals(listOf("noctorium_0.8.0_amd64.deb"), chosen(UpdateChannel.DEBIAN_PACKAGE, "x64"))
+        assertEquals(listOf("noctorium-0.8.0.x86_64.rpm"), chosen(UpdateChannel.FEDORA_PACKAGE, "x64"))
+        assertEquals(listOf("noctorium-0.8.0-1-x86_64.pkg.tar.zst"), chosen(UpdateChannel.ARCH_PACKAGE, "x64"))
+        assertEquals(listOf("Noctorium-0.8.0-x86_64.AppImage"), chosen(UpdateChannel.APPIMAGE, "x64"))
+        assertEquals(listOf("Noctorium-0.8.0-x86_64.flatpak"), chosen(UpdateChannel.FLATPAK, "x64"))
+        assertEquals(listOf("Noctorium-0.8.0.apk"), chosen(UpdateChannel.ANDROID_APK, "x64"))
+        assertEquals(emptyList(), chosen(UpdateChannel.UNMANAGED, "x64"))
+        // And no disk image for anything that is not a Mac.
+        UpdateChannel.entries.filter { it != UpdateChannel.MAC_DMG }.forEach { channel ->
+            assertTrue(chosen(channel, "arm64").none { it.endsWith(".dmg") }, "$channel took a disk image")
+        }
+    }
+
+    @Test
+    fun `a Mac installs its own updates`() {
+        assertTrue(UpdateChannel.MAC_DMG.canInstallItself)
+    }
+}

@@ -16,8 +16,14 @@ concurrency:
 
 jobs:
   build:
-    name: Core tests
-    runs-on: ubuntu-latest
+    name: Core tests (${{ matrix.os }})
+    # Linux and a Mac: the Mac is where the parts that ask macOS for things -- its Keychain, its folders --
+    # meet the real system, and nobody working on this has one.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
 
     steps:

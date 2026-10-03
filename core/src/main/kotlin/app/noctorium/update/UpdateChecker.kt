@@ -27,6 +27,11 @@ enum class UpdateChannel {
      * sandbox it runs in cannot reach the host's flatpak, and asking for that would undo the point of it.
      */
     FLATPAK,
+    /**
+     * Installed on a Mac from the release's disk image, of which there is one per architecture: arm64 for
+     * Apple silicon, x64 for Intel. An update is the next disk image, and the app in it replaces this one.
+     */
+    MAC_DMG,
     ANDROID_APK,
     UNMANAGED,
     ;
@@ -188,6 +193,9 @@ internal fun UpdateChannel.matches(fileName: String, architecture: String = host
         UpdateChannel.ARCH_PACKAGE -> name.endsWith(".pkg.tar.zst")
         UpdateChannel.APPIMAGE -> name.endsWith(".appimage")
         UpdateChannel.FLATPAK -> name.endsWith(".flatpak")
+        // Only the desktop app comes as a disk image. The terminal player's Mac builds are archives and its
+        // installer is a bare program, so neither can be mistaken for this however their names read.
+        UpdateChannel.MAC_DMG -> name.endsWith(".dmg")
         UpdateChannel.ANDROID_APK -> name.endsWith(".apk")
         UpdateChannel.UNMANAGED -> false
     }
@@ -200,7 +208,11 @@ internal fun UpdateChannel.matches(fileName: String, architecture: String = host
     return someoneElses.none { name.contains(it) }
 }
 
-/** The names the same architecture goes by across the three packaging worlds. */
+/**
+ * The names the same architecture goes by across the packaging worlds.
+ *
+ * A Mac uses the same two words: Noctorium's disk images say arm64 for Apple silicon and x64 for Intel.
+ */
 private val ARCHITECTURE_ALIASES: Map<String, List<String>> = mapOf(
     "x64" to listOf("x86_64", "amd64", "x64"),
     "arm64" to listOf("aarch64", "arm64"),

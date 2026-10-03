@@ -2,6 +2,7 @@ package app.noctorium.playback
 
 import app.noctorium.settings.AppDirectories
 import app.noctorium.domain.Track
+import app.noctorium.platform.isMacOs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -118,6 +119,30 @@ private const val CONNECT_TIMEOUT_SECONDS = 10
 
 /** The piece curl fetches at a time: yt-dlp's own chunk size for YouTube. */
 private const val REQUEST_PIECE = "10MiB"
+
+/**
+ * Where mpv is told to listen for the controls: a new address for every player started.
+ *
+ * A named pipe on Windows and a socket file everywhere else. A Mac needs more care with the socket than
+ * Linux does, because a socket's path has a hard limit -- 104 bytes on macOS, the terminating zero among
+ * them -- and Java's temporary folder there is a per-user one under /var/folders, 48 characters long before
+ * the name even starts. The name used on Linux, with a whole UUID in it, brings that to 104 exactly: one
+ * too many, and mpv declines to listen at all, which looks like a player that ignores every button. So a
+ * Mac gets a shorter name in the same private folder, and /tmp in the unlikely case that still will not fit.
+ */
+internal fun mpvIpcEndpoint(osName: String, temporaryFolder: String, unique: UUID = UUID.randomUUID()): String {
+    val name = "noctorium-mpv-$unique"
+    if (osName.startsWith("Windows", ignoreCase = true)) return "\\\\.\\pipe\\$name"
+    if (!isMacOs(osName)) return Path.of(temporaryFolder, "$name.sock").toString()
+    // Eight hex digits are plenty for a folder only this user writes to, and where each socket is deleted
+    // as its player stops.
+    val short = "noctorium-mpv-${unique.toString().take(8)}.sock"
+    val private = Path.of(temporaryFolder, short).toString()
+    return if (private.toByteArray(Charsets.UTF_8).size < MAC_SOCKET_PATH_BYTES) private else "/tmp/$short"
+}
+
+/** The size of a socket address's path on macOS, terminating zero included. */
+internal const val MAC_SOCKET_PATH_BYTES = 104
 
 /** What each mpv on this machine understands, asked once per executable. */
 private val knownOptions = java.util.concurrent.ConcurrentHashMap<Path, Set<String>>()
@@ -726,10 +751,8 @@ class MpvPlaybackEngine(
             ?.takeIf { it.isFinite() && it >= 0 }
             ?.let { (it * 1_000).toLong() }
 
-    private fun createIpcEndpoint(): String {
-        val name = "noctorium-mpv-${UUID.randomUUID()}"
-        return if (isWindows) "\\\\.\\pipe\\$name" else Path.of(System.getProperty("java.io.tmpdir"), "$name.sock").toString()
-    }
+    private fun createIpcEndpoint(): String =
+        mpvIpcEndpoint(System.getProperty("os.name").orEmpty(), System.getProperty("java.io.tmpdir"))
 
     private suspend fun waitForIpc() {
         var lastError: Exception? = null

@@ -12,7 +12,7 @@ scrobbling, lyrics, the account, Connect between devices, and the update check.
 
 | Repository | What it is |
 | --- | --- |
-| **Noctorium-Base** (this one) | `core`: the shared Kotlin library. A plain JVM library, because Android runs the same bytecode the desktop does. `jvm`: what every computer build shares under its window or terminal — yt-dlp and mpv, saving as MP3, Discord, the credential store. |
+| **Noctorium-Base** (this one) | `core`: the shared Kotlin library. A plain JVM library, because Android runs the same bytecode the desktop does. `jvm`: what every computer build shares under its window or terminal, on Windows, Linux and macOS — yt-dlp and mpv, saving as MP3, Discord, the credential store. |
 | [Noctorium-Desktop](https://github.com/Noctorium/Noctorium-Desktop) | The Windows and Linux application. Compose Desktop on `jvm`, an embedded Chromium for sign-in. |
 | [Noctorium-cli](https://github.com/Noctorium/Noctorium-cli) | The terminal player, on `jvm`, and `noctorium web`, which serves the web player to the browsers in the house. |
 | [noctorium-web-player](https://github.com/Noctorium/noctorium-web-player) | The page `noctorium web` serves: React, talking only to the Noctorium that served it. |
