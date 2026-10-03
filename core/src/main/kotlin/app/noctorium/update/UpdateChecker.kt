@@ -90,6 +90,11 @@ class UpdateChecker(
     private val repository: String = DEFAULT_REPOSITORY,
     /** Overridden only by tests, which need somewhere other than GitHub to answer. */
     private val apiBase: String = DEFAULT_API_BASE,
+    /**
+     * This machine's architecture, as the release files name it. Overridden only by tests, which describe a
+     * release built for x64 and have to get the same answer on an Apple silicon runner as on any other.
+     */
+    private val architecture: String = hostArchitecture(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -126,7 +131,7 @@ class UpdateChecker(
                 version = latest,
                 pageUrl = release.htmlUrl,
                 notes = release.body.orEmpty(),
-                file = files.firstOrNull { channel.matches(it.name) },
+                file = files.firstOrNull { channel.matches(it.name, architecture) },
                 sha256 = checksumFor(files, channel),
             ),
         )
@@ -139,7 +144,7 @@ class UpdateChecker(
      * anything is downloaded, and the installer can refuse rather than discovering it halfway through.
      */
     private suspend fun checksumFor(files: List<ReleaseFile>, channel: UpdateChannel): String? {
-        val wanted = files.firstOrNull { channel.matches(it.name) } ?: return null
+        val wanted = files.firstOrNull { channel.matches(it.name, architecture) } ?: return null
         val sums = files.firstOrNull { it.name.equals(CHECKSUM_FILE, ignoreCase = true) } ?: return null
         val reply = http.send(sums.url, timeoutSeconds = 15)
         if (!reply.ok) return null

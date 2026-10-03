@@ -37,6 +37,8 @@ class UpdateCheckerTest {
             channel = channel,
             repository = "Noctorium/Noctorium-Installer",
             apiBase = github.url("/").toString().trimEnd('/'),
+            // The release below is built for x64, so this is an x64 machine whatever runs the test.
+            architecture = "x64",
         )
 
     private fun release(tag: String) = """
