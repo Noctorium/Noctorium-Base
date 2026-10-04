@@ -190,9 +190,10 @@ internal fun UpdateChannel.matches(fileName: String, architecture: String = host
     // The installers ride along in every release, and one of them is an .apk too: never the update.
     if ("installer" in name) return false
     val extensionFits = when (this) {
-        // The exe is preferred over the msi: it is what the workflow builds for people to run, and the
-        // msi is there for deployment, where an updater is not what does the updating.
-        UpdateChannel.WINDOWS_INSTALLER -> name.endsWith("-setup.exe")
+        // The msi, not the exe. The exe is only the msi wrapped up: run, it writes the whole 300 MB msi out
+        // to a temporary folder again and hands that to msiexec, and an antivirus reads every byte both
+        // times. An update that already has the msi can go to msiexec directly and skip all of that.
+        UpdateChannel.WINDOWS_INSTALLER -> name.endsWith(".msi")
         UpdateChannel.DEBIAN_PACKAGE -> name.endsWith(".deb")
         UpdateChannel.FEDORA_PACKAGE -> name.endsWith(".rpm")
         UpdateChannel.ARCH_PACKAGE -> name.endsWith(".pkg.tar.zst")

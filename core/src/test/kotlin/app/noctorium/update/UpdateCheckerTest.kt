@@ -59,7 +59,7 @@ class UpdateCheckerTest {
     """.trimIndent()
 
     private val sums = """
-        1111111111111111111111111111111111111111111111111111111111111111  Noctorium-1.2.3-windows-x64-setup.exe
+        1111111111111111111111111111111111111111111111111111111111111111  Noctorium-1.2.3-windows-x64.msi
         2222222222222222222222222222222222222222222222222222222222222222  noctorium_1.2.3_amd64.deb
         3333333333333333333333333333333333333333333333333333333333333333  Noctorium-1.2.3.apk
     """.trimIndent()
@@ -74,8 +74,8 @@ class UpdateCheckerTest {
         assertTrue(result is UpdateCheck.Available, "a newer release was not offered: $result")
         val update = (result as UpdateCheck.Available).update
         assertEquals("1.2.3", update.version.toString())
-        // The exe, not the msi: the msi is for deployment, where an updater is not what updates.
-        assertEquals("Noctorium-1.2.3-windows-x64-setup.exe", update.file?.name)
+        // The msi, not the exe: the exe is the same msi in a wrapper that would only unpack it again.
+        assertEquals("Noctorium-1.2.3-windows-x64.msi", update.file?.name)
         assertEquals("1111111111111111111111111111111111111111111111111111111111111111", update.sha256)
         assertTrue(update.pageUrl.endsWith("/v1.2.3"))
     }
@@ -221,11 +221,11 @@ class AssetArchitectureTest {
 
     @Test
     fun `Noctorium's own release still matches on both platforms`() {
-        assertTrue(UpdateChannel.WINDOWS_INSTALLER.matches("Noctorium-1.2.3-windows-x64-setup.exe", "x64"))
+        assertTrue(UpdateChannel.WINDOWS_INSTALLER.matches("Noctorium-1.2.3-windows-x64.msi", "x64"))
         assertTrue(UpdateChannel.DEBIAN_PACKAGE.matches("noctorium_1.2.3_amd64.deb", "x64"))
         assertTrue(UpdateChannel.FEDORA_PACKAGE.matches("noctorium-1.2.3.x86_64.rpm", "x64"))
-        // And the msi is still not what an updater reaches for.
-        assertFalse(UpdateChannel.WINDOWS_INSTALLER.matches("Noctorium-1.2.3-windows-x64.msi", "x64"))
+        // And the exe, which is the msi in a wrapper, is no longer what an updater reaches for.
+        assertFalse(UpdateChannel.WINDOWS_INSTALLER.matches("Noctorium-1.2.3-windows-x64-setup.exe", "x64"))
     }
 }
 
@@ -315,7 +315,7 @@ class MacFormatsTest {
 
     @Test
     fun `the other platforms find exactly what they did before the disk images arrived`() {
-        assertEquals(listOf("Noctorium-0.8.0-windows-x64-setup.exe"), chosen(UpdateChannel.WINDOWS_INSTALLER, "x64"))
+        assertEquals(listOf("Noctorium-0.8.0-windows-x64.msi"), chosen(UpdateChannel.WINDOWS_INSTALLER, "x64"))
         assertEquals(listOf("noctorium_0.8.0_amd64.deb"), chosen(UpdateChannel.DEBIAN_PACKAGE, "x64"))
         assertEquals(listOf("noctorium-0.8.0.x86_64.rpm"), chosen(UpdateChannel.FEDORA_PACKAGE, "x64"))
         assertEquals(listOf("noctorium-0.8.0-1-x86_64.pkg.tar.zst"), chosen(UpdateChannel.ARCH_PACKAGE, "x64"))
