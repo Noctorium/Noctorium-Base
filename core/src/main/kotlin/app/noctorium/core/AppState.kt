@@ -110,6 +110,7 @@ import app.noctorium.update.UpdateChecker
 import app.noctorium.update.UpdateDownloader
 import app.noctorium.update.UpdateInstaller
 import app.noctorium.update.UpdateState
+import app.noctorium.update.fetchAndInstall
 import app.noctorium.update.shouldPromptAbout
 import app.noctorium.account.NoctoriumUser
 import app.noctorium.settings.*
@@ -332,6 +333,13 @@ class AppState(
     private val networkPresence: NetworkPresence = NetworkPresence.None,
     /** What this platform can do about a new version, which on some of them is nothing. */
     private val updateInstaller: UpdateInstaller = UpdateInstaller.none(),
+    /**
+     * Whether the one quiet check at launch is this class's to make. The terminal player says no: it is
+     * started many times a day, for a single search as often as for an evening of music, and every start
+     * asking GitHub would soon use up the sixty questions an hour GitHub answers without an account. It
+     * decides for itself when a check is due, and makes it.
+     */
+    private val checkForUpdatesAtLaunch: Boolean = true,
 ) : AutoCloseable {
     /**
      * Spotify's tokens, read from and written to where the rest of Noctorium keeps such things.
@@ -565,7 +573,7 @@ class AppState(
         startConnect()
         // One quiet request, and only when it has been left switched on. Nothing is said unless there is
         // something to say.
-        if (storedPreferences.updates.checkOnLaunch) checkForUpdates(quietly = true)
+        if (checkForUpdatesAtLaunch && storedPreferences.updates.checkOnLaunch) checkForUpdates(quietly = true)
         // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
         scope.launch(Dispatchers.IO) { publishSpotifyState() }
         scope.launch(Dispatchers.IO) {
@@ -3183,24 +3191,11 @@ class AppState(
         updateJob = scope.launch {
             // Saying yes closes the offer as surely as saying no does.
             mutableUpdates.update { it.copy(prompt = null, downloading = 0f, message = null) }
-            val target = updateInstaller.downloadDirectory().resolve(file.name)
-            val outcome = updateDownloader.fetch(file, update.sha256, target) { fraction ->
+            // The download, the checksum and the handover, by the same road the terminal player takes.
+            val outcome = updateInstaller.fetchAndInstall(update, updateDownloader) { fraction ->
                 mutableUpdates.update { it.copy(downloading = fraction) }
             }
-            when (outcome) {
-                is UpdateDownloader.Outcome.Failed -> mutableUpdates.update {
-                    it.copy(downloading = null, message = outcome.message)
-                }
-                is UpdateDownloader.Outcome.Ready -> {
-                    val refusal = updateInstaller.install(outcome.file)
-                    mutableUpdates.update {
-                        it.copy(
-                            downloading = null,
-                            message = refusal ?: "Installing. Noctorium will close.",
-                        )
-                    }
-                }
-            }
+            mutableUpdates.update { it.copy(downloading = null, message = outcome.message) }
         }
     }
 

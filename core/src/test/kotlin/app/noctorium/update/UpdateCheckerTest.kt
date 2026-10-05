@@ -305,7 +305,10 @@ class MacFormatsTest {
         listOf("x64", "arm64").forEach { architecture ->
             UpdateChannel.entries.forEach { channel ->
                 val taken = chosen(channel, architecture)
-                assertTrue(taken.none { it.startsWith("noctorium-cli-") }, "$channel on $architecture took $taken")
+                // The terminal player's own channel is the one that does want its archives; see CliArchiveTest.
+                if (channel != UpdateChannel.CLI_ARCHIVE) {
+                    assertTrue(taken.none { it.startsWith("noctorium-cli-") }, "$channel on $architecture took $taken")
+                }
                 assertTrue(taken.none { "installer" in it.lowercase() }, "$channel on $architecture took $taken")
             }
         }

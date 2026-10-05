@@ -33,6 +33,13 @@ enum class UpdateChannel {
      */
     MAC_DMG,
     ANDROID_APK,
+    /**
+     * The terminal player, unpacked from the release's archive into a folder its user owns: where the
+     * installer puts it, or wherever somebody unpacked it by hand. There is one archive per system and
+     * architecture -- a .zip for Windows, a .tar.gz for Linux and each kind of Mac -- and an update is the
+     * next one, unpacked beside the folder and swapped in once nothing is running out of the old copy.
+     */
+    CLI_ARCHIVE,
     UNMANAGED,
     ;
 
@@ -95,6 +102,12 @@ class UpdateChecker(
      * release built for x64 and have to get the same answer on an Apple silicon runner as on any other.
      */
     private val architecture: String = hostArchitecture(),
+    /**
+     * This machine's system, as the release files name it: windows, linux or macos. Overridden only by tests,
+     * for the same reason as [architecture]: the terminal player's archives differ by system, and a test of
+     * the Linux one has to pass on Windows too.
+     */
+    private val operatingSystem: String = hostOperatingSystem(),
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -131,7 +144,7 @@ class UpdateChecker(
                 version = latest,
                 pageUrl = release.htmlUrl,
                 notes = release.body.orEmpty(),
-                file = files.firstOrNull { channel.matches(it.name, architecture) },
+                file = files.firstOrNull { channel.matches(it.name, architecture, operatingSystem) },
                 sha256 = checksumFor(files, channel),
             ),
         )
@@ -144,7 +157,7 @@ class UpdateChecker(
      * anything is downloaded, and the installer can refuse rather than discovering it halfway through.
      */
     private suspend fun checksumFor(files: List<ReleaseFile>, channel: UpdateChannel): String? {
-        val wanted = files.firstOrNull { channel.matches(it.name, architecture) } ?: return null
+        val wanted = files.firstOrNull { channel.matches(it.name, architecture, operatingSystem) } ?: return null
         val sums = files.firstOrNull { it.name.equals(CHECKSUM_FILE, ignoreCase = true) } ?: return null
         val reply = http.send(sums.url, timeoutSeconds = 15)
         if (!reply.ok) return null
@@ -184,10 +197,19 @@ class UpdateChecker(
  * package per platform, so the bare rule works today and would quietly stop working the day it does not.
  *
  * A name that mentions no architecture at all is taken as universal, which is what a lone .apk is.
+ *
+ * [operatingSystem] only matters to the terminal player, whose archives are the one kind of file published
+ * for all three systems: the desktop's formats each belong to one already.
  */
-internal fun UpdateChannel.matches(fileName: String, architecture: String = hostArchitecture()): Boolean {
+internal fun UpdateChannel.matches(
+    fileName: String,
+    architecture: String = hostArchitecture(),
+    operatingSystem: String = hostOperatingSystem(),
+): Boolean {
     val name = fileName.lowercase()
-    // The installers ride along in every release, and one of them is an .apk too: never the update.
+    // The installers ride along in every release, and one of them is an .apk too: never the update. The
+    // terminal installers are named noctorium-installer-cli-*, which is the trap this line also closes for
+    // the archive below: they mention the CLI and they are not it.
     if ("installer" in name) return false
     val extensionFits = when (this) {
         // The msi, not the exe. The exe is only the msi wrapped up: run, it writes the whole 300 MB msi out
@@ -203,6 +225,12 @@ internal fun UpdateChannel.matches(fileName: String, architecture: String = host
         // installer is a bare program, so neither can be mistaken for this however their names read.
         UpdateChannel.MAC_DMG -> name.endsWith(".dmg")
         UpdateChannel.ANDROID_APK -> name.endsWith(".apk")
+        // noctorium-cli-<version>-<system>-<architecture>, as a .zip on Windows and a .tar.gz elsewhere. The
+        // system is checked by name because the extension alone cannot tell Linux from a Mac, and an archive
+        // for the wrong one unpacks perfectly and then cannot run a single program inside it.
+        UpdateChannel.CLI_ARCHIVE -> name.startsWith("noctorium-cli-") &&
+            "-$operatingSystem-" in name &&
+            name.endsWith(if (operatingSystem == "windows") ".zip" else ".tar.gz")
         UpdateChannel.UNMANAGED -> false
     }
     if (!extensionFits) return false
@@ -230,6 +258,21 @@ internal fun hostArchitecture(): String =
         "aarch64", "arm64" -> "arm64"
         else -> "x64"
     }
+
+/**
+ * Which system this is, as the terminal player's archives are named: windows, macos or linux.
+ *
+ * Anything that is neither Windows nor a Mac is called linux, which is also what Android reports itself
+ * as -- harmless, since a phone updates through its own channel and never asks for an archive.
+ */
+internal fun hostOperatingSystem(): String {
+    val name = System.getProperty("os.name").orEmpty().lowercase()
+    return when {
+        name.startsWith("windows") -> "windows"
+        name.startsWith("mac") -> "macos"
+        else -> "linux"
+    }
+}
 
 /*
  * Named exactly as GitHub sends them.
