@@ -381,3 +381,47 @@ class SpotifyAuthTest {
         assertTrue(!SpotifyTokens("", "refresh", now + 600).isFresh(now))
     }
 }
+
+/** A 403 from Spotify, which is two different rules with two different fixes. */
+class SpotifyRefusalTest {
+    private val playlistsUrl = "${SpotifyClient.API}/me/playlists?limit=50"
+
+    private fun refusal(body: String) = runBlocking {
+        SpotifyClient(ScriptedSpotify(mapOf(playlistsUrl to SpotifyResponse(403, body)))).playlists("token")
+    }
+
+    @Test
+    fun `an app whose owner has no Premium is said to be that, in Spotify's own words`() {
+        // Exactly what Spotify answered a real sign-in through Noctorium's app on 5 October 2026.
+        val said = "Active premium subscription required for the owner of the app. When the subscription " +
+            "status changes, it can take a few hours before requests are allowed again."
+        // As it really arrived: bare text, not Spotify's usual JSON. And in the JSON form, should it change.
+        listOf(said, """{"error":{"status":403,"message":"$said"}}""").forEach { body ->
+            val read = refusal(body)
+            assertIs<SpotifyRead.Failed>(read)
+            assertTrue("(403)" in read.detail, read.detail)
+            assertTrue("owns the Spotify app" in read.detail && "Premium" in read.detail, read.detail)
+            assertTrue(said in read.detail, "Spotify's own words are kept: ${read.detail}")
+            assertTrue("user list" !in read.detail, "not the other rule: ${read.detail}")
+        }
+    }
+
+    @Test
+    fun `a page of HTML is not passed on as Spotify's words`() {
+        val read = refusal("<html><body>Forbidden</body></html>")
+        assertIs<SpotifyRead.Failed>(read)
+        assertTrue("<html>" !in read.detail, read.detail)
+    }
+
+    @Test
+    fun `any other 403 is the user list, with whatever Spotify said`() {
+        val plain = refusal("")
+        assertIs<SpotifyRead.Failed>(plain)
+        assertTrue("user list" in plain.detail && "Premium" !in plain.detail, plain.detail)
+
+        val worded = refusal("""{"error":{"status":403,"message":"User not registered in the Developer Dashboard"}}""")
+        assertIs<SpotifyRead.Failed>(worded)
+        assertTrue("User not registered in the Developer Dashboard" in worded.detail, worded.detail)
+        assertTrue("user list" in worded.detail, worded.detail)
+    }
+}

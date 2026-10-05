@@ -125,6 +125,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -820,14 +821,26 @@ class AppState(
      * account with 403. Through the listener's own app that is theirs to fix in the dashboard; through
      * Noctorium's it is not, so the way out is named instead.
      */
-    private fun spotifyRefusal(detail: String): String =
-        if (detail.contains("(403)") && !mutableSettings.value.preferences.usesOwnSpotifyApp) {
-            "Spotify signed you in, but it only lets Noctorium's Spotify app read the accounts added to it so " +
-                "far, and yours is not one yet. You can use a Spotify app of your own instead, under Use your " +
-                "own Spotify app in Settings."
-        } else {
-            detail
+    private fun spotifyRefusal(detail: String): String {
+        val ownApp = mutableSettings.value.preferences.usesOwnSpotifyApp
+        return when {
+            // Spotify's own reason, which is about the app's owner and not about the listener at all. Telling
+            // them their account is missing from a list, as this once did, sends them looking for the wrong fix.
+            detail.contains("(403)") && detail.contains("Premium", ignoreCase = true) -> if (ownApp) {
+                "Spotify signed you in, but it reads nothing through your Spotify app until the account that owns " +
+                    "the app has Spotify Premium. Once it has, Spotify can take a few hours to allow it."
+            } else {
+                "Spotify signed you in, but it reads nothing through Noctorium's Spotify app until the account " +
+                    "that owns that app has Spotify Premium. If yours has Premium, a Spotify app of your own " +
+                    "works instead, under Use your own Spotify app in Settings."
+            }
+            detail.contains("(403)") && !ownApp ->
+                "Spotify signed you in, but it only lets Noctorium's Spotify app read the accounts added to it so " +
+                    "far, and yours is not one yet. You can use a Spotify app of your own instead, under Use your " +
+                    "own Spotify app in Settings."
+            else -> detail
         }
+    }
 
     /**
      * Forgets the Spotify sign-in.
@@ -918,7 +931,11 @@ class AppState(
     /** Loads the listener's own playlists from every provider whose session is configured. */
     fun refreshLibrary(force: Boolean = false) {
         val current = mutableLibrary.value
-        if (current.loading) return
+        // A forced reload -- the reload button, or an account just connected -- takes over from one already
+        // under way instead of giving way to it. The one under way may have started before the account was
+        // there, and would finish without it: Spotify connected while the library was loading was left out of
+        // it until the listing went stale, five minutes later.
+        if (current.loading && !force) return
         // Playlists change on the service too, so a listing that has sat around for a while is refetched when
         // the library is opened rather than staying as it was for the whole session.
         val stale = System.currentTimeMillis() - current.loadedAtMillis > LIBRARY_STALE_AFTER_MS
@@ -973,21 +990,36 @@ class AppState(
             val playlists = soundCloudOwn.orEmpty() + results.flatMap { (_, result) -> result.getOrDefault(emptyList()) }
             val failures = results.mapNotNull { (type, result) ->
                 result.exceptionOrNull()?.let { error ->
-                    libraryFailureMessage(type, error).let { if (type == ProviderType.SPOTIFY) spotifyRefusal(it) else it }
+                    val message = libraryFailureMessage(type, error).let { if (type == ProviderType.SPOTIFY) spotifyRefusal(it) else it }
+                    // Named, since it may now sit above another service's playlists rather than in place of them.
+                    val label = providerLabel(type.accountSlot() ?: type)
+                    if (message.contains(label, ignoreCase = true)) message else "$label: $message"
                 }
+            }
+            // The Spotify card says why as well, rather than going on reading "connected" over a library that
+            // Spotify will not hand over.
+            results.firstOrNull { (type, _) -> type == ProviderType.SPOTIFY }?.second?.exceptionOrNull()?.let { error ->
+                publishSpotifyState(message = spotifyRefusal(libraryFailureMessage(ProviderType.SPOTIFY, error)))
             }
             // A client id of the listener's own saved but never connected is a half-finished setup, and it
             // otherwise ends in an empty library that explains nothing — the provider has no session to fail
             // with. Not connecting through Noctorium's own app is simply not using Spotify, and says nothing.
             val spotifyHalfWay = preferences.usesOwnSpotifyApp &&
                 !withContext(Dispatchers.IO) { spotifyAccess.isConnected() }
+            // A forced reload cancels this one, and every read above is wrapped in runCatching, which takes a
+            // cancellation for an ordinary failure and carries on. Checked here, so a listing that was replaced
+            // never lands on top of the one that replaced it.
+            ensureActive()
             mutableLibrary.update {
                 it.withRefreshedPlaylists(playlists).copy(
                     loading = false,
                     loaded = true,
                     loadedAtMillis = System.currentTimeMillis(),
                     needsSoundCloudUsername = wantsSoundCloudName,
-                    errorMessage = failures.firstOrNull()?.takeIf { playlists.isEmpty() }
+                    // Said whether or not another service's playlists arrived. Shown only when nothing did, a
+                    // Spotify that refused to be read sat silently behind a list of SoundCloud playlists, and
+                    // the library looked as though Spotify had nothing in it.
+                    errorMessage = failures.joinToString("\n").takeIf(String::isNotBlank)
                         ?: "Connect Spotify under Settings › Spotify library to see your playlists here."
                             .takeIf { spotifyHalfWay && playlists.isEmpty() },
                 )

@@ -24,6 +24,24 @@ import java.nio.charset.StandardCharsets
 
 internal data class SpotifyResponse(val status: Int, val body: String)
 
+/**
+ * A line on standard error for each thing Spotify refused or did not answer: where a desktop's log and a
+ * phone's logcat both pick it up, so that "the library is empty" can be told apart from "Spotify said no, and
+ * this is what it said". Never a token -- only the address asked for, which carries none, the status, and the
+ * start of Spotify's own reply, which is an error and not a library.
+ */
+internal object SpotifyLog {
+    fun failure(what: String, status: Int, detail: String) =
+        say("$what -> ${if (status == Http.UNREACHABLE) "no answer" else "HTTP $status"} $detail")
+
+    /** Something that went wrong with no HTTP answer to it, such as a sign-in that never came back. */
+    fun note(what: String, detail: String) = say("$what: $detail")
+
+    private fun say(line: String) {
+        System.err.println("Noctorium Spotify: " + line.replace(Regex("\\s+"), " ").take(400))
+    }
+}
+
 internal interface SpotifyHttp {
     suspend fun get(url: String, accessToken: String): SpotifyResponse
 }
@@ -155,8 +173,10 @@ class SpotifyClient internal constructor(
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
+            SpotifyLog.failure("GET ${url.removePrefix(API)}", Http.UNREACHABLE, error.message.orEmpty())
             return SpotifyRead.Failed("Could not reach Spotify: ${error.message}")
         }
+        if (response.status !in 200..299) SpotifyLog.failure("GET ${url.removePrefix(API)}", response.status, response.body)
         when (response.status) {
             // The request never got an answer. Distinct from every refusal below, because it says nothing
             // about the sign-in and must not be allowed to look as though Spotify rejected it.
@@ -164,25 +184,34 @@ class SpotifyClient internal constructor(
             401 -> return SpotifyRead.Unauthorized(
                 "Spotify no longer accepts this sign-in. Connect it again in Settings.",
             )
-            // Kept apart from 401 on purpose: the token is good and the account is simply not allowed. On a
-            // Spotify app still in development mode that means the listener is not on its user list, which
-            // no amount of signing in again will fix.
-            403 -> return SpotifyRead.Failed(
-                "Spotify refused the request (403). If your Spotify app is in development mode, add your " +
-                    "own Spotify account to its user list.",
-            )
+            // Kept apart from 401 on purpose: the token is good and the account is simply not allowed, which no
+            // amount of signing in again will fix. Spotify says in the reply which rule it is applying, and
+            // the two seen so far want different things done, so what it said is carried along.
+            403 -> return SpotifyRead.Failed(refusedBecause(spotifyMessage(response.body)))
             429 -> return SpotifyRead.Failed("Spotify is rate-limiting this account. Try again shortly.")
         }
         if (response.status !in 200..299) {
-            val message = runCatching {
-                json.parseToJsonElement(response.body).jsonObject["error"]
-                    ?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
-            }.getOrNull()
+            val message = spotifyMessage(response.body)
             return SpotifyRead.Failed(message?.let { "Spotify: $it" } ?: "Spotify answered HTTP ${response.status}.")
         }
         val parsed = runCatching { json.parseToJsonElement(response.body).jsonObject }.getOrNull()
             ?: return SpotifyRead.Failed("Spotify sent a reply this could not read.")
         return SpotifyRead.Ok(parsed)
+    }
+
+    /**
+     * What Spotify said was wrong: the message in its usual `{"error":{"status":403,"message":"…"}}`, or the
+     * reply itself when it is plain words -- the refusal over an app owner without Premium arrives as bare text,
+     * not JSON, and reading only the JSON form lost the one sentence that explained it.
+     */
+    private fun spotifyMessage(body: String): String? {
+        val text = body.trim().takeIf(String::isNotEmpty) ?: return null
+        runCatching {
+            json.parseToJsonElement(text).jsonObject["error"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
+        }.getOrNull()?.trim()?.takeIf(String::isNotBlank)?.let { return it }
+        // Not JSON and not a page of HTML: words, worth passing on as they are.
+        return text.takeIf { !it.startsWith("{") && !it.startsWith("[") && !it.startsWith("<") }
+            ?.replace(Regex("\\s+"), " ")?.take(300)
     }
 
     internal companion object {
@@ -194,6 +223,23 @@ class SpotifyClient internal constructor(
         /** Enough for any real library, and a stop for a loop that would otherwise page forever. */
         const val MAX_TRACKS = 10_000
         const val MAX_PAGES = 200
+
+        /**
+         * What a 403 means, in Spotify's own words where it gave some.
+         *
+         * Spotify reads nothing at all through an app in development mode unless the account that owns the
+         * app has an active Premium subscription -- and the sign-in itself still works, which is what makes it
+         * look like a fault here rather than a rule there. Otherwise a 403 is the older rule, an account that
+         * is not on such an app's user list.
+         */
+        fun refusedBecause(said: String?): String = when {
+            said?.contains("premium", ignoreCase = true) == true ->
+                "Spotify refused the request (403): the account that owns the Spotify app it came through needs " +
+                    "an active Spotify Premium subscription. Spotify said: \"$said\""
+            else ->
+                "Spotify refused the request (403)${said?.let { ": $it" }.orEmpty()}. If your Spotify app is in " +
+                    "development mode, add your own Spotify account to its user list."
+        }
 
         fun likedSongsPlaylist(count: Int? = null) = Playlist(
             id = LIKED_SONGS_ID,

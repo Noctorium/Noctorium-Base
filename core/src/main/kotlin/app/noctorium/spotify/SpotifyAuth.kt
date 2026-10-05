@@ -97,9 +97,11 @@ class SpotifyAuth internal constructor(
         // The state proves the reply belongs to the request that was sent, and not to something else that
         // happened to arrive on this port while it was open.
         if (fields == null || fields["state"] != state) {
+            SpotifyLog.note("the sign-in", if (fields == null) "no reply reached the app" else "a reply for another attempt")
             return Result.Failure("Spotify did not send an authorisation back.")
         }
         fields["error"]?.let { refusal ->
+            SpotifyLog.note("the sign-in", "Spotify answered error=$refusal")
             return Result.Failure(
                 if (refusal == "access_denied") {
                     "You did not give Noctorium permission to read your Spotify library."
@@ -153,11 +155,14 @@ class SpotifyAuth internal constructor(
         if (reply.status == Http.UNREACHABLE) {
             // Never a refusal: nothing was rejected because nothing arrived. Marking it as one here would
             // sign a listener out of Spotify for having no connection.
+            SpotifyLog.failure("the token request", reply.status, reply.body)
             return Result.Failure("Could not reach Spotify: ${reply.body}")
         }
 
         val parsed = runCatching { json.parseToJsonElement(reply.body).jsonObject }.getOrNull()
         if (!reply.ok) {
+            // Spotify's error, never the request: that carries the code, the verifier or the refresh token.
+            SpotifyLog.failure("the token request", reply.status, reply.body)
             val code = parsed?.get("error")?.jsonPrimitive?.contentOrNull.orEmpty()
             val described = parsed?.get("error_description")?.jsonPrimitive?.contentOrNull
                 ?: code.takeIf(String::isNotBlank)
