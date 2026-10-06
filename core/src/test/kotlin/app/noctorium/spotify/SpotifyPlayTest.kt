@@ -202,6 +202,24 @@ class SpotifyConnectEngineTest {
     }
 
     @Test
+    fun `with nothing more queued here, Spotify's own autoplay is followed instead of stopped`() {
+        val http = Scripted { method, url -> if (method == "GET" && url.endsWith("/devices")) devices() else SpotifyResponse(204, "") }
+        val followed = mutableListOf<String>()
+        val engine = SpotifyConnectEngine(SpotifyClient(http), { "token" }, { "" }, scope, followAfterEnd = { next -> followed += next.id; true })
+        runBlocking { engine.play(song) }
+        val chosen = Track(ProviderType.SPOTIFY, "auto1", "Chosen by Spotify", song.artists, durationMs = 180_000, sourceUrl = "https://open.spotify.com/track/auto1")
+        engine.follow(song, SpotifyPlayerState(true, 197_000, "t1", 200_000, null))
+        engine.follow(song, SpotifyPlayerState(true, 1_500, "auto1", 180_000, null, track = chosen))
+
+        assertEquals(listOf("auto1"), followed)
+        assertEquals(PlaybackStatus.PLAYING, engine.state.value.status)
+        assertEquals("auto1", engine.state.value.track?.id)
+        assertEquals(1_500, engine.state.value.positionMs)
+        // Nothing was paused: Spotify keeps playing its choice.
+        assertTrue(http.asked.none { it.startsWith("PUT") && it.contains("/pause") })
+    }
+
+    @Test
     fun `pausing in Spotify shows as paused here`() {
         val engine = engine { method, url -> if (method == "GET" && url.endsWith("/devices")) devices() else SpotifyResponse(204, "") }
         playing(engine)

@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlin.random.Random
 
+@kotlinx.serialization.Serializable
 enum class RepeatMode { OFF, ALL, ONE }
 
 data class QueueState(
@@ -18,8 +19,23 @@ data class QueueState(
     val shuffleEnabled: Boolean = false,
     val repeatMode: RepeatMode = RepeatMode.OFF,
     val originalOrder: List<Track> = tracks,
+    /**
+     * What autoplay has lined up after the queue: songs like the last one, from that song's own service.
+     *
+     * Shown under the queue before it runs out, so what comes next is never a surprise, and played once it
+     * does -- by itself, or by pressing next. Kept apart from [tracks] because these were not chosen: the
+     * listener can drop one, keep one, or switch autoplay off, and the queue they built stays as they built it.
+     */
+    val suggestions: List<Track> = emptyList(),
+    /** Where the suggestions come from, as the queue shows it: "YouTube Music radio", "Related on SoundCloud". */
+    val suggestionsFrom: String? = null,
+    /** The song the suggestions follow, and how they were asked for: so they are asked for once a song. */
+    val suggestionsSeed: String? = null,
 ) {
     val current: Track? get() = tracks.getOrNull(currentIndex)
+
+    /** What is still to come in the queue itself, after the song playing. Suggestions are not part of it. */
+    val upNext: List<Track> get() = if (currentIndex < 0) tracks else tracks.drop(currentIndex + 1)
 
     /**
      * Whether next and previous would go anywhere.
@@ -29,7 +45,8 @@ data class QueueState(
      * and it is told once, when the state is published.
      */
     val hasNext: Boolean
-        get() = tracks.isNotEmpty() && (currentIndex < tracks.lastIndex || repeatMode == RepeatMode.ALL)
+        get() = tracks.isNotEmpty() &&
+            (currentIndex < tracks.lastIndex || repeatMode == RepeatMode.ALL || suggestions.isNotEmpty())
 
     val hasPrevious: Boolean
         get() = tracks.isNotEmpty() && (currentIndex > 0 || repeatMode == RepeatMode.ALL)
@@ -47,7 +64,7 @@ data class QueueState(
             repeatMode == RepeatMode.ONE -> current
             currentIndex < tracks.lastIndex -> tracks[currentIndex + 1]
             repeatMode == RepeatMode.ALL -> tracks.first()
-            else -> null
+            else -> suggestions.firstOrNull()
         }
 }
 
@@ -142,12 +159,108 @@ class QueueManager(private val random: Random = Random.Default) {
                 respectRepeatOne && current.repeatMode == RepeatMode.ONE -> current.currentIndex
                 current.currentIndex < current.tracks.lastIndex -> current.currentIndex + 1
                 current.repeatMode == RepeatMode.ALL -> 0
+                // The end of the queue, with autoplay's songs waiting: they join it, and the first plays.
+                current.suggestions.isNotEmpty() -> {
+                    moved = true
+                    return@updateAndGet current.copy(
+                        tracks = current.tracks + current.suggestions,
+                        originalOrder = current.originalOrder + current.suggestions,
+                        currentIndex = current.tracks.size,
+                        suggestions = emptyList(),
+                    )
+                }
                 else -> null
             }
             moved = nextIndex != null
             if (nextIndex == null) current else current.copy(currentIndex = nextIndex)
         }
         return if (moved) updated.current else null
+    }
+
+    /**
+     * Lines up autoplay's songs after the queue, for the song named by [seed].
+     *
+     * Anything already in the queue is left out, so a radio that starts with the song itself, or a song
+     * the listener queued anyway, does not play twice in a row.
+     */
+    fun setSuggestions(seed: String, tracks: List<Track>, from: String?) = mutableState.update { current ->
+        val queued = current.tracks.mapTo(HashSet(), Track::queueKey)
+        current.copy(
+            suggestions = tracks.filterNot { it.queueKey in queued }.distinctBy(Track::queueKey),
+            suggestionsFrom = from,
+            suggestionsSeed = seed,
+        )
+    }
+
+    fun clearSuggestions() = mutableState.update {
+        if (it.suggestions.isEmpty() && it.suggestionsSeed == null) it
+        else it.copy(suggestions = emptyList(), suggestionsFrom = null, suggestionsSeed = null)
+    }
+
+    /** Drops one of autoplay's songs. */
+    fun removeSuggestion(index: Int) = mutableState.update { current ->
+        if (index !in current.suggestions.indices) current
+        else current.copy(suggestions = current.suggestions.toMutableList().apply { removeAt(index) })
+    }
+
+    /** Keeps one of autoplay's songs: it joins the end of the queue, as if added by hand. */
+    fun keepSuggestion(index: Int) = mutableState.update { current ->
+        val kept = current.suggestions.getOrNull(index) ?: return@update current
+        current.copy(
+            tracks = current.tracks + kept,
+            originalOrder = current.originalOrder + kept,
+            suggestions = current.suggestions.toMutableList().apply { removeAt(index) },
+        )
+    }
+
+    /**
+     * Plays one of autoplay's songs now: it and the ones before it join the queue, and it plays.
+     *
+     * The ones before it come along, in order, rather than being skipped, so pressing a song further down
+     * the suggestions is "go there" and not "throw away everything before it".
+     */
+    fun playSuggestion(index: Int): Track? {
+        var chosen: Track? = null
+        mutableState.update { current ->
+            if (index !in current.suggestions.indices) return@update current
+            val joining = current.suggestions.take(index + 1)
+            chosen = joining.last()
+            current.copy(
+                tracks = current.tracks + joining,
+                originalOrder = current.originalOrder + joining,
+                currentIndex = current.tracks.size + index,
+                suggestions = current.suggestions.drop(index + 1),
+            )
+        }
+        return chosen
+    }
+
+    /** Shuffles what is still to come, leaving the song playing and everything before it where they are. */
+    fun shuffleUpcoming() = mutableState.update { current ->
+        if (current.upNext.size < 2) return@update current
+        val kept = current.tracks.take(current.currentIndex + 1)
+        val shuffled = kept + current.upNext.shuffled(random)
+        current.copy(tracks = shuffled, originalOrder = if (current.shuffleEnabled) current.originalOrder else shuffled)
+    }
+
+    /** Empties what is still to come, keeping the song playing and what has already played. */
+    fun clearUpcoming() = mutableState.update { current ->
+        if (current.upNext.isEmpty()) return@update current
+        val kept = current.tracks.take(current.currentIndex + 1)
+        val keptKeys = kept.mapTo(HashSet(), Track::queueKey)
+        current.copy(tracks = kept, originalOrder = current.originalOrder.filter { it.queueKey in keptKeys })
+    }
+
+    /** A queue kept from an earlier session, put back as it was, without playing anything. */
+    fun restore(tracks: List<Track>, index: Int, context: PlaybackContext?, repeatMode: RepeatMode) {
+        if (tracks.isEmpty() || mutableState.value.tracks.isNotEmpty()) return
+        mutableState.value = QueueState(
+            tracks = tracks,
+            currentIndex = index.coerceIn(0, tracks.lastIndex),
+            context = context,
+            repeatMode = repeatMode,
+            originalOrder = tracks,
+        )
     }
 
     fun previous(): Track? {

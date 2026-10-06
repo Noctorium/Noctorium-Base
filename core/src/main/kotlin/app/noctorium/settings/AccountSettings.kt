@@ -440,6 +440,12 @@ data class NoctoriumPreferences(
     val playbackSpeed: Float = 1f,
     /** When the queue runs out, carry on with songs like the last one rather than stopping. */
     val autoplay: Boolean = true,
+    /** Where autoplay's songs come from: the service of the song that ended the queue, or always YouTube Music. */
+    val autoplayFrom: AutoplaySource = AutoplaySource.SAME_SERVICE,
+    /** Autoplay leaves out songs played lately, so the same few do not come round again. */
+    val autoplayAvoidRecent: Boolean = true,
+    /** The queue is kept when Noctorium closes, and picked up where it was left. */
+    val keepQueue: Boolean = true,
     /** The services that answer a Hybrid search. Each still has to be signed in where it needs that. */
     val hybridSearch: Set<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH,
     /** The search mode last chosen, by name, so search opens where it was left. */
@@ -854,6 +860,17 @@ val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
     app.noctorium.domain.ProviderType.SPOTIFY,
     app.noctorium.domain.ProviderType.VK,
 )
+
+/** Where autoplay finds what comes after the queue. */
+@Serializable
+enum class AutoplaySource(val displayName: String, val description: String) {
+    SAME_SERVICE(
+        "The same service",
+        "YouTube Music's radio after a YouTube song, SoundCloud's related tracks after a SoundCloud one, " +
+            "Spotify's own picks after a Spotify song, and so on.",
+    ),
+    YOUTUBE_MUSIC("YouTube Music radio", "YouTube Music's radio after every song, whatever service it came from."),
+}
 
 /** When the phone plays lower-quality audio to use less data. */
 @Serializable

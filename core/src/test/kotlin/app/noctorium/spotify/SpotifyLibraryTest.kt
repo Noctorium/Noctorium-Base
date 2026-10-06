@@ -37,7 +37,7 @@ class SpotifyClientTest {
                     """
                     {"items":[
                       {"id":"37i9dQ","name":"Discover Weekly","public":false,
-                       "owner":{"display_name":"Cem"},
+                       "owner":{"display_name":"Sample Owner"},
                        "tracks":{"total":30},
                        "images":[{"url":"https://i/small.jpg","width":64},{"url":"https://i/big.jpg","width":640}],
                        "external_urls":{"spotify":"https://open.spotify.com/playlist/37i9dQ"}}
@@ -58,7 +58,7 @@ class SpotifyClientTest {
         val weekly = playlists[1]
         assertEquals("Discover Weekly", weekly.title)
         assertEquals(ProviderType.SPOTIFY, weekly.provider)
-        assertEquals("Cem", weekly.ownerName)
+        assertEquals("Sample Owner", weekly.ownerName)
         assertEquals(30, weekly.trackCount)
         assertEquals(false, weekly.isPublic)
         // Cover art rather than a thumbnail, so the largest image is the one taken.

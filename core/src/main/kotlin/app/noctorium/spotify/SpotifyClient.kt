@@ -118,6 +118,8 @@ data class SpotifyPlayerState(
     val trackId: String?,
     val durationMs: Long?,
     val device: SpotifyDevice?,
+    /** What is playing, read in full, for following Spotify when it carries on by itself. */
+    val track: Track? = null,
 )
 
 /**
@@ -326,6 +328,7 @@ class SpotifyClient internal constructor(
                             ?.get("id")?.jsonPrimitive?.contentOrNull,
                         durationMs = item?.get("duration_ms")?.jsonPrimitive?.longOrNull,
                         device = (page.value["device"] as? JsonObject)?.let(::deviceOf),
+                        track = trackOf(item),
                     ),
                 )
             }

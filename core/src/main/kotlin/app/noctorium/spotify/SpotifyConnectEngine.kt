@@ -38,6 +38,11 @@ class SpotifyConnectEngine(
     /** The device the listener chose, by Spotify's id; blank for whichever one Spotify has active. */
     private val preferredDevice: () -> String,
     private val scope: CoroutineScope,
+    /**
+     * Asked when Spotify carries on by itself after the song ended, naming what it went on to: true to
+     * stay with it -- Spotify's own autoplay as the queue -- or false to stop it so Noctorium's queue goes on.
+     */
+    private val followAfterEnd: (Track) -> Boolean = { false },
     private val clock: () -> Long = System::currentTimeMillis,
 ) : PlaybackEngine {
     private val mutableState = MutableStateFlow(PlaybackState())
@@ -231,7 +236,23 @@ class SpotifyConnectEngine(
             // Spotify has moved on from the song. At the end of it, that is the song finishing -- Spotify
             // carries on into something of its own choosing, which is stopped so the queue can say what is
             // next. Anywhere else it is the listener choosing something in Spotify itself.
-            if (nearEnd) finish(stopSpotify = player?.isPlaying == true) else {
+            if (nearEnd) {
+                val next = player?.takeIf { it.isPlaying }?.track
+                if (next != null && followAfterEnd(next)) {
+                    // Spotify's autoplay is the queue now: follow the song it chose, as if it had been asked for.
+                    mutableState.update {
+                        it.copy(
+                            status = PlaybackStatus.PLAYING,
+                            track = next,
+                            positionMs = player.progressMs,
+                            durationMs = next.durationMs ?: player.durationMs ?: 0,
+                            errorMessage = null,
+                        )
+                    }
+                } else {
+                    finish(stopSpotify = player?.isPlaying == true)
+                }
+            } else {
                 interrupted = true
                 mutableState.update {
                     it.copy(

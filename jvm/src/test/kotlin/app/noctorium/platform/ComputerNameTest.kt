@@ -22,10 +22,10 @@ class ComputerNameTest {
         val name = computerName(
             "Mac OS X",
             noEnvironment,
-            { command, _, _ -> asked = command; CommandResult(0, "Cem's MacBook Pro\n", "") },
+            { command, _, _ -> asked = command; CommandResult(0, "Robin's MacBook Pro\n", "") },
             { fail("resolving the host name on a Mac goes out over the local network") },
         )
-        assertEquals("Cem's MacBook Pro", name)
+        assertEquals("Robin's MacBook Pro", name)
         assertEquals(listOf("/usr/sbin/scutil", "--get", "ComputerName"), asked)
     }
 

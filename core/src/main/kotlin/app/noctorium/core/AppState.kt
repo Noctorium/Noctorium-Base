@@ -382,6 +382,9 @@ class AppState(
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
     private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
     private val pinnedRepository: PinnedTracksRepository = PinnedTracksRepository(),
+    /** The queue between launches. See [QueueStore]. */
+    private val queueStore: app.noctorium.playback.QueueStore = app.noctorium.playback.QueueStore(),
+    private val soundCloudRelated: app.noctorium.social.SoundCloudRelatedClient = app.noctorium.social.SoundCloudRelatedClient(),
     private val editsRepository: TrackEditsRepository = TrackEditsRepository(),
     /** Where the parts of a YouTube video that are not the music are looked up. */
     private val sponsorBlock: SponsorBlockClient = SponsorBlockClient(),
@@ -453,6 +456,21 @@ class AppState(
         bandcamp.streamFor(sourceUrl)?.let(::ServiceStream) ?: vk.streamFor(sourceUrl)
     }
 
+    /**
+     * The Spotify song each matched recording stands for, by the recording's queue key.
+     *
+     * A matched Spotify song becomes the recording it was matched to -- see [SpotifyMatch.resolved] -- so
+     * nothing in it says Spotify any more. Autoplay needs to know, to carry on from Spotify rather than from
+     * YouTube. Declared up here because the watchers started in init can reach for it at once.
+     */
+    private val spotifyOrigins = ConcurrentHashMap<String, Track>()
+
+    /** Where in its song the queue was left last time, to pick up from when that song is next played. */
+    @Volatile private var pendingResume: Pair<String, Long>? = null
+
+    /** Asked to look for autoplay's songs again, even though nothing about the queue changed. */
+    private val suggestionsAsked = MutableStateFlow(0)
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         BackendMusicProvider(
@@ -483,6 +501,7 @@ class AppState(
         accessToken = { spotifyAccessToken() },
         preferredDevice = { mutableSettings.value.preferences.spotifyDevice },
         scope = scope,
+        followAfterEnd = { next -> followSpotify(next) },
     )
 
     /**
@@ -671,6 +690,8 @@ class AppState(
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
+        // Before anything that watches the queue starts, so the queue it first sees is the kept one.
+        restoreQueue()
         ytDlp.useServiceStreams(serviceStreams)
         applyAccountPreferences(mutableSettings.value.preferences)
         describeSavedAccounts(mutableSettings.value.preferences)
@@ -689,6 +710,8 @@ class AppState(
         observeSpeed()
         observeSleepFade()
         observeUpcoming()
+        observeSuggestions()
+        observeQueueForKeeping()
         observeNonMusicSegments()
         warmUpForTheLikeliestPlay()
         observeDiscordPresence()
@@ -801,6 +824,57 @@ class AppState(
     fun clearQueue() {
         queue.clear()
         scope.launch { player.stop() }
+    }
+
+    // --- Up next: the queue's own controls, and autoplay's songs after it ---
+
+    /** Shuffles what is still to come in the queue, once, leaving the song playing where it is. */
+    fun shuffleUpcoming() = queue.shuffleUpcoming()
+
+    /** Empties what is still to come, keeping the song playing. */
+    fun clearUpcoming() = queue.clearUpcoming()
+
+    /** Drops one of autoplay's songs. */
+    fun removeSuggestion(index: Int) = queue.removeSuggestion(index)
+
+    /** Keeps one of autoplay's songs in the queue proper. */
+    fun keepSuggestion(index: Int) = queue.keepSuggestion(index)
+
+    /** Plays one of autoplay's songs now; the ones before it join the queue with it. */
+    fun playSuggestion(index: Int) = startPlay { queue.playSuggestion(index) }
+
+    /** Asks for autoplay's songs again: a different radio, the same seed. */
+    fun refreshSuggestions() {
+        queue.clearSuggestions()
+        suggestionsAsked.update { it + 1 }
+    }
+
+    fun setAutoplayFrom(source: AutoplaySource) = updatePreferences { copy(autoplayFrom = source) }
+
+    fun setAutoplayAvoidRecent(enabled: Boolean) = updatePreferences { copy(autoplayAvoidRecent = enabled) }
+
+    /** Whether the queue is kept when Noctorium closes. Off, the kept one is forgotten at once. */
+    fun setKeepQueue(enabled: Boolean) {
+        updatePreferences { copy(keepQueue = enabled) }
+        if (!enabled) scope.launch(Dispatchers.IO) { queueStore.clear() }
+    }
+
+    /** The queue as a playlist made in Noctorium, every song once, in its order. */
+    fun saveQueueAsPlaylist(title: String): LocalPlaylist? {
+        val tracks = queue.state.value.tracks.distinctBy(Track::queueKey)
+        if (tracks.isEmpty()) {
+            libraryNotice("The queue is empty, so there is nothing to save.")
+            return null
+        }
+        val cleanTitle = title.trim().take(120)
+        if (cleanTitle.isBlank()) {
+            libraryNotice("Give the playlist a name first.")
+            return null
+        }
+        val created = LocalPlaylist.create(cleanTitle).copy(tracks = tracks)
+        persistPlaylists(mutableLibrary.value.localPlaylists + created)
+        libraryNotice("Saved the queue as \"$cleanTitle\", ${tracks.size} songs.")
+        return created
     }
 
     fun setProfileName(name: String) {
@@ -1124,7 +1198,10 @@ class AppState(
      * chose is worse than telling them it could not be found.
      */
     private suspend fun resolveSpotify(track: Track): Track? {
-        spotifyMatches[track.id]?.let { return it }
+        spotifyMatches[track.id]?.let { known ->
+            spotifyOrigins[known.queueKey] = track
+            return known
+        }
 
         val query = SpotifyMatch.searchQuery(track)
         val candidates = runCatching { youTubeSongSearch(query, limit = 8) }.getOrDefault(emptyList())
@@ -1148,6 +1225,7 @@ class AppState(
         }
 
         val resolved = SpotifyMatch.resolved(track, match)
+        spotifyOrigins[resolved.queueKey] = track
         withContext(Dispatchers.IO) { spotifyMatches.put(track.id, resolved) }
         return resolved
     }
@@ -3376,6 +3454,11 @@ class AppState(
         if (shown != playable) queue.replace(playable.queueKey, shown)
         rememberRecent(enriched)
         player.play(shown)
+        // The song the queue was left in last time, picked up where it was left.
+        pendingResume?.let { (key, at) ->
+            pendingResume = null
+            if (key == shown.queueKey) seekAfterHandover(at)
+        }
     }
 
     /** Records what was played so Home can open with it next time. Kept as the service named it. */
@@ -3519,30 +3602,187 @@ class AppState(
      */
     private fun carryOn(after: Track?) {
         val seed = after ?: return
-        if (!mutableSettings.value.preferences.autoplay) return
+        val preferences = mutableSettings.value.preferences
+        if (!preferences.autoplay) return
+        // Spotify playing on Spotify carries on by itself, and is followed; see followSpotify.
+        if (playsOnSpotify(seed) && preferences.autoplayFrom == AutoplaySource.SAME_SERVICE) return
         scope.launch {
-            val queued = queue.state.value.tracks.map(Track::queueKey).toSet()
-            val more = runCatching { similarTo(seed) }.getOrDefault(emptyList())
-                .filterNot { it.queueKey in queued }
-                .distinctBy(Track::queueKey)
-                .take(AUTOPLAY_BATCH)
-            if (more.isEmpty()) return@launch
-            PlaybackLog.event("autoplay", mapOf("after" to seed.queueKey, "count" to more.size))
-            more.forEach(queue::addToQueue)
+            val (songs, from) = suggestionsAfter(seed, preferences.autoplayFrom)
+            val chosen = suggestible(songs, seed, preferences.autoplayAvoidRecent)
+            if (chosen.isEmpty()) return@launch
+            PlaybackLog.event("autoplay", mapOf("after" to seed.queueKey, "count" to chosen.size, "from" to from.orEmpty()))
+            queue.setSuggestions("${seed.queueKey}|${preferences.autoplayFrom}", chosen, from)
             queue.next()?.let { playEnriched(it) }
         }
     }
 
-    private suspend fun similarTo(track: Track): List<Track> {
-        val context = PlaybackContext(track.provider, PlaybackOrigin.QUEUE, seedTrackId = track.id)
-        return when (track.provider) {
-            ProviderType.BANDCAMP -> bandcamp.getRecommendations(context)
-            ProviderType.VK -> vk.getRecommendations(context)
-            ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeRadio(track.id)
-            else -> youTubeSongSearch("${track.artistLine} ${track.title}", 1).firstOrNull()
-                ?.let { match -> youTubeRadio(match.id) }.orEmpty()
+    private data class SuggestionRequest(val seed: Track?, val from: AutoplaySource, val avoidRecent: Boolean, val asked: Int)
+
+    /**
+     * Lines up what autoplay will play after the queue, from the service of the song that ends it.
+     *
+     * Asked for while the queue's last song, or the one before it, is playing: early enough to be shown
+     * under the queue and to be waiting when the queue runs out, and not after every song of a long
+     * playlist. A queue that repeats never runs out, and asks for nothing.
+     */
+    private fun observeSuggestions() {
+        scope.launch {
+            combine(
+                queue.state,
+                mutableSettings.map { Triple(it.preferences.autoplay, it.preferences.autoplayFrom, it.preferences.autoplayAvoidRecent) }
+                    .distinctUntilChanged(),
+                suggestionsAsked,
+            ) { state, (autoplay, from, avoidRecent), asked ->
+                val nearEnd = state.repeatMode == RepeatMode.OFF && state.tracks.isNotEmpty() &&
+                    state.currentIndex >= state.tracks.lastIndex - 1
+                SuggestionRequest(state.tracks.lastOrNull()?.takeIf { autoplay && nearEnd }, from, avoidRecent, asked)
+            }
+                .distinctUntilChanged()
+                .collectLatest { request ->
+                    val seed = request.seed
+                    if (seed == null) {
+                        // Autoplay switched off, or songs added after the ones these followed: either way they
+                        // are not what comes next any more.
+                        val kept = queue.state.value
+                        val followsLast = kept.suggestionsSeed?.startsWith("${kept.tracks.lastOrNull()?.queueKey}|") == true
+                        if (!mutableSettings.value.preferences.autoplay || !followsLast) queue.clearSuggestions()
+                        return@collectLatest
+                    }
+                    val key = "${seed.queueKey}|${request.from}"
+                    if (queue.state.value.suggestionsSeed == key) return@collectLatest
+                    // Let the song that just started have the connection first.
+                    delay(SUGGESTIONS_DELAY_MS)
+                    val (songs, from) = suggestionsAfter(seed, request.from)
+                    queue.setSuggestions(key, suggestible(songs, seed, request.avoidRecent), from)
+                }
         }
     }
+
+    /** Autoplay's songs without the seed, and without what was played lately when that is asked. */
+    private fun suggestible(songs: List<Track>, seed: Track, avoidRecent: Boolean): List<Track> {
+        val recent = if (avoidRecent) rawRecent.mapTo(HashSet(), Track::queueKey) else emptySet()
+        return songs.filterNot { it.queueKey == seed.queueKey || it.queueKey in recent }
+            .distinctBy(Track::queueKey)
+            .take(AUTOPLAY_BATCH)
+    }
+
+    /**
+     * The songs to carry on with after [seed], and where they come from, as the queue says it.
+     *
+     * From the seed's own service where it has something to give, which is what makes autoplay sound like
+     * the service the listener chose: YouTube Music's radio, SoundCloud's related tracks, Bandcamp's
+     * more-from-the-artist, VK's suggestions. Spotify gives apps no recommendations any more, so after a
+     * Spotify song it is more from the same artists, on Spotify -- or, playing on Spotify itself, Spotify's
+     * own autoplay, which is followed rather than lined up here. Anything that comes back empty falls back
+     * to YouTube Music's radio, because silence is the one outcome nobody asked for.
+     */
+    private suspend fun suggestionsAfter(seed: Track, from: AutoplaySource): Pair<List<Track>, String?> {
+        val songs: Pair<List<Track>, String?> = try {
+            val context = PlaybackContext(seed.provider, PlaybackOrigin.QUEUE, seedTrackId = seed.id)
+            val spotify = spotifyOrigins[seed.queueKey]
+            when {
+                from == AutoplaySource.YOUTUBE_MUSIC -> youTubeRadioFor(seed) to YOUTUBE_RADIO
+                spotify != null -> spotifyMore(spotify)
+                playsOnSpotify(seed) -> return emptyList<Track>() to SPOTIFY_CHOOSES
+                seed.provider == ProviderType.SPOTIFY -> spotifyMore(seed)
+                seed.provider == ProviderType.YOUTUBE_MUSIC || seed.provider == ProviderType.YOUTUBE_VIDEO ->
+                    youTubeRadio(seed.id) to YOUTUBE_RADIO
+                seed.provider == ProviderType.SOUNDCLOUD ->
+                    soundCloudClientIds.clientId()?.let { soundCloudRelated.related(seed, it, AUTOPLAY_BATCH + 5) }.orEmpty() to
+                        "Related on SoundCloud"
+                seed.provider == ProviderType.BANDCAMP ->
+                    bandcamp.getRecommendations(context) to "More from ${seed.artistLine} on Bandcamp"
+                seed.provider == ProviderType.VK -> vk.getRecommendations(context) to "Suggested by VK"
+                else -> youTubeRadioFor(seed) to YOUTUBE_RADIO
+            }
+        } catch (cancellation: CancellationException) {
+            throw cancellation
+        } catch (failure: Exception) {
+            emptyList<Track>() to null
+        }
+        if (songs.first.isNotEmpty() || from == AutoplaySource.YOUTUBE_MUSIC) return songs
+        return runCatching { youTubeRadioFor(seed) }.getOrDefault(emptyList()) to YOUTUBE_RADIO
+    }
+
+    /** YouTube Music's radio after [seed]: the song itself where it is YouTube's, its match there otherwise. */
+    private suspend fun youTubeRadioFor(seed: Track): List<Track> = when (seed.provider) {
+        ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeRadio(seed.id)
+        else -> youTubeSongSearch("${seed.artistLine} ${seed.title}", 1).firstOrNull()
+            ?.let { match -> youTubeRadio(match.id) }.orEmpty()
+    }
+
+    /**
+     * More from the artist of a Spotify song, on Spotify: their newest releases' songs, shuffled.
+     *
+     * What Spotify still lets an app ask about. Its recommendations and related artists were closed to new
+     * apps in 2024 and its artists' top songs in 2026, so this is the most Spotify there is to carry on with.
+     */
+    private suspend fun spotifyMore(seed: Track): Pair<List<Track>, String?> {
+        val token = spotifyAccessToken() ?: return emptyList<Track>() to null
+        val artist = seed.artists.firstOrNull() ?: return emptyList<Track>() to null
+        val albums = spotifyClient.artistAlbums(artist.id, token).valueOrNull().orEmpty().take(SPOTIFY_AUTOPLAY_ALBUMS)
+        val songs = kotlinx.coroutines.coroutineScope {
+            albums.map { album ->
+                async { spotifyClient.albumTracks(album.id.removePrefix(SpotifyClient.ALBUM_PREFIX), token).valueOrNull().orEmpty() }
+            }.awaitAll().flatten()
+        }
+        return songs.filterNot { it.id == seed.id }.shuffled() to "More from ${artist.name} on Spotify"
+    }
+
+    /**
+     * Whether to stay with Spotify when it carries on by itself after a song Noctorium asked it to play.
+     *
+     * Yes when nothing else is waiting here and autoplay is to come from the same service: Spotify's own
+     * autoplay is then the queue, and each song it chooses joins Noctorium's as it starts -- listened to,
+     * remembered, likeable -- exactly as if it had been chosen here.
+     */
+    private fun followSpotify(next: Track): Boolean {
+        val preferences = mutableSettings.value.preferences
+        if (!preferences.autoplay || preferences.autoplayFrom != AutoplaySource.SAME_SERVICE) return false
+        val state = queue.state.value
+        if (state.upcoming != null) return false
+        state.current?.let { ended -> recordListen(ended, ended.durationMs ?: 0, ended.durationMs ?: 0) }
+        queue.addToQueue(next)
+        queue.next()
+        rememberRecent(next)
+        PlaybackLog.event("spotify_followed", mapOf("track" to next.queueKey))
+        return true
+    }
+
+    /** The queue from the last session, put back at launch, when the listener keeps it. */
+    private fun restoreQueue() {
+        if (!storedPreferences.keepQueue) return
+        val saved = queueStore.load() ?: return
+        queue.restore(saved.tracks, saved.index, null, saved.repeatMode)
+        saved.tracks.getOrNull(saved.index)?.let { current ->
+            if (saved.positionMs > RESUME_MIN_MS) pendingResume = current.queueKey to saved.positionMs
+        }
+    }
+
+    /** Writes the queue down as it changes -- and every little while as a song plays -- when it is kept. */
+    private fun observeQueueForKeeping() {
+        scope.launch {
+            combine(
+                queue.state,
+                playback.map { it.positionMs / KEEP_POSITION_STEP_MS }.distinctUntilChanged(),
+                mutableSettings.map { it.preferences.keepQueue }.distinctUntilChanged(),
+            ) { state, _, keep -> state to keep }
+                .collectLatest { (state, keep) ->
+                    delay(KEEP_QUEUE_PAUSE_MS)
+                    withContext(Dispatchers.IO) {
+                        if (!keep || state.tracks.isEmpty()) queueStore.clear()
+                        else queueStore.save(keptQueue(state))
+                    }
+                }
+        }
+    }
+
+    private fun keptQueue(state: app.noctorium.playback.QueueState) = app.noctorium.playback.SavedQueue(
+        tracks = state.tracks,
+        index = state.currentIndex.coerceAtLeast(0),
+        positionMs = playback.value.positionMs.takeIf { playback.value.track?.queueKey == state.current?.queueKey } ?: 0,
+        repeatMode = state.repeatMode,
+    )
 
     private suspend fun youTubeRadio(videoId: String): List<Track> {
         val keys = innertubeKeys.keys() ?: return emptyList()
@@ -4301,6 +4541,10 @@ class AppState(
      */
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        // The queue as it is at this moment, rather than as it was at the last pause in writing it.
+        if (mutableSettings.value.preferences.keepQueue && queue.state.value.tracks.isNotEmpty()) {
+            runCatching { queueStore.save(keptQueue(queue.state.value)) }
+        }
         sleeper.cancel()
         player.close()
         connectManager.close()
@@ -4549,6 +4793,24 @@ private const val SPOTIFY_HEARTS = 2_000
 
 /** How many songs autoplay adds to the queue at a time, when it runs out. */
 private const val AUTOPLAY_BATCH = 20
+
+private const val YOUTUBE_RADIO = "YouTube Music radio"
+private const val SPOTIFY_CHOOSES = "Spotify chooses what comes next"
+
+/** How many of an artist's newest releases autoplay after a Spotify song draws from. */
+private const val SPOTIFY_AUTOPLAY_ALBUMS = 3
+
+/** How long a song plays before autoplay's songs are looked for, so the song itself starts first. */
+private const val SUGGESTIONS_DELAY_MS = 4_000L
+
+/** A kept position is only picked up again from this far in; before it, the song simply starts. */
+private const val RESUME_MIN_MS = 5_000L
+
+/** How often, in playing time, the kept queue's position is written down. */
+private const val KEEP_POSITION_STEP_MS = 10_000L
+
+/** How long the queue must stay as it is before it is written, so a burst of changes is one write. */
+private const val KEEP_QUEUE_PAUSE_MS = 1_500L
 
 private const val MAX_SLEEP_FADE_SECONDS = 120
 private const val SLEEP_FADE_STEP_MS = 250L

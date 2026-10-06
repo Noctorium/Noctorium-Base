@@ -7,7 +7,7 @@ import java.net.InetAddress
  * recognises, rather than whatever the network knows the machine as.
  *
  * Windows puts it in the environment. A Mac keeps it in its sharing settings, and it is asked for there --
- * "Cem's MacBook Pro" -- for a second reason as well as the nicer name: the fallback below, Java's own idea of
+ * "Robin's MacBook Pro" -- for a second reason as well as the nicer name: the fallback below, Java's own idea of
  * the host's name, resolves `name.local` on a Mac, which goes out over the local network, and macOS asks the
  * listener whether Noctorium may look for devices on it the moment it starts, before they have so much as
  * heard of Connect. Elsewhere the host name is the answer, and on Linux finding it touches nothing.
