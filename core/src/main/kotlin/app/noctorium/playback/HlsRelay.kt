@@ -97,7 +97,10 @@ class HlsRelay(
                 } catch (closed: IOException) {
                     break
                 }
-                pool.execute { serve(connection) }
+                pool.execute {
+                    // A connection dropped half way -- the player stopped, or skipped ahead -- ends here quietly.
+                    try { serve(connection) } catch (dropped: IOException) { Unit }
+                }
             }
         }, "noctorium-hls-relay-accept").apply { isDaemon = true }.start()
         return socket
@@ -121,7 +124,11 @@ class HlsRelay(
         } catch (failure: Exception) {
             Answer(502, "text/plain", (failure.message ?: "upstream failure").toByteArray())
         }
-        write(output, answer, headOnly = method == "HEAD")
+        try {
+            write(output, answer, headOnly = method == "HEAD")
+        } catch (hungUp: IOException) {
+            // The player stopped listening -- it was stopped, or skipped ahead -- which is no fault of anyone's.
+        }
     }
 
     private class Answer(val status: Int, val type: String, val body: ByteArray)
