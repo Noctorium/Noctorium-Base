@@ -21,6 +21,22 @@ class PlayerBarLayoutTest {
     }
 
     @Test
+    fun `the taskbar's clock is shown until it is switched off, and stays off`() {
+        assertTrue(NoctoriumPreferences().taskbarClock)
+        val file = Files.createTempFile("settings", ".json")
+        try {
+            Files.writeString(file, """{"profileName":"Kept","playerBarStyle":"TASKBAR"}""")
+            assertTrue(SettingsRepository(file).load().taskbarClock, "a file from before the switch shows the clock")
+            val repository = SettingsRepository(file)
+            repository.save(repository.load().copy(taskbarClock = false))
+            assertEquals(false, SettingsRepository(file).load().taskbarClock)
+            assertEquals(PlayerBarStyle.TASKBAR, SettingsRepository(file).load().playerBarStyle)
+        } finally {
+            Files.deleteIfExists(file)
+        }
+    }
+
+    @Test
     fun `every layout says what it is`() {
         (PlayerBarStyle.entries.map { it.displayName to it.description } +
             PhonePlayerBarStyle.entries.map { it.displayName to it.description }).forEach { (name, description) ->

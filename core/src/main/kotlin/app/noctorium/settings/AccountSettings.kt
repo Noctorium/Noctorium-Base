@@ -476,6 +476,12 @@ data class NoctoriumPreferences(
     val progressBarStyle: ProgressBarStyle = ProgressBarStyle.MINIMAL,
     val playerBarStyle: PlayerBarStyle = PlayerBarStyle.INLINE,
     val playerBarPosition: PlayerBarPosition = PlayerBarPosition.BOTTOM,
+    /**
+     * Whether a taskbar shows the clock in its tray: the Taskbar player bar's, and the ones the 98 and XP
+     * themes draw. On unless switched off, as Windows had it, and switched off the way Windows let it be --
+     * "Show the clock" -- for somebody whose own taskbar already says the time a few inches away.
+     */
+    val taskbarClock: Boolean = true,
     val accent: AccentPreset = AccentPreset.THEME,
     /** The colour [AccentPreset.CUSTOM] means, as opaque ARGB. Kept when another accent is chosen, for coming back to. */
     val customAccent: Long = 0xFFB47CFF,

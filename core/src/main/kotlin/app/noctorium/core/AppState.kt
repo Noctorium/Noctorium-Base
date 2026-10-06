@@ -928,6 +928,7 @@ class AppState(
     fun setPlayerBarStyle(style: PlayerBarStyle) = updatePreferences { copy(playerBarStyle = style) }
     fun setPlayerBarPosition(position: PlayerBarPosition) =
         updatePreferences { copy(playerBarPosition = position) }
+    fun setTaskbarClock(shown: Boolean) = updatePreferences { copy(taskbarClock = shown) }
     fun setAccent(accent: AccentPreset) = updatePreferences { copy(accent = accent) }
     fun setBackgroundDepth(depth: BackgroundDepth) = updatePreferences { copy(backgroundDepth = depth) }
 
