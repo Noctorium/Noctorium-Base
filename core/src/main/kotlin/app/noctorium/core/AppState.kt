@@ -1239,8 +1239,11 @@ class AppState(
      * song and decide whether what came back is really it. When nothing is close enough, nothing is played
      * and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
      * chose is worse than telling them it could not be found.
+     *
+     * Unless [quiet]: a look ahead at a song nobody has asked for yet must not put up a banner saying it could
+     * not be played. The failure is not remembered, so asking to play it later looks again, and explains.
      */
-    private suspend fun resolveSpotify(track: Track): Track? {
+    private suspend fun resolveSpotify(track: Track, quiet: Boolean = false): Track? {
         spotifyMatches[track.id]?.let { known ->
             spotifyOrigins[known.queueKey] = track
             return known
@@ -1256,6 +1259,7 @@ class AppState(
             }
         val match = SpotifyMatch.choose(track, candidates)
         if (match == null) {
+            if (quiet) return null
             // Said in both places a Spotify track can be played from, because a track that makes no sound
             // and explains nothing is the worst outcome this path has. Spotify tracks are started from a
             // playlist in the library far more often than from anywhere else, and the home screen's banner
@@ -3922,7 +3926,7 @@ class AppState(
         // Played by Spotify's app, which needs nothing looked up in advance.
         if (playsOnSpotify(track)) return
         val playable = if (track.provider == ProviderType.SPOTIFY) {
-            runCatching { resolveSpotify(track) }.getOrNull() ?: return
+            runCatching { resolveSpotify(track, quiet = true) }.getOrNull() ?: return
         } else {
             track
         }
