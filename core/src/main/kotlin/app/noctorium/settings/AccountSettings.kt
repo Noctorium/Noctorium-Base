@@ -421,6 +421,17 @@ data class NoctoriumPreferences(
     /** Name of the connected Spotify account, kept only so Settings can say whose library is showing. */
     val spotifyAccountName: String = "",
     /**
+     * Where Spotify songs are played: matched to the same recording on YouTube Music, or on Spotify itself.
+     *
+     * On Spotify needs the Premium sign-in ([spotifyCanPlay]); without it, this is ignored and songs are
+     * matched as they always were.
+     */
+    val spotifyPlayback: SpotifyPlayback = SpotifyPlayback.MATCHED,
+    /** The Spotify sign-in was the Premium one, which lets Noctorium tell the account's Spotify app what to play. */
+    val spotifyCanPlay: Boolean = false,
+    /** The Spotify device to play on, by Spotify's id. Blank for whichever one Spotify has active. */
+    val spotifyDevice: String = "",
+    /**
      * The name in the listener's Bandcamp address, `bandcamp.com/<name>`, whose collection the library shows.
      *
      * A name rather than a sign-in: Bandcamp shows a fan's collection to anybody, so this is all it takes.
@@ -797,7 +808,25 @@ data class SpotifyConnectionState(
     val connecting: Boolean = false,
     val accountName: String = "",
     val message: String? = null,
+    /** The sign-in was the Premium one, so songs can be played on Spotify itself. */
+    val canPlay: Boolean = false,
+    /** Spotify songs go to the account's Spotify app rather than being matched elsewhere. */
+    val playsOnSpotify: Boolean = false,
+    /** Where the account's Spotify is open, as last asked. Empty until asked. */
+    val devices: List<app.noctorium.spotify.SpotifyDevice> = emptyList(),
+    /** The chosen device's id; blank for whichever one Spotify has active. */
+    val device: String = "",
 )
+
+/** Where Spotify songs are played. */
+@Serializable
+enum class SpotifyPlayback(val displayName: String) {
+    /** Matched to the same recording on YouTube Music, which works for every Spotify account. */
+    MATCHED("Matched on YouTube Music"),
+
+    /** In the account's own Spotify app, wherever it is open. Needs Premium. */
+    ON_SPOTIFY("On Spotify"),
+}
 
 class SettingsRepository(
     private val settingsPath: Path? = defaultSettingsPath(),

@@ -80,6 +80,9 @@ import app.noctorium.social.cookieHeaderFor
 import app.noctorium.social.SoundCloudRefreshResult
 import app.noctorium.social.SoundCloudTokenRefresh
 import app.noctorium.spotify.SpotifyAccess
+import app.noctorium.spotify.SpotifyAccessLevel
+import app.noctorium.spotify.SpotifyConnectEngine
+import app.noctorium.playback.RoutingPlaybackEngine
 import app.noctorium.spotify.SpotifyApplication
 import app.noctorium.spotify.SpotifyAuth
 import app.noctorium.spotify.SpotifyClient
@@ -167,7 +170,8 @@ enum class ProviderFilter(val displayName: String) {
     ALL("All"),
     YOUTUBE_MUSIC("YouTube Music"),
     SOUNDCLOUD("SoundCloud"),
-    BANDCAMP("Bandcamp");
+    BANDCAMP("Bandcamp"),
+    SPOTIFY("Spotify");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -175,6 +179,7 @@ enum class ProviderFilter(val displayName: String) {
         YOUTUBE_MUSIC -> provider == ProviderType.YOUTUBE_MUSIC || provider == ProviderType.YOUTUBE_VIDEO
         SOUNDCLOUD -> provider == ProviderType.SOUNDCLOUD
         BANDCAMP -> provider == ProviderType.BANDCAMP
+        SPOTIFY -> provider == ProviderType.SPOTIFY
     }
 }
 
@@ -184,6 +189,7 @@ enum class SearchMode(val displayName: String) {
     YOUTUBE_MUSIC("YouTube Music"),
     YOUTUBE_VIDEO("YouTube Videos"),
     BANDCAMP("Bandcamp"),
+    SPOTIFY("Spotify"),
 }
 
 data class LibraryState(
@@ -257,6 +263,8 @@ data class LikeState(
     val busyKeys: Set<String> = emptySet(),
     val soundCloudReady: Boolean = false,
     val youTubeReady: Boolean = false,
+    /** A Spotify sign-in is stored: hearts on Spotify songs save them to, and take them out of, Liked Songs. */
+    val spotifyReady: Boolean = false,
     /** Channels the signed-in Google account owns, for choosing which one Noctorium acts as. */
     val youTubeChannels: List<YouTubeChannel> = emptyList(),
     val message: String? = null,
@@ -266,7 +274,8 @@ data class LikeState(
     fun supports(track: Track): Boolean = when (track.provider) {
         ProviderType.SOUNDCLOUD -> soundCloudReady
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
-        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
+        ProviderType.SPOTIFY -> spotifyReady
+        ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
     }
 }
 
@@ -277,7 +286,7 @@ data class LikeState(
 internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "yt:${track.id}"
     ProviderType.SOUNDCLOUD -> "sc:${track.id}"
-    // Read-only: Spotify likes are shown, never written, but the key still has to be its own.
+    // Its own key: a Spotify song and the recording it is matched to are liked in different places.
     ProviderType.SPOTIFY -> "spotify:${track.id}"
     ProviderType.BANDCAMP -> "bc:${track.id}"
     ProviderType.VK -> "vk:${track.id}"
@@ -346,7 +355,7 @@ class AppState(
     /** Opening a page, the clipboard, showing a saved file — the few things only the platform can do. */
     private val system: SystemBridge,
     private val downloads: DownloadManager = DownloadManager(ytDlp),
-    private val playbackEngine: PlaybackEngine,
+    playbackEngine: PlaybackEngine,
     /** Left null so the real set can be built below, where a provider can be handed one of these methods. */
     private val injectedProviders: List<MusicProvider>? = null,
     private val lyricsRepository: LyricsRepository = LyricsRepository(),
@@ -441,6 +450,32 @@ class AppState(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     /**
+     * The account's own Spotify app as a player, for Spotify songs when the listener chose to hear those on
+     * Spotify. See [SpotifyConnectEngine].
+     */
+    private val spotifyPlayer = SpotifyConnectEngine(
+        client = spotifyClient,
+        accessToken = { spotifyAccessToken() },
+        preferredDevice = { mutableSettings.value.preferences.spotifyDevice },
+        scope = scope,
+    )
+
+    /**
+     * The player everything here talks to: this device's own, with Spotify's app taking the Spotify songs
+     * that are to be played on Spotify.
+     *
+     * Named apart from the constructor's `playbackEngine` on purpose. Inside an initializer Kotlin reads that
+     * name as the parameter rather than a property, so a property sharing it would be bypassed by exactly
+     * the code written in initializers -- the playback state, the sleep timer, Connect's controls.
+     */
+    private val player: PlaybackEngine = RoutingPlaybackEngine(
+        local = playbackEngine,
+        elsewhere = spotifyPlayer,
+        playsElsewhere = ::playsOnSpotify,
+        scope = scope,
+    )
+
+    /**
      * Held while the SoundCloud token is read or renewed.
      *
      * Renewing spends the refresh token and SoundCloud issues a replacement, so two renewals at once would
@@ -479,7 +514,7 @@ class AppState(
     )
     val ui: StateFlow<AppUiState> = mutableUi.asStateFlow()
     val queue = QueueManager()
-    val playback: StateFlow<PlaybackState> = playbackEngine.state
+    val playback: StateFlow<PlaybackState> = player.state
 
     /**
      * The sleep timer, one for both players.
@@ -488,7 +523,7 @@ class AppState(
      * for in Settings. It is about the listener rather than the loudspeaker, so it lives with the rest
      * of what the listener asked for and pauses whichever engine is playing when it goes off.
      */
-    private val sleeper = SleepTimer(scope) { playbackEngine.pause() }
+    private val sleeper = SleepTimer(scope) { player.pause() }
     val sleepTimer: StateFlow<SleepTimerState?> = sleeper.state
     val sleepTimerRemainingMs: StateFlow<Long?> = sleeper.remainingMs
     private val mutableLyrics = MutableStateFlow(LyricsUiState())
@@ -539,17 +574,17 @@ class AppState(
             if (positionMs > 1_000) seekAfterHandover(positionMs)
         }
 
-        override suspend fun resume() = playbackEngine.resume()
-        override suspend fun pause() = playbackEngine.pause()
+        override suspend fun resume() = player.resume()
+        override suspend fun pause() = player.pause()
         override suspend fun next() { queue.next()?.let { playEnriched(it) } }
         override suspend fun previous() { queue.previous()?.let { playEnriched(it) } }
-        override suspend fun seekTo(positionMs: Long) = playbackEngine.seekTo(positionMs)
-        override suspend fun setVolume(value: Float) = playbackEngine.setVolume(value)
+        override suspend fun seekTo(positionMs: Long) = player.seekTo(positionMs)
+        override suspend fun setVolume(value: Float) = player.setVolume(value)
         override suspend fun setShuffle(enabled: Boolean) = queue.setShuffle(enabled)
         override suspend fun setRepeat(mode: String) {
             queue.setRepeat(runCatching { RepeatMode.valueOf(mode) }.getOrDefault(RepeatMode.OFF))
         }
-        override suspend fun standDown() = playbackEngine.stop()
+        override suspend fun standDown() = player.stop()
     }
 
     private val connectManager = ConnectManager(
@@ -648,8 +683,11 @@ class AppState(
             // liking is unavailable. That is what the SoundCloud entry in a track's menu turns on.
             val soundCloudReady = !soundCloudToken().isNullOrBlank()
             val youTubeSignedIn = youTubeSession()?.sapisid != null
-            mutableLikes.update { it.copy(soundCloudReady = soundCloudReady, youTubeReady = youTubeSignedIn) }
-            if (soundCloudReady || youTubeSignedIn) refreshLikes()
+            val spotifySignedIn = spotifyAccess.isConnected()
+            mutableLikes.update {
+                it.copy(soundCloudReady = soundCloudReady, youTubeReady = youTubeSignedIn, spotifyReady = spotifySignedIn)
+            }
+            if (soundCloudReady || youTubeSignedIn || spotifySignedIn) refreshLikes()
         }
     }
 
@@ -676,8 +714,8 @@ class AppState(
 
     fun togglePlayback() {
         when (playback.value.status) {
-            PlaybackStatus.PLAYING -> scope.launch { playbackEngine.pause() }
-            PlaybackStatus.PAUSED -> scope.launch { playbackEngine.resume() }
+            PlaybackStatus.PLAYING -> scope.launch { player.pause() }
+            PlaybackStatus.PAUSED -> scope.launch { player.resume() }
             PlaybackStatus.IDLE, PlaybackStatus.ERROR ->
                 queue.state.value.current?.let { track -> startPlay { track } }
             /*
@@ -689,21 +727,21 @@ class AppState(
              */
             PlaybackStatus.RESOLVING -> {
                 playJob?.cancel()
-                scope.launch { playbackEngine.stop() }
+                scope.launch { player.stop() }
             }
         }
     }
 
     fun setVolume(value: Float) {
         scope.launch {
-            playbackEngine.setVolume(value)
+            player.setVolume(value)
         }
     }
     fun toggleVolumeBoost() {
-        scope.launch { playbackEngine.setVolumeBoost(!playback.value.volumeBoostEnabled) }
+        scope.launch { player.setVolumeBoost(!playback.value.volumeBoostEnabled) }
     }
-    fun toggleMute() { scope.launch { playbackEngine.setMuted(!playback.value.isMuted) } }
-    fun seekTo(positionMs: Long) { scope.launch { playbackEngine.seekTo(positionMs) } }
+    fun toggleMute() { scope.launch { player.setMuted(!playback.value.isMuted) } }
+    fun seekTo(positionMs: Long) { scope.launch { player.seekTo(positionMs) } }
 
     fun next() { startPlay { queue.next() } }
     fun previous() { startPlay { queue.previous() } }
@@ -726,7 +764,7 @@ class AppState(
     fun cancelSleepTimer() = sleeper.cancel()
     fun clearQueue() {
         queue.clear()
-        scope.launch { playbackEngine.stop() }
+        scope.launch { player.stop() }
     }
 
     fun setProfileName(name: String) {
@@ -852,32 +890,111 @@ class AppState(
     }
 
     /** Takes the listener through Spotify's own consent page, then reads whose library it is. */
-    fun connectSpotify() {
+    /**
+     * Signs in to Spotify: for the library alone, which any account can, or with [premium] for playing on
+     * Spotify as well.
+     *
+     * The two are one sign-in asking for more or less. The Premium one asks to control the account's
+     * Spotify app, and once it is made, Spotify songs play there; signing in again for the library alone
+     * gives that up, because the new sign-in replaces the old one at Spotify too.
+     */
+    fun connectSpotify(premium: Boolean = false) {
         if (mutableSettings.value.spotify.connecting) return
         val clientId = SpotifyApplication.clientId(mutableSettings.value.preferences.spotifyClientId)
+        val level = if (premium) SpotifyAccessLevel.PLAYBACK else SpotifyAccessLevel.LIBRARY
         scope.launch {
             publishSpotifyState(connecting = true, message = "Finish signing in to Spotify in your browser.")
-            when (val result = SpotifyAuth(openBrowser = ::browseSecureUrl).authorize(clientId)) {
+            when (val result = SpotifyAuth(openBrowser = ::browseSecureUrl).authorize(clientId, level)) {
                 is SpotifyAuth.Result.Success -> {
                     withContext(Dispatchers.IO) { spotifyAccess.adopt(result.tokens) }
                     val profile = spotifyClient.displayName(result.tokens.accessToken)
                     val name = profile.valueOrNull().orEmpty()
-                    updatePreferences { copy(spotifyAccountName = name) }
+                    // Spotify says what it granted. Where it says nothing, what was asked for is assumed.
+                    val canPlay = premium && (result.tokens.scopes.isEmpty() || "user-modify-playback-state" in result.tokens.scopes)
+                    updatePreferences {
+                        copy(
+                            spotifyAccountName = name,
+                            spotifyCanPlay = canPlay,
+                            spotifyPlayback = if (canPlay) SpotifyPlayback.ON_SPOTIFY else SpotifyPlayback.MATCHED,
+                        )
+                    }
+                    mutableLikes.update { it.copy(spotifyReady = true) }
                     publishSpotifyState(
                         message = when {
                             // Signed in, and still not allowed to read anything: the account is not one the app
                             // may read yet. Saying "connected" here would be the last true thing it heard.
                             profile is SpotifyRead.Failed -> spotifyRefusal(profile.detail)
+                            canPlay -> "Spotify Premium connected${if (name.isBlank()) "" else " as $name"}. Spotify songs now play in your Spotify app; keep it open on this or another device."
                             name.isBlank() -> "Spotify connected. Your playlists are in the library."
                             else -> "Spotify connected as $name. Your playlists are in the library."
                         },
                     )
                     refreshLibrary(force = true)
+                    refreshLikes()
+                    refreshHome()
+                    if (canPlay) refreshSpotifyDevices()
                 }
                 is SpotifyAuth.Result.Failure -> publishSpotifyState(message = result.detail)
             }
         }
     }
+
+    /** The Premium sign-in: the library, and playing Spotify songs in the account's own Spotify app. */
+    fun connectSpotifyPremium() = connectSpotify(premium = true)
+
+    /**
+     * Plays Spotify songs on Spotify, or matches them on YouTube Music instead.
+     *
+     * Playing on Spotify needs the Premium sign-in; without it this says what to do rather than switching.
+     */
+    fun setSpotifyPlayback(onSpotify: Boolean) {
+        if (onSpotify && !mutableSettings.value.preferences.spotifyCanPlay) {
+            publishSpotifyState(message = "Connect Spotify Premium first: playing on Spotify needs that sign-in.")
+            return
+        }
+        updatePreferences { copy(spotifyPlayback = if (onSpotify) SpotifyPlayback.ON_SPOTIFY else SpotifyPlayback.MATCHED) }
+        publishSpotifyState(
+            message = if (onSpotify) "Spotify songs play in your Spotify app." else "Spotify songs are matched on YouTube Music.",
+        )
+        if (onSpotify) refreshSpotifyDevices()
+    }
+
+    /** Asks Spotify where the account is open, for choosing where its songs play. */
+    fun refreshSpotifyDevices() {
+        scope.launch {
+            val token = spotifyAccessToken() ?: return@launch
+            when (val devices = spotifyClient.devices(token)) {
+                is SpotifyRead.Ok -> publishSpotifyState(
+                    devices = devices.value,
+                    message = if (devices.value.isEmpty()) "Spotify is not open anywhere right now. Open the Spotify app on a phone or computer." else null,
+                )
+                is SpotifyRead.Unauthorized -> publishSpotifyState(message = devices.detail)
+                is SpotifyRead.Failed -> publishSpotifyState(message = spotifyRefusal(devices.detail))
+            }
+        }
+    }
+
+    /** Plays Spotify songs on this device from now on; blank for whichever one Spotify has active. */
+    fun chooseSpotifyDevice(deviceId: String) {
+        updatePreferences { copy(spotifyDevice = deviceId) }
+        val name = mutableSettings.value.spotify.devices.firstOrNull { it.id == deviceId }?.name
+        publishSpotifyState(
+            devices = mutableSettings.value.spotify.devices,
+            message = name?.let { "Spotify songs will play on $it." } ?: "Spotify songs will play wherever Spotify is active.",
+        )
+    }
+
+    /** A Spotify access token, when there is a working sign-in; null otherwise. */
+    private suspend fun spotifyAccessToken(): String? =
+        (spotifyAccess.access() as? SpotifyAccess.Access.Ready)?.accessToken
+
+    /** Whether Spotify songs go to the account's Spotify app rather than being matched elsewhere. */
+    private fun spotifyPlaysSongs(): Boolean {
+        val preferences = mutableSettings.value.preferences
+        return preferences.spotifyCanPlay && preferences.spotifyPlayback == SpotifyPlayback.ON_SPOTIFY
+    }
+
+    private fun playsOnSpotify(track: Track): Boolean = track.provider == ProviderType.SPOTIFY && spotifyPlaysSongs()
 
     /**
      * What a refusal from Spotify means, said for the app it came through.
@@ -917,8 +1034,14 @@ class AppState(
     fun disconnectSpotify() {
         scope.launch {
             withContext(Dispatchers.IO) { spotifyAccess.disconnect() }
-            updatePreferences { copy(spotifyAccountName = "") }
+            updatePreferences {
+                copy(spotifyAccountName = "", spotifyCanPlay = false, spotifyPlayback = SpotifyPlayback.MATCHED, spotifyDevice = "")
+            }
             mutableLibrary.update { it.withoutProvider(ProviderType.SPOTIFY) }
+            mutableLikes.update { state ->
+                state.copy(spotifyReady = false, likedKeys = state.likedKeys.filterNotTo(LinkedHashSet()) { it.startsWith("spotify:") })
+            }
+            forgetLikeWrites("spotify:")
             publishSpotifyState(message = "Spotify disconnected.")
         }
     }
@@ -932,7 +1055,11 @@ class AppState(
             .onFailure { publishSpotifyState(message = it.message ?: "Could not open Spotify's dashboard.") }
     }
 
-    private fun publishSpotifyState(connecting: Boolean = false, message: String? = null) {
+    private fun publishSpotifyState(
+        connecting: Boolean = false,
+        message: String? = null,
+        devices: List<app.noctorium.spotify.SpotifyDevice> = mutableSettings.value.spotify.devices,
+    ) {
         val preferences = mutableSettings.value.preferences
         mutableSettings.update {
             it.copy(
@@ -943,6 +1070,10 @@ class AppState(
                     connecting = connecting,
                     accountName = preferences.spotifyAccountName,
                     message = message,
+                    canPlay = preferences.spotifyCanPlay,
+                    playsOnSpotify = preferences.spotifyCanPlay && preferences.spotifyPlayback == SpotifyPlayback.ON_SPOTIFY,
+                    devices = devices,
+                    device = preferences.spotifyDevice,
                 ),
             )
         }
@@ -1252,8 +1383,11 @@ class AppState(
             }
             if (result.outcome == LikeOutcome.TOKEN_REJECTED || result.outcome == LikeOutcome.NEEDS_TOKEN) {
                 mutableLikes.update { state ->
-                    if (track.provider == ProviderType.SOUNDCLOUD) state.copy(soundCloudReady = false)
-                    else state.copy(youTubeReady = false)
+                    when (track.provider) {
+                        ProviderType.SOUNDCLOUD -> state.copy(soundCloudReady = false)
+                        ProviderType.SPOTIFY -> state.copy(spotifyReady = false)
+                        else -> state.copy(youTubeReady = false)
+                    }
                 }
             }
             ScrobbleLog.event(
@@ -1371,9 +1505,18 @@ class AppState(
                 youTubeMusic.setLiked(track.id, liking, session)
             }
         }
-        // Spotify is read here and never written to, so its likes are shown but not changed.
-        ProviderType.SPOTIFY ->
-            LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Spotify is read-only in Noctorium; like it in Spotify itself.")
+        // Into Spotify's Liked Songs, or out of it.
+        ProviderType.SPOTIFY -> when (val token = spotifyAccessToken()) {
+            null -> LikeResult(LikeOutcome.NEEDS_TOKEN, "Connect Spotify in Settings before liking Spotify songs.")
+            else -> when (val saved = spotifyClient.setSaved(track.id, liking, token)) {
+                is SpotifyRead.Ok -> LikeResult(
+                    if (liking) LikeOutcome.LIKED else LikeOutcome.UNLIKED,
+                    if (liking) "Added to your Liked Songs on Spotify." else "Removed from your Liked Songs on Spotify.",
+                )
+                is SpotifyRead.Unauthorized -> LikeResult(LikeOutcome.TOKEN_REJECTED, saved.detail)
+                is SpotifyRead.Failed -> LikeResult(LikeOutcome.FAILED, spotifyRefusal(saved.detail))
+            }
+        }
         ProviderType.BANDCAMP, ProviderType.VK ->
             LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Liking on ${track.provider.displayName} is not here yet.")
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
@@ -1570,6 +1713,18 @@ class AppState(
                     val recent = recentLikeWrites()
                     mutableLikes.update { state ->
                         state.copy(likedKeys = mergeLikes(state.likedKeys, "yt:", keys, liked.complete, recent))
+                    }
+                }
+            }
+            // And Spotify's Liked Songs, read up to a limit: a library of ten thousand is two hundred pages,
+            // and the hearts that matter are on the songs liked lately.
+            spotifyAccessToken()?.let { token ->
+                val liked = spotifyClient.likedSongs(token, SPOTIFY_HEARTS)
+                liked.valueOrNull()?.let { songs ->
+                    val keys = songs.map { "spotify:${it.id}" }.toSet()
+                    val recent = recentLikeWrites()
+                    mutableLikes.update { state ->
+                        state.copy(likedKeys = mergeLikes(state.likedKeys, "spotify:", keys, songs.size < SPOTIFY_HEARTS, recent))
                     }
                 }
             }
@@ -2985,7 +3140,7 @@ class AppState(
                 "segment_skipped",
                 mapOf("video" to videoId, "category" to segment.category, "from" to state.positionMs, "to" to segment.endMs),
             )
-            playbackEngine.seekTo(segment.endMs)
+            player.seekTo(segment.endMs)
         }
     }
 
@@ -3088,11 +3243,14 @@ class AppState(
             val mode = mutableUi.value.searchMode
             mutableUi.update { it.copy(errorMessage = null) }
             val selectedProviders = when (mode) {
-                SearchMode.HYBRID -> providers
+                // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
+                // slower, less certain copy of the YouTube Music result beside it.
+                SearchMode.HYBRID -> providers.filter { it.type != ProviderType.SPOTIFY || spotifyPlaysSongs() }
                 SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }
                 SearchMode.YOUTUBE_MUSIC -> providers.filter { it.type == ProviderType.YOUTUBE_MUSIC }
                 SearchMode.YOUTUBE_VIDEO -> providers.filter { it.type == ProviderType.YOUTUBE_VIDEO }
                 SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
+                SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -3141,18 +3299,19 @@ class AppState(
         // Everything plays through here — pressing a track, and the queue moving on by itself — which is why
         // this is where a Spotify reference becomes a real recording. A track that cannot be matched is not
         // played at all, and the queue is left holding the Spotify entry so trying again is possible.
-        val playable = if (track.provider == ProviderType.SPOTIFY) {
+        val playable = if (track.provider == ProviderType.SPOTIFY && !playsOnSpotify(track)) {
             resolveSpotify(track)?.also { queue.replace(track.queueKey, it) } ?: return
         } else {
             track
         }
-        val enriched = runCatching { ytDlp.enrichMetadata(playable) }.getOrDefault(playable)
+        // Spotify's own app reads its own songs; there is nothing for the backend to fill in.
+        val enriched = if (playsOnSpotify(playable)) playable else runCatching { ytDlp.enrichMetadata(playable) }.getOrDefault(playable)
         // The listener's own title and artist go on last, over whatever the page said, so they are what
         // the player shows, the scrobbler sends and the notification reads out.
         val shown = enriched.edited(mutableUi.value.trackEdits)
         if (shown != playable) queue.replace(playable.queueKey, shown)
         rememberRecent(enriched)
-        playbackEngine.play(shown)
+        player.play(shown)
     }
 
     /** Records what was played so Home can open with it next time. Kept as the service named it. */
@@ -3189,7 +3348,7 @@ class AppState(
                 if (looped) {
                     val heard = if (previous.durationMs > 0) previous.durationMs else previous.positionMs
                     previous.track?.let { recordListen(it, heard, previous.durationMs) }
-                    if (sleeper.trackEnded()) playbackEngine.pause()
+                    if (sleeper.trackEnded()) player.pause()
                 }
                 previous = current
             }
@@ -3208,7 +3367,7 @@ class AppState(
             combine(queue.state, sleeper.state) { queued, timer ->
                 queued.repeatMode == RepeatMode.ONE && timer != SleepTimerState.EndOfTrack
             }.distinctUntilChanged().collect { looping ->
-                runCatching { playbackEngine.setLooping(looping) }
+                runCatching { player.setLooping(looping) }
             }
         }
     }
@@ -3220,7 +3379,7 @@ class AppState(
     private fun observeEqualizer() {
         scope.launch {
             mutableSettings.map { it.preferences.equalizer }.distinctUntilChanged().collect { equalizer ->
-                runCatching { playbackEngine.setEqualizer(equalizer) }
+                runCatching { player.setEqualizer(equalizer) }
             }
         }
     }
@@ -3279,6 +3438,8 @@ class AppState(
         // A downloaded track needs no address, and a Spotify track needs matching first -- which is done
         // here too, since the match is remembered and is the slower half of playing one.
         if (downloads.localFile(track) != null) return
+        // Played by Spotify's app, which needs nothing looked up in advance.
+        if (playsOnSpotify(track)) return
         val playable = if (track.provider == ProviderType.SPOTIFY) {
             runCatching { resolveSpotify(track) }.getOrNull() ?: return
         } else {
@@ -3596,10 +3757,10 @@ class AppState(
      * break it, so the result is checked once rather than assumed.
      */
     private suspend fun seekAfterHandover(positionMs: Long) {
-        playbackEngine.seekTo(positionMs)
+        player.seekTo(positionMs)
         kotlinx.coroutines.delay(HANDOVER_SEEK_CHECK_MS)
         if (kotlin.math.abs(playback.value.positionMs - positionMs) > HANDOVER_SEEK_TOLERANCE_MS) {
-            playbackEngine.seekTo(positionMs)
+            player.seekTo(positionMs)
         }
     }
 
@@ -3858,7 +4019,7 @@ class AppState(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         sleeper.cancel()
-        playbackEngine.close()
+        player.close()
         connectManager.close()
         discordPresence.close()
         downloads.close()
@@ -4099,6 +4260,9 @@ private const val SIGN_IN_CHECK_EVERY_MS = 3 * 60 * 60_000L
  * not linger past the next look.
  */
 private const val RECENT_LIKE_GRACE_MS = 10 * 60 * 1000L
+
+/** How many of Spotify's Liked Songs are read for the hearts: the most recent, forty pages' worth. */
+private const val SPOTIFY_HEARTS = 2_000
 
 /** Why a Bandcamp song is not downloaded or saved. See [AppState.canKeep]. */
 private const val KEEPING_BANDCAMP =

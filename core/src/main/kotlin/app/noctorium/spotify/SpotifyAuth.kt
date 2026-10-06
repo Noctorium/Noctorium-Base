@@ -44,12 +44,6 @@ class SpotifyAuth internal constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Reading playlists and liked songs, and nothing else. No scope here can change anything. */
-    private val scopes = listOf(
-        "playlist-read-private",
-        "playlist-read-collaborative",
-        "user-library-read",
-    )
 
     sealed interface Result {
         data class Success(val tokens: SpotifyTokens) : Result
@@ -75,7 +69,7 @@ class SpotifyAuth internal constructor(
      * compares redirect addresses exactly and two platforms with two addresses would mean registering both
      * and being told to do it twice. The browser and this receiver are on the same device either way.
      */
-    suspend fun authorize(clientId: String): Result {
+    suspend fun authorize(clientId: String, level: SpotifyAccessLevel = SpotifyAccessLevel.LIBRARY): Result {
         if (clientId.isBlank()) return Result.Failure("Add your Spotify client id first.")
 
         val verifier = randomUrlSafe(64)
@@ -90,7 +84,7 @@ class SpotifyAuth internal constructor(
         }
 
         val fields = receiver.use { open ->
-            openBrowser(authorizeUrl(clientId, challenge, state))
+            openBrowser(authorizeUrl(clientId, challenge, state, level.scopes))
             open.awaitReply()
         }
 
@@ -104,7 +98,7 @@ class SpotifyAuth internal constructor(
             SpotifyLog.note("the sign-in", "Spotify answered error=$refusal")
             return Result.Failure(
                 if (refusal == "access_denied") {
-                    "You did not give Noctorium permission to read your Spotify library."
+                    "You did not give Noctorium permission to use your Spotify library."
                 } else {
                     explain(refusal)
                 },
@@ -178,11 +172,18 @@ class SpotifyAuth internal constructor(
                 refreshToken = parsed["refresh_token"]?.jsonPrimitive?.contentOrNull ?: existingRefresh,
                 // A minute is taken off, so a token is never used in the moment it stops being valid.
                 expiresAtEpochSeconds = Instant.now().epochSecond + seconds - 60,
+                scopes = parsed["scope"]?.jsonPrimitive?.contentOrNull?.split(' ')?.filter(String::isNotBlank)?.toSet()
+                    .orEmpty(),
             ),
         )
     }
 
-    internal fun authorizeUrl(clientId: String, challenge: String, state: String): String = buildString {
+    internal fun authorizeUrl(
+        clientId: String,
+        challenge: String,
+        state: String,
+        scopes: List<String> = SpotifyAccessLevel.LIBRARY.scopes,
+    ): String = buildString {
         append("https://accounts.spotify.com/authorize")
         append("?client_id=").append(encode(clientId))
         append("&response_type=code")
@@ -358,7 +359,37 @@ data class SpotifyTokens(
     val accessToken: String,
     val refreshToken: String?,
     val expiresAtEpochSeconds: Long,
+    /** What the sign-in allows, as Spotify granted it. Empty when Spotify did not say. */
+    val scopes: Set<String> = emptySet(),
 ) {
     fun isFresh(nowEpochSeconds: Long = Instant.now().epochSecond): Boolean =
         accessToken.isNotBlank() && expiresAtEpochSeconds > nowEpochSeconds
 }
+
+/**
+ * How much a Spotify sign-in allows: the two sign-ins Settings offers.
+ *
+ * Neither asks for `streaming`, which is the Web Playback SDK's and decodes audio in a browser; Noctorium
+ * has no browser to decode in. Playing on Spotify means telling the account's own Spotify app what to play.
+ */
+enum class SpotifyAccessLevel(val scopes: List<String>) {
+    /** Any account, Premium or not: the library, to read and to change. Never the player. */
+    LIBRARY(LIBRARY_SCOPES),
+
+    /** Premium: the library, and the account's own Spotify player -- its app, wherever it is open -- to play on. */
+    PLAYBACK(LIBRARY_SCOPES + listOf("user-read-playback-state", "user-modify-playback-state", "user-read-currently-playing")),
+}
+
+private val LIBRARY_SCOPES = listOf(
+    "playlist-read-private",
+    "playlist-read-collaborative",
+    "user-library-read",
+    // Liking and unliking: the heart beside a Spotify song.
+    "user-library-modify",
+    // Adding to and removing from the playlists the account made.
+    "playlist-modify-public",
+    "playlist-modify-private",
+    // Home's two Spotify rows: its top songs, and what it played lately.
+    "user-top-read",
+    "user-read-recently-played",
+)

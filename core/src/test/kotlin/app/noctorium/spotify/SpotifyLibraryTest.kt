@@ -310,14 +310,25 @@ class SpotifyAuthTest {
      * A scope that could change anything on their account has no business being requested.
      */
     @Test
-    fun `only reading is ever asked for`() {
+    fun `the library sign-in can change the library and never the player`() {
         val url = auth.authorizeUrl("id", "challenge", "state")
-        val scopes = url.substringAfter("scope=").substringBefore('&')
+        val scopes = url.substringAfter("scope=").substringBefore('&').split('+')
 
-        assertEquals("playlist-read-private+playlist-read-collaborative+user-library-read", scopes)
-        listOf("modify", "write", "upload", "streaming", "playback").forEach { forbidden ->
-            assertTrue(!scopes.contains(forbidden), "the scopes ask for more than reading: $scopes")
+        assertTrue("user-library-modify" in scopes && "playlist-modify-private" in scopes && "user-top-read" in scopes)
+        listOf("streaming", "playback", "upload", "follow").forEach { forbidden ->
+            assertTrue(scopes.none { it.contains(forbidden) }, "the library sign-in asks for $forbidden: $scopes")
         }
+    }
+
+    /** Playing on Spotify means telling its app what to play. Decoding audio (`streaming`) is never asked for. */
+    @Test
+    fun `the Premium sign-in adds the player and nothing that decodes audio`() {
+        val url = auth.authorizeUrl("id", "challenge", "state", SpotifyAccessLevel.PLAYBACK.scopes)
+        val scopes = url.substringAfter("scope=").substringBefore('&').split('+')
+
+        assertTrue("user-modify-playback-state" in scopes && "user-read-playback-state" in scopes)
+        assertTrue(SpotifyAccessLevel.LIBRARY.scopes.all { it in scopes })
+        assertTrue("streaming" !in scopes)
     }
 
     @Test
