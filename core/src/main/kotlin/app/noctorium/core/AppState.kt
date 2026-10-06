@@ -3661,7 +3661,18 @@ class AppState(
         }
     }
 
-    private data class SuggestionRequest(val seed: Track?, val from: AutoplaySource, val avoidRecent: Boolean, val asked: Int)
+    /**
+     * What autoplay is asked for. [autoplay] is part of it even though [seed] is already null without it:
+     * switched off far from the queue's end, the request would otherwise look exactly like the last one --
+     * nothing to ask for -- and the songs already lined up would stay, still played when the queue ran out.
+     */
+    private data class SuggestionRequest(
+        val autoplay: Boolean,
+        val seed: Track?,
+        val from: AutoplaySource,
+        val avoidRecent: Boolean,
+        val asked: Int,
+    )
 
     /**
      * Lines up what autoplay will play after the queue, from the service of the song that ends it.
@@ -3680,7 +3691,7 @@ class AppState(
             ) { state, (autoplay, from, avoidRecent), asked ->
                 val nearEnd = state.repeatMode == RepeatMode.OFF && state.tracks.isNotEmpty() &&
                     state.currentIndex >= state.tracks.lastIndex - 1
-                SuggestionRequest(state.tracks.lastOrNull()?.takeIf { autoplay && nearEnd }, from, avoidRecent, asked)
+                SuggestionRequest(autoplay, state.tracks.lastOrNull()?.takeIf { autoplay && nearEnd }, from, avoidRecent, asked)
             }
                 .distinctUntilChanged()
                 .collectLatest { request ->
@@ -3830,7 +3841,13 @@ class AppState(
     private fun keptQueue(state: app.noctorium.playback.QueueState) = app.noctorium.playback.SavedQueue(
         tracks = state.tracks,
         index = state.currentIndex.coerceAtLeast(0),
-        positionMs = playback.value.positionMs.takeIf { playback.value.track?.queueKey == state.current?.queueKey } ?: 0,
+        // Where the song playing has got to; or, before anything has played since launch, where it was left
+        // last time -- writing nothing played yet as "from the top" would lose that the moment it is restored.
+        positionMs = when {
+            playback.value.track?.queueKey == state.current?.queueKey -> playback.value.positionMs
+            pendingResume?.first == state.current?.queueKey -> pendingResume?.second ?: 0
+            else -> 0
+        },
         repeatMode = state.repeatMode,
     )
 
