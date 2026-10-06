@@ -416,6 +416,22 @@ class AppState(
      * decides for itself when a check is due, and makes it.
      */
     private val checkForUpdatesAtLaunch: Boolean = true,
+    /**
+     * Whether launching reads Home, the likes and the like from every signed-in service.
+     *
+     * A program that is opened to be used says yes. The terminal player's one-shot commands -- a search, a
+     * status line, a setting -- say no: each of them starts all of this anew, and a dozen of them in a row
+     * should not be a dozen readings of every library, which is exactly the traffic VK freezes accounts for.
+     */
+    private val refreshAtLaunch: Boolean = true,
+    /**
+     * Keeps this program's own service sessions apart from another Noctorium program's on the same computer.
+     *
+     * The desktop app and the terminal player can share one credential store -- the keychain on a Mac, the
+     * keyring on Linux -- and a VK session cannot be shared: VK replaces its cookies as it renews them, so two
+     * programs holding one session would sign each other out. The terminal player passes `cli`.
+     */
+    private val sessionNamespace: String = "",
 ) : AutoCloseable {
     /**
      * Spotify's tokens, read from and written to where the rest of Noctorium keeps such things.
@@ -445,9 +461,12 @@ class AppState(
      * VK, through the session of the account signed in on vk.ru. The two cookies that session is made of
      * are kept in the credential store and nowhere else; see [VkClient].
      */
+    /** This program's VK session, in its own entry when it has a namespace. See [sessionNamespace]. */
+    private val vkCookiesKey = if (sessionNamespace.isBlank()) VK_COOKIES else "$VK_COOKIES.$sessionNamespace"
+
     private val vkClient = VkClient(
-        readCookies = { credentials.get(VK_COOKIES)?.let(VkCookies::parse) },
-        writeCookies = { cookies -> credentials.put(VK_COOKIES, cookies.header) },
+        readCookies = { credentials.get(vkCookiesKey)?.let(VkCookies::parse) },
+        writeCookies = { cookies -> credentials.put(vkCookiesKey, cookies.header) },
     )
     private val vk = VkMusicProvider(vkClient)
 
@@ -712,7 +731,7 @@ class AppState(
                 mutableSettings.update { it.copy(scrobbling = scrobbling) }
             }
         }
-        refreshHome()
+        if (refreshAtLaunch) refreshHome()
         observeTrackCompletion()
         observeLooping()
         observeEqualizer()
@@ -722,7 +741,7 @@ class AppState(
         observeSuggestions()
         observeQueueForKeeping()
         observeNonMusicSegments()
-        warmUpForTheLikeliestPlay()
+        if (refreshAtLaunch) warmUpForTheLikeliestPlay()
         observeDiscordPresence()
         observeYouTubeSignIn()
         observeYouTubeHistory()
@@ -736,7 +755,10 @@ class AppState(
         // something to say.
         if (checkForUpdatesAtLaunch && storedPreferences.updates.checkOnLaunch) checkForUpdates(quietly = true)
         // Reading the stored refresh token decrypts through PowerShell, so it stays off the launch path.
-        scope.launch(Dispatchers.IO) { publishSpotifyState() }
+        // What a sign-in begun in the first moment has already said is kept, rather than wiped by this.
+        scope.launch(Dispatchers.IO) {
+            publishSpotifyState(connecting = mutableSettings.value.spotify.connecting, message = mutableSettings.value.spotify.message)
+        }
         scope.launch(Dispatchers.IO) {
             // Through the same helper as everything else: the credential can be missing while the saved
             // session still holds the token, and a listener whose session works should not be told that
@@ -753,8 +775,8 @@ class AppState(
                     vkReady = vkSignedIn,
                 )
             }
-            publishVkState()
-            if (soundCloudReady || youTubeSignedIn || spotifySignedIn || vkSignedIn) refreshLikes()
+            publishVkState(checking = mutableSettings.value.vk.checking, message = mutableSettings.value.vk.message)
+            if (refreshAtLaunch && (soundCloudReady || youTubeSignedIn || spotifySignedIn || vkSignedIn)) refreshLikes()
         }
     }
 
@@ -4452,7 +4474,7 @@ class AppState(
         scope.launch {
             try {
                 vkClient.exchange(cookies)
-                withContext(Dispatchers.IO) { credentials.put(VK_COOKIES, cookies.header) }
+                withContext(Dispatchers.IO) { credentials.put(vkCookiesKey, cookies.header) }
                 vkClient.adopt(cookies)
                 val name = runCatching { vkClient.profileName() }.getOrDefault("VK")
                 updatePreferences { copy(vkAccountName = name) }
@@ -4472,7 +4494,7 @@ class AppState(
     /** Forgets the VK session here. Nothing at VK changes. */
     fun disconnectVk() {
         scope.launch {
-            withContext(Dispatchers.IO) { runCatching { credentials.remove(VK_COOKIES) } }
+            withContext(Dispatchers.IO) { runCatching { credentials.remove(vkCookiesKey) } }
             vkClient.adopt(null)
             vkCopies.clear()
             updatePreferences { copy(vkAccountName = "") }
@@ -4860,7 +4882,7 @@ private const val KEEP_QUEUE_PAUSE_MS = 1_500L
 private const val MAX_SLEEP_FADE_SECONDS = 120
 private const val SLEEP_FADE_STEP_MS = 250L
 
-/** Where the VK session's cookies are kept in the credential store. */
+/** Where the VK session's cookies are kept in the credential store, before any namespace. */
 private const val VK_COOKIES = "vk.session_cookies"
 
 /** How many songs of My music are read for VK's hearts. */
