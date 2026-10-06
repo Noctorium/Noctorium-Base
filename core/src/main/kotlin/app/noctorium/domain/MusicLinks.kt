@@ -52,7 +52,7 @@ fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
  * purpose: [readLink] is the part that decides, this only finds places worth asking about.
  */
 private val CANDIDATE = Regex(
-    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl)(?:/[^\s<>"']*)?""",
+    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com)(?:/[^\s<>"']*)?""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -90,6 +90,7 @@ private fun readLink(raw: String): MusicLink? {
                 MusicLink(ProviderType.SOUNDCLOUD, LinkKind.SHORT, code, "https://$host/$code")
             }
         host == "soundcloud.com" || host == "m.soundcloud.com" -> soundCloud(segments)
+        host.endsWith(".bandcamp.com") -> bandcamp(host, segments)
         else -> null
     }
 }
@@ -120,6 +121,26 @@ private fun youTubeTrack(provider: ProviderType, id: String?): MusicLink? {
     }
     return MusicLink(provider, LinkKind.TRACK, video, url)
 }
+
+/**
+ * A song or an album on an artist's Bandcamp site, `artist.bandcamp.com/track/name` or `/album/name`.
+ *
+ * Only those two. An artist's front page is a shop rather than a song, and bandcamp.com itself is the
+ * site's own pages; artists on a domain of their own cannot be told from any other website by address.
+ */
+private fun bandcamp(host: String, segments: List<String>): MusicLink? {
+    if (host == "daily.bandcamp.com" || host == "www.bandcamp.com") return null
+    val kind = when (segments.getOrNull(0)) {
+        "track" -> LinkKind.TRACK
+        "album" -> LinkKind.PLAYLIST
+        else -> return null
+    }
+    val slug = segments.getOrNull(1)?.takeIf(BANDCAMP_SLUG::matches) ?: return null
+    val path = "$host/${segments[0]}/$slug"
+    return MusicLink(ProviderType.BANDCAMP, kind, path, "https://$path")
+}
+
+private val BANDCAMP_SLUG = Regex("""[A-Za-z0-9_-]+""")
 
 private fun soundCloud(segments: List<String>): MusicLink? {
     val user = segments.getOrNull(0)?.takeIf(SOUNDCLOUD_NAME::matches) ?: return null

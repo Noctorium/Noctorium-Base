@@ -56,6 +56,14 @@ data class Track(
     val queueKey: String get() = "${provider.name}:$id"
 }
 
+/**
+ * The address of the track's own page, for opening in a browser or sending to somebody.
+ *
+ * The same as [Track.sourceUrl], except where Noctorium writes what it needs to play the track after it --
+ * which means nothing to anybody else.
+ */
+val Track.pageUrl: String get() = app.noctorium.bandcamp.BandcampSource.page(sourceUrl)
+
 @Serializable
 data class Playlist(
     val id: String,

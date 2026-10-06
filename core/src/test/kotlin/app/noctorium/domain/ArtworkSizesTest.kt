@@ -35,6 +35,15 @@ class ArtworkSizesTest {
     }
 
     @Test
+    fun `a Bandcamp cover moves between the sizes Bandcamp makes`() {
+        val cover = "https://f4.bcbits.com/img/a3370493783_16.jpg"
+        assertEquals("https://f4.bcbits.com/img/a3370493783_3.jpg", artworkAt(cover, 64))
+        assertEquals("https://f4.bcbits.com/img/a3370493783_10.jpg", artworkAt(cover, 1024))
+        // An artist picture has no `a`, and keeps not having one.
+        assertEquals("https://f4.bcbits.com/img/0036413367_23.jpg", artworkAt("https://f4.bcbits.com/img/0036413367_10.jpg", 256))
+    }
+
+    @Test
     fun `a Google address with no size gets one`() {
         assertEquals("https://lh3.googleusercontent.com/abc=w300-h300-l90-rj", artworkAt("https://lh3.googleusercontent.com/abc", 300))
     }

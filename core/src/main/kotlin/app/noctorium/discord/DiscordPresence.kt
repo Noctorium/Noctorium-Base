@@ -2,6 +2,7 @@ package app.noctorium.discord
 
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
+import app.noctorium.domain.pageUrl
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonArray
@@ -109,7 +110,7 @@ data class PresenceContext(
             artist = track.artistLine,
             album = track.album?.title.orEmpty(),
             provider = track.provider.displayName,
-            url = track.sourceUrl,
+            url = track.pageUrl,
             positionText = formatClock(positionMs),
             durationText = formatClock(durationMs),
         )

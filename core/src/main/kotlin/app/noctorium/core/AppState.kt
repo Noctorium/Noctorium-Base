@@ -1,5 +1,7 @@
 package app.noctorium.core
 
+import app.noctorium.bandcamp.BandcampGenre
+import app.noctorium.bandcamp.BandcampMusicProvider
 import app.noctorium.downloads.DownloadManager
 import app.noctorium.downloads.MusicExport
 import app.noctorium.downloads.DownloadsState
@@ -17,6 +19,8 @@ import app.noctorium.playback.QueueManager
 import app.noctorium.playback.RepeatMode
 import app.noctorium.playback.PlaybackLog
 import app.noctorium.playback.SessionProbe
+import app.noctorium.playback.ServiceStream
+import app.noctorium.playback.ServiceStreams
 import app.noctorium.playback.UncheckedSession
 import app.noctorium.platform.SystemBridge
 import app.noctorium.discord.PresenceReporter
@@ -158,12 +162,28 @@ data class LinkState(
     val tracks: List<Track> = emptyList(),
     val message: String? = null,
 )
-enum class ProviderFilter { ALL, YOUTUBE_MUSIC, SOUNDCLOUD }
+/** Which service's rows Home shows. */
+enum class ProviderFilter(val displayName: String) {
+    ALL("All"),
+    YOUTUBE_MUSIC("YouTube Music"),
+    SOUNDCLOUD("SoundCloud"),
+    BANDCAMP("Bandcamp");
+
+    /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
+    fun matches(provider: ProviderType): Boolean = when (this) {
+        ALL -> true
+        YOUTUBE_MUSIC -> provider == ProviderType.YOUTUBE_MUSIC || provider == ProviderType.YOUTUBE_VIDEO
+        SOUNDCLOUD -> provider == ProviderType.SOUNDCLOUD
+        BANDCAMP -> provider == ProviderType.BANDCAMP
+    }
+}
+
 enum class SearchMode(val displayName: String) {
     HYBRID("Hybrid"),
     SOUNDCLOUD("SoundCloud"),
     YOUTUBE_MUSIC("YouTube Music"),
     YOUTUBE_VIDEO("YouTube Videos"),
+    BANDCAMP("Bandcamp"),
 }
 
 data class LibraryState(
@@ -386,6 +406,20 @@ class AppState(
         clearRefreshToken = { runCatching { credentials.remove(SPOTIFY_REFRESH_TOKEN) } },
     )
 
+    /**
+     * Bandcamp, kept by name as well as in the list below: its streams are read here rather than by the
+     * backend, and a pasted Bandcamp address is opened through it.
+     */
+    private val bandcamp = BandcampMusicProvider(
+        fanName = { mutableSettings.value.preferences.bandcampUsername },
+        homeGenres = { mutableSettings.value.preferences.bandcampGenres },
+    )
+
+    /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
+    private val serviceStreams = ServiceStreams { sourceUrl ->
+        bandcamp.streamFor(sourceUrl)?.let(::ServiceStream)
+    }
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         BackendMusicProvider(
@@ -402,6 +436,7 @@ class AppState(
             playlistTracks = ::soundCloudPlaylistTracks,
         ),
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
+        bandcamp,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -575,6 +610,7 @@ class AppState(
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
     init {
+        ytDlp.useServiceStreams(serviceStreams)
         applyAccountPreferences(mutableSettings.value.preferences)
         describeSavedAccounts(mutableSettings.value.preferences)
         scrobbleManager.observe(playback, scope)
@@ -955,6 +991,54 @@ class AppState(
         mutableLibrary.update { it.copy(loaded = false) }
         mutableSettings.update { it.copy(message = "SoundCloud profile name saved as \"$cleaned\".") }
         if (cleaned.isNotBlank()) refreshLibrary(force = true)
+    }
+
+    /**
+     * Shows the Bandcamp collection of the fan at `bandcamp.com/<name>`, or none for a blank name.
+     *
+     * Takes the whole address as readily as the name, because the address is what gets copied. The name
+     * is checked with Bandcamp before it is kept: a misspelt one would otherwise be an empty library with
+     * no reason given.
+     */
+    fun setBandcampUsername(input: String) {
+        val name = input.trim().substringBefore('?').trimEnd('/').substringAfterLast('/').removePrefix("@").take(64)
+        if (name.isBlank()) {
+            updatePreferences { copy(bandcampUsername = "") }
+            mutableSettings.update { it.copy(bandcamp = BandcampConnectionState(message = "Bandcamp collection removed.")) }
+            mutableLibrary.update { it.withoutProvider(ProviderType.BANDCAMP) }
+            refreshHome()
+            return
+        }
+        mutableSettings.update { it.copy(bandcamp = it.bandcamp.copy(checking = true, message = null)) }
+        scope.launch {
+            val fan = try {
+                bandcamp.fanNamed(name)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                mutableSettings.update {
+                    it.copy(bandcamp = it.bandcamp.copy(checking = false, message = readableFailure(error, "Could not reach Bandcamp.")))
+                }
+                return@launch
+            }
+            if (fan == null) {
+                mutableSettings.update {
+                    it.copy(bandcamp = it.bandcamp.copy(checking = false, message = "Bandcamp has no fan called \"$name\". It is the name at the end of your Bandcamp address."))
+                }
+                return@launch
+            }
+            updatePreferences { copy(bandcampUsername = fan.username) }
+            mutableSettings.update { it.copy(bandcamp = BandcampConnectionState(fanName = fan.name)) }
+            mutableLibrary.update { it.copy(loaded = false) }
+            refreshLibrary(force = true)
+            refreshHome()
+        }
+    }
+
+    /** The genres Home has a Bandcamp row for, in the order given. */
+    fun setBandcampGenres(genres: List<BandcampGenre>) {
+        updatePreferences { copy(bandcampGenres = genres.distinct()) }
+        refreshHome()
     }
 
     /** Loads the listener's own playlists from every provider whose session is configured. */
@@ -2385,7 +2469,7 @@ class AppState(
 
     /** Copies the provider page for one track, which anyone can open with or without Noctorium. */
     fun copyTrackLink(track: Track) {
-        runCatching { system.copyToClipboard(track.sourceUrl) }
+        runCatching { system.copyToClipboard(track.pageUrl) }
             .onSuccess { libraryNotice("Link to ${track.title} copied.") }
             .onFailure { libraryNotice("Could not reach the clipboard.") }
     }
@@ -3008,6 +3092,7 @@ class AppState(
                 SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }
                 SearchMode.YOUTUBE_MUSIC -> providers.filter { it.type == ProviderType.YOUTUBE_MUSIC }
                 SearchMode.YOUTUBE_VIDEO -> providers.filter { it.type == ProviderType.YOUTUBE_VIDEO }
+                SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -3610,8 +3695,11 @@ class AppState(
             try {
                 val link = shortLinks.expand(found)
                     ?: throw BackendException("That share link does not lead to a song or a playlist.")
-                val tracks = when (link.kind) {
-                    LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
+                val tracks = when {
+                    // Read by its own client, which finds the song, the album or the artist behind the address.
+                    link.provider == ProviderType.BANDCAMP -> bandcamp.tracksAt(link.url)
+                        .ifEmpty { throw BackendException("That Bandcamp page has nothing on it that can be played.") }
+                    link.kind == LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
                         .ifEmpty { throw BackendException("That playlist has nothing in it that can be played, or it is private.") }
                     else -> link.placeholderTrack().let { placeholder ->
                         if (action == LinkAction.PLAY) placeholder else ytDlp.enrichMetadata(placeholder)
@@ -3664,7 +3752,9 @@ class AppState(
 
     /** Downloads every track in a playlist that is not already here. */
     fun downloadAll(tracks: List<Track>) {
-        val pending = tracks
+        val keepable = tracks.filter(::canKeep)
+        if (keepable.size < tracks.size) libraryNotice(KEEPING_BANDCAMP)
+        val pending = keepable
             .map(::downloadableTrack)
             .filterNot { downloads.state.value.isDownloaded(it) }
         if (pending.isEmpty()) return downloads.refresh()
@@ -3689,6 +3779,7 @@ class AppState(
      * the song cannot be found, and [resolveSpotify] has already said why.
      */
     private fun onPlayable(track: Track, act: (Track) -> Unit) {
+        if (!canKeep(track)) return libraryNotice(KEEPING_BANDCAMP)
         if (track.provider != ProviderType.SPOTIFY) return act(track)
         spotifyMatches[track.id]?.let { return act(it) }
         scope.launch { resolveSpotify(track)?.let(act) }
@@ -3707,7 +3798,17 @@ class AppState(
         }
     }
 
+    /**
+     * Whether a track's audio may be kept, as a download or as a saved file.
+     *
+     * Not Bandcamp's. What Bandcamp streams to everybody is there to be heard on the way to being bought,
+     * and the file is the artist's to sell -- so Noctorium plays it, and points at the purchase instead.
+     */
+    fun canKeep(track: Track): Boolean = track.provider != ProviderType.BANDCAMP
+
     fun exportAll(tracks: List<Track>) {
+        if (tracks.any { !canKeep(it) }) libraryNotice(KEEPING_BANDCAMP)
+        @Suppress("NAME_SHADOWING") val tracks = tracks.filter(::canKeep)
         val folder = exportFolder()
         // Only the last one reveals the folder, or saving an album would open a window per track.
         tracks.forEachIndexed { index, track ->
@@ -3769,10 +3870,10 @@ class AppState(
 private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> ProviderType.YOUTUBE_MUSIC
     ProviderType.SOUNDCLOUD -> ProviderType.SOUNDCLOUD
-    // Each its own account, signed in on its own.
-    ProviderType.BANDCAMP -> ProviderType.BANDCAMP
-    ProviderType.VK -> ProviderType.VK
-    ProviderType.SPOTIFY, ProviderType.LOCAL -> null
+    // No cookie session to keep. Bandcamp needs only a fan's name and VK keeps a token of its own, so a
+    // slot here would send them down the cookie paths below -- which fall back to YouTube's session, and
+    // disconnecting either would then have signed YouTube out.
+    ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.LOCAL -> null
 }
 
 /**
@@ -3785,8 +3886,10 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     // Always possible now that Noctorium brings a Spotify app of its own. Whether anybody has signed in is
     // a separate question, and one the provider answers with silence rather than a request.
     ProviderType.SPOTIFY -> true
-    // Until their providers are part of the library.
-    ProviderType.BANDCAMP, ProviderType.VK -> false
+    // A fan's collection is public, so the name in their address is all it takes.
+    ProviderType.BANDCAMP -> bandcampUsername.isNotBlank()
+    // Until its provider is part of the library.
+    ProviderType.VK -> false
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -3996,6 +4099,10 @@ private const val SIGN_IN_CHECK_EVERY_MS = 3 * 60 * 60_000L
  * not linger past the next look.
  */
 private const val RECENT_LIKE_GRACE_MS = 10 * 60 * 1000L
+
+/** Why a Bandcamp song is not downloaded or saved. See [AppState.canKeep]. */
+private const val KEEPING_BANDCAMP =
+    "Bandcamp streams are for listening. To keep a song, buy it on its Bandcamp page and the file is yours."
 
 /** When a like SoundCloud never answered is looked for in the account's likes: about three minutes in all. */
 private val LIKE_CHECK_DELAYS_MS = listOf(4_000L, 10_000L, 30_000L, 60_000L, 90_000L)

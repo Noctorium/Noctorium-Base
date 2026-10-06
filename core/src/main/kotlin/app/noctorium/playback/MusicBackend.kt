@@ -52,6 +52,14 @@ interface MusicBackend {
     /** Fills in what a listing did not carry for one track, returning it unchanged if nothing can be. */
     suspend fun enrichMetadata(track: Track): Track
 
+    /**
+     * Hands over the services core reads for itself, so that their addresses are answered by core.
+     *
+     * Called once, by [app.noctorium.core.AppState], before anything plays. A backend that ignores it
+     * still plays everything it always has; it just cannot play Bandcamp or VK.
+     */
+    fun useServiceStreams(streams: ServiceStreams) {}
+
     /** An address the player can actually read audio from. Not durable — these expire. */
     suspend fun resolveAudio(sourceUrl: String): String
 

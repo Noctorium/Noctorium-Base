@@ -164,11 +164,33 @@ class YtDlpService(
      */
     private val addresses = AudioAddressCache()
 
+    /** Bandcamp and VK, which core reads for itself. See [ServiceStreams]. */
+    @Volatile private var serviceStreams: ServiceStreams? = null
+
+    override fun useServiceStreams(streams: ServiceStreams) {
+        serviceStreams = streams
+    }
+
+    /**
+     * The address core has for [sourceUrl], if it is one of core's services, remembering the User-Agent it
+     * was issued to so mpv asks for it as the same client.
+     */
+    private suspend fun serviceStream(sourceUrl: String): ServiceStream? =
+        serviceStreams?.streamFor(sourceUrl)?.also { stream ->
+            stream.userAgent?.let { agent ->
+                if (streamAgents.size > MAX_REMEMBERED_AGENTS) streamAgents.clear()
+                streamAgents[stream.address] = agent
+            }
+        }
+
     override suspend fun resolveAudio(sourceUrl: String): String {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
         }
         return addresses.resolve(sourceUrl) {
+            // Core's own services first: yt-dlp would be asked to read a page it does not need to read, or
+            // one it cannot read at all.
+            serviceStream(sourceUrl)?.let { return@resolve it.address }
             // A lookup that fails the instant a laptop changes Wi-Fi is asked once more before anyone is
             // told about it. See retryingTransientFailures for why only quick failures are retried.
             retryingTransientFailures { withContext(Dispatchers.IO) { fetchAudioAddress(sourceUrl) } }
@@ -234,6 +256,15 @@ class YtDlpService(
      */
     suspend fun resolveBrowserAudio(sourceUrl: String): BrowserStream = withContext(Dispatchers.IO) {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) { "Only HTTP media sources are accepted" }
+        serviceStream(sourceUrl)?.let { stream ->
+            return@withContext BrowserStream(
+                url = stream.address,
+                protocol = if (stream.isHls) "m3u8_native" else "https",
+                extension = if (stream.isHls) "m3u8" else "mp3",
+                codec = "",
+                headers = stream.userAgent?.let { mapOf("User-Agent" to it) }.orEmpty(),
+            )
+        }
         val provider = when {
             "music.youtube.com" in sourceUrl -> ProviderType.YOUTUBE_MUSIC
             "youtube.com" in sourceUrl || "youtu.be" in sourceUrl -> ProviderType.YOUTUBE_VIDEO

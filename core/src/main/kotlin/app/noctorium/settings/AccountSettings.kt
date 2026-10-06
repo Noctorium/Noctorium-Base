@@ -421,6 +421,14 @@ data class NoctoriumPreferences(
     /** Name of the connected Spotify account, kept only so Settings can say whose library is showing. */
     val spotifyAccountName: String = "",
     /**
+     * The name in the listener's Bandcamp address, `bandcamp.com/<name>`, whose collection the library shows.
+     *
+     * A name rather than a sign-in: Bandcamp shows a fan's collection to anybody, so this is all it takes.
+     */
+    val bandcampUsername: String = "",
+    /** Bandcamp's genres Home has a row for, in this order. */
+    val bandcampGenres: List<app.noctorium.bandcamp.BandcampGenre> = app.noctorium.bandcamp.BandcampGenre.DEFAULT_HOME,
+    /**
      * Choices that only mean something on a phone.
      *
      * Kept in the same file rather than a second one, because the settings file is per-device anyway and
@@ -759,6 +767,16 @@ data class SettingsState(
     val youtubeAccount: AccountConnectionState = AccountConnectionState(),
     val soundCloudAccount: AccountConnectionState = AccountConnectionState(),
     val spotify: SpotifyConnectionState = SpotifyConnectionState(),
+    val bandcamp: BandcampConnectionState = BandcampConnectionState(),
+)
+
+/** The Bandcamp collection the library shows, and how the last look for it went. */
+data class BandcampConnectionState(
+    /** The fan's own name for themselves, once Bandcamp has confirmed the address. Blank until then. */
+    val fanName: String = "",
+    /** True while Bandcamp is being asked whether the name is a fan. */
+    val checking: Boolean = false,
+    val message: String? = null,
 )
 
 /**

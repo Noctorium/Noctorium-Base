@@ -3,6 +3,7 @@ package app.noctorium.playlists
 import app.noctorium.domain.Artist
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
+import app.noctorium.domain.pageUrl
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -128,5 +129,5 @@ fun shareableText(title: String, tracks: List<Track>): String = buildString {
     appendLine(title)
     tracks.forEach { track -> appendLine("${track.artistLine} — ${track.title}") }
     appendLine()
-    tracks.forEach { track -> appendLine(track.sourceUrl) }
+    tracks.forEach { track -> appendLine(track.pageUrl) }
 }.trim()

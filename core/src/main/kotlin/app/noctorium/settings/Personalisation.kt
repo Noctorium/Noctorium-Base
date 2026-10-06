@@ -159,6 +159,7 @@ enum class HomePart(val displayName: String, val description: String) {
     RECENT("Played lately", "What you played last."),
     YOUTUBE_MUSIC("From YouTube Music", "Its mixes and suggestions for you."),
     SOUNDCLOUD("From SoundCloud", "Your stream and its suggestions."),
+    BANDCAMP("From Bandcamp", "Best-sellers, new releases and the genres you picked."),
 }
 
 /** Home's suggested rows, without the ones from a service the listener put away. */
@@ -166,6 +167,7 @@ fun List<HomeSection>.withoutHidden(hidden: Set<HomePart>): List<HomeSection> = 
     when (section.provider) {
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> HomePart.YOUTUBE_MUSIC in hidden
         ProviderType.SOUNDCLOUD -> HomePart.SOUNDCLOUD in hidden
+        ProviderType.BANDCAMP -> HomePart.BANDCAMP in hidden
         else -> false
     }
 }

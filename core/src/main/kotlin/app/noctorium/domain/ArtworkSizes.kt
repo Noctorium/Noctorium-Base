@@ -17,7 +17,7 @@ package app.noctorium.domain
  */
 fun artworkAt(url: String, px: Int): String {
     if (px <= 0) return url
-    return googleSized(url, px) ?: youTubeThumbnailSized(url, px) ?: soundCloudSized(url, px) ?: url
+    return googleSized(url, px) ?: youTubeThumbnailSized(url, px) ?: soundCloudSized(url, px) ?: bandcampSized(url, px) ?: url
 }
 
 /**
@@ -96,6 +96,22 @@ private fun soundCloudSized(url: String, px: Int): String? {
 }
 
 private val SOUNDCLOUD_SIZE = Regex("""-(large|t\d+x\d+|small|badge|tiny|mini|crop)\.(jpg|png|jpeg)""")
+
+/**
+ * Bandcamp covers and artist pictures, numbered by a size code after the last underscore: `a0123456789_16.jpg`.
+ *
+ * Each code is a fixed square, measured rather than guessed -- the same codes the Bandcamp client asks for
+ * in the first place. The other codes crop or letterbox, so a cover is only ever moved between these.
+ */
+private fun bandcampSized(url: String, px: Int): String? {
+    val host = hostOf(url) ?: return null
+    if (!host.endsWith("bcbits.com")) return null
+    val match = BANDCAMP_SIZE.find(url) ?: return null
+    val wanted = app.noctorium.bandcamp.BandcampClient.sizeCode(px)
+    return url.replaceRange(match.groups[1]!!.range, wanted.toString())
+}
+
+private val BANDCAMP_SIZE = Regex("""/img/a?\d+_(\d+)\.(jpg|png)$""")
 
 /**
  * A drawn size rounded up to one of a few, so that covers a handful of pixels apart share one fetch and
