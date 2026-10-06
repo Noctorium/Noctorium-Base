@@ -33,6 +33,8 @@ import app.noctorium.discord.NoPresenceReporter
 import app.noctorium.playback.AccountProbeOutcome
 import app.noctorium.playback.AccountProbeRequest
 import app.noctorium.playback.PlaybackEngine
+import app.noctorium.playback.MIN_SPEED
+import app.noctorium.playback.MAX_SPEED
 import app.noctorium.playback.PlaybackState
 import app.noctorium.playback.PlaybackStatus
 import app.noctorium.playlists.LocalPlaylist
@@ -128,6 +130,7 @@ import app.noctorium.account.NoctoriumUser
 import app.noctorium.settings.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -531,6 +534,7 @@ class AppState(
                 recentTracks = rawRecent.edited(edits),
                 pinnedTracks = rawPinned.edited(edits),
                 trackEdits = edits,
+                searchMode = SearchMode.entries.firstOrNull { it.name == storedPreferences.searchMode } ?: SearchMode.HYBRID,
             )
         },
     )
@@ -682,6 +686,8 @@ class AppState(
         observeTrackCompletion()
         observeLooping()
         observeEqualizer()
+        observeSpeed()
+        observeSleepFade()
         observeUpcoming()
         observeNonMusicSegments()
         warmUpForTheLikeliestPlay()
@@ -724,6 +730,7 @@ class AppState(
     fun setFilter(filter: ProviderFilter) = mutableUi.update { it.copy(providerFilter = filter) }
     fun setSearchMode(mode: SearchMode) {
         if (mutableUi.value.searchMode == mode) return
+        updatePreferences { copy(searchMode = mode.name) }
         mutableUi.update { it.copy(searchMode = mode, searchResults = SearchResults(), errorMessage = null) }
         search(mutableUi.value.searchQuery)
     }
@@ -3076,7 +3083,10 @@ class AppState(
             runCatching {
                 browseSecureUrl(url)
             }.onFailure { error ->
+                // Said where the lyrics are, which is where most of these opens come from, and as a notice,
+                // which is shown wherever a page was opened from -- a song's menu, a playlist, Settings.
                 mutableLyrics.update { it.copy(errorMessage = error.message ?: "Could not open the lyrics source") }
+                libraryNotice("Could not open that page: ${error.message ?: "no browser answered"}")
             }
         }
     }
@@ -3294,6 +3304,7 @@ class AppState(
                 // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
                 // slower, less certain copy of the YouTube Music result beside it.
                 SearchMode.HYBRID -> providers.filter {
+                    it.type in mutableSettings.value.preferences.hybridSearch &&
                     (it.type != ProviderType.SPOTIFY || spotifyPlaysSongs()) &&
                         // VK only for an account signed in to it: otherwise its refusal is all it would add.
                         (it.type != ProviderType.VK || vkClient.isSignedIn())
@@ -3390,7 +3401,9 @@ class AppState(
                     previous.track?.let { recordListen(it, previous.positionMs, previous.durationMs) }
                     // A sleep timer set to the end of the track ends here. The listen is still counted;
                     // the queue is left where it is rather than moved on for nobody.
-                    if (!sleeper.trackEnded()) queue.next(respectRepeatOne = true)?.let { playEnriched(it) }
+                    if (!sleeper.trackEnded()) {
+                        queue.next(respectRepeatOne = true)?.let { playEnriched(it) } ?: carryOn(previous.track)
+                    }
                 }
                 // The player went round again on its own. That is a whole listen, counted as one; and
                 // if a sleep timer was waiting for the end of the track, this was it. Looping is switched
@@ -3429,6 +3442,114 @@ class AppState(
      * Keeps the player's equaliser in step with the settings: told once at start, and again on every change.
      * A player that has no equaliser leaves it alone.
      */
+    // --- Ways of listening the listener chooses ---
+
+    /** Plays faster or slower, keeping the pitch: from half to double the recorded speed. */
+    fun setPlaybackSpeed(speed: Float) {
+        val rounded = (Math.round(speed.coerceIn(MIN_SPEED, MAX_SPEED) * 20) / 20f)
+        updatePreferences { copy(playbackSpeed = rounded) }
+    }
+
+    /** Whether the queue running out carries on with similar songs or stops. */
+    fun setAutoplay(enabled: Boolean) = updatePreferences { copy(autoplay = enabled) }
+
+    /** Includes a service in Hybrid search, or leaves it out. At least one always stays. */
+    fun setHybridSearchService(provider: ProviderType, included: Boolean) {
+        val current = mutableSettings.value.preferences.hybridSearch
+        val next = if (included) current + provider else current - provider
+        if (next.isEmpty()) return
+        updatePreferences { copy(hybridSearch = next) }
+        if (mutableUi.value.searchMode == SearchMode.HYBRID) search(mutableUi.value.searchQuery)
+    }
+
+    /** How many seconds a sleep timer spends lowering the volume before it pauses; zero for none. */
+    fun setSleepFade(seconds: Int) = updatePreferences { copy(sleepFadeSeconds = seconds.coerceIn(0, MAX_SLEEP_FADE_SECONDS)) }
+
+    /** Lower-quality audio to use less data, where the platform can choose. */
+    fun setDataSaver(saver: DataSaver) = updatePreferences { copy(phone = phone.copy(dataSaver = saver)) }
+
+    private fun observeSpeed() {
+        scope.launch {
+            mutableSettings.map { it.preferences.playbackSpeed }.distinctUntilChanged().collect { speed ->
+                runCatching { player.setSpeed(speed) }
+            }
+        }
+    }
+
+    /**
+     * Lowers the volume over the last seconds of a sleep timer, so sleep comes as a fade rather than a cut.
+     *
+     * The volume goes back to where it was once the timer has paused the music -- or at once, if the timer
+     * is cancelled or moved on halfway -- so the next song in the morning is not silent.
+     */
+    private fun observeSleepFade() {
+        scope.launch {
+            sleeper.state.collectLatest { timer ->
+                val countdown = timer as? SleepTimerState.Countdown ?: return@collectLatest
+                val fadeMs = mutableSettings.value.preferences.sleepFadeSeconds * 1_000L
+                if (fadeMs <= 0) return@collectLatest
+                delay((countdown.endsAtEpochMs - fadeMs - System.currentTimeMillis()).coerceAtLeast(0))
+                val from = playback.value.volume
+                var reachedEnd = false
+                try {
+                    while (true) {
+                        val left = countdown.endsAtEpochMs - System.currentTimeMillis()
+                        if (left <= 0) {
+                            reachedEnd = true
+                            break
+                        }
+                        player.setVolume(from * (left.toFloat() / fadeMs).coerceIn(0f, 1f))
+                        delay(SLEEP_FADE_STEP_MS)
+                    }
+                } finally {
+                    withContext(NonCancellable) {
+                        if (reachedEnd) withTimeoutOrNull(3_000) { playback.first { !it.isPlaying } }
+                        player.setVolume(from)
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * What plays when the queue runs out: songs like the one that just ended, when the listener wants that.
+     *
+     * Bandcamp and VK suggest their own; for everything else, YouTube Music's radio after the same song --
+     * the song itself where it is YouTube's, or its match there where it is not.
+     */
+    private fun carryOn(after: Track?) {
+        val seed = after ?: return
+        if (!mutableSettings.value.preferences.autoplay) return
+        scope.launch {
+            val queued = queue.state.value.tracks.map(Track::queueKey).toSet()
+            val more = runCatching { similarTo(seed) }.getOrDefault(emptyList())
+                .filterNot { it.queueKey in queued }
+                .distinctBy(Track::queueKey)
+                .take(AUTOPLAY_BATCH)
+            if (more.isEmpty()) return@launch
+            PlaybackLog.event("autoplay", mapOf("after" to seed.queueKey, "count" to more.size))
+            more.forEach(queue::addToQueue)
+            queue.next()?.let { playEnriched(it) }
+        }
+    }
+
+    private suspend fun similarTo(track: Track): List<Track> {
+        val context = PlaybackContext(track.provider, PlaybackOrigin.QUEUE, seedTrackId = track.id)
+        return when (track.provider) {
+            ProviderType.BANDCAMP -> bandcamp.getRecommendations(context)
+            ProviderType.VK -> vk.getRecommendations(context)
+            ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeRadio(track.id)
+            else -> youTubeSongSearch("${track.artistLine} ${track.title}", 1).firstOrNull()
+                ?.let { match -> youTubeRadio(match.id) }.orEmpty()
+        }
+    }
+
+    private suspend fun youTubeRadio(videoId: String): List<Track> {
+        val keys = innertubeKeys.keys() ?: return emptyList()
+        val session = youTubeSession() ?: YouTubeSession(keys, null)
+        return youTubeMusic.radio(videoId, AUTOPLAY_BATCH + 5, session)
+    }
+
     private fun observeEqualizer() {
         scope.launch {
             mutableSettings.map { it.preferences.equalizer }.distinctUntilChanged().collect { equalizer ->
@@ -3918,6 +4039,11 @@ class AppState(
                     else -> link.placeholderTrack().let { placeholder ->
                         if (action == LinkAction.PLAY) placeholder else ytDlp.enrichMetadata(placeholder)
                     }.let(::listOf)
+                }
+                // A download or a save of nothing that may be kept is refused here, in words, rather than
+                // reported as under way while nothing happens.
+                if ((action == LinkAction.DOWNLOAD || action == LinkAction.SAVE) && tracks.none(::canKeep)) {
+                    throw BackendException(keepRefusal(tracks.first()))
                 }
                 when (action) {
                     LinkAction.PLAY -> play(
@@ -4420,6 +4546,12 @@ private const val RECENT_LIKE_GRACE_MS = 10 * 60 * 1000L
 
 /** How many of Spotify's Liked Songs are read for the hearts: the most recent, forty pages' worth. */
 private const val SPOTIFY_HEARTS = 2_000
+
+/** How many songs autoplay adds to the queue at a time, when it runs out. */
+private const val AUTOPLAY_BATCH = 20
+
+private const val MAX_SLEEP_FADE_SECONDS = 120
+private const val SLEEP_FADE_STEP_MS = 250L
 
 /** Where the VK session's cookies are kept in the credential store. */
 private const val VK_COOKIES = "vk.session_cookies"

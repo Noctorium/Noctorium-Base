@@ -83,6 +83,7 @@ class RoutingPlaybackEngine(
         elsewhere.setLooping(enabled)
     }
     override suspend fun setEqualizer(settings: EqualizerSettings) = local.setEqualizer(settings)
+    override suspend fun setSpeed(speed: Float) = local.setSpeed(speed)
 
     override fun close() {
         mirror?.cancel()

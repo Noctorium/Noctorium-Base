@@ -597,6 +597,69 @@ class YouTubeMusicClient internal constructor(
         else -> null
     }
 
+    /**
+     * YouTube Music's radio after one song: what its own player carries on into when the song ends.
+     *
+     * Asked for the way that player asks, through `next` with the song's radio list -- `RDAMVM` and the
+     * video id -- whose panel lists what follows. It works signed out, where radio is not personal; signed
+     * in, it leans towards the account's own listening, as it does on music.youtube.com.
+     */
+    suspend fun radio(videoId: String, limit: Int, session: YouTubeSession): List<Track> {
+        if (videoId.isBlank() || limit <= 0) return emptyList()
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("videoId", videoId)
+            put("playlistId", "RDAMVM$videoId")
+            put("isAudioOnly", true)
+        }
+        val response = post("next", body.toString(), session) ?: return emptyList()
+        if (response.status !in 200..299) return emptyList()
+        return parseRadio(response.body).filterNot { it.id == videoId }.take(limit)
+    }
+
+    /** The songs of a radio panel, in order, each once. */
+    internal fun parseRadio(body: String): List<Track> = runCatching {
+        val rows = mutableListOf<JsonObject>()
+        collectRenderers(json.parseToJsonElement(body), "playlistPanelVideoRenderer", rows)
+        rows.mapNotNull(::radioSongFrom).distinctBy { it.id }
+    }.getOrDefault(emptyList())
+
+    /**
+     * One song of the radio panel: a title, and a byline of artists, then the album and the year, with the
+     * same " • " between fields that search rows use.
+     */
+    private fun radioSongFrom(row: JsonObject): Track? {
+        val videoId = row["videoId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        val title = (row["title"] as? JsonObject)?.let(::runsOf)?.trim()?.takeIf(String::isNotBlank) ?: return null
+        val runs = ((row["longBylineText"] as? JsonObject)?.get("runs") as? JsonArray).orEmpty()
+            .mapNotNull { (it as? JsonObject)?.get("text")?.jsonPrimitive?.contentOrNull?.trim() }
+        val fields = mutableListOf<MutableList<String>>(mutableListOf())
+        runs.forEach { text ->
+            when {
+                text == FIELD_SEPARATOR -> fields += mutableListOf<String>()
+                text.isBlank() || text in NAME_SEPARATORS -> Unit
+                else -> fields.last() += text
+            }
+        }
+        val names = fields.firstOrNull()?.takeIf { it.isNotEmpty() } ?: return null
+        val artists = names.map { Artist("${ProviderType.YOUTUBE_MUSIC.name}:$it", it, ProviderType.YOUTUBE_MUSIC) }
+        val albumTitle = fields.getOrNull(1)?.joinToString(", ")?.takeIf { it.isNotBlank() && !it.all(Char::isDigit) }
+        val artwork = ((row["thumbnail"] as? JsonObject)?.get("thumbnails") as? JsonArray)
+            ?.lastOrNull()?.let { (it as? JsonObject)?.get("url")?.jsonPrimitive?.contentOrNull }
+        return Track(
+            provider = ProviderType.YOUTUBE_MUSIC,
+            id = videoId,
+            title = title,
+            artists = artists,
+            album = albumTitle?.let {
+                Album("${ProviderType.YOUTUBE_MUSIC.name}:album:$it", it, artists, ProviderType.YOUTUBE_MUSIC, artwork)
+            },
+            durationMs = (row["lengthText"] as? JsonObject)?.let(::runsOf)?.let(::durationTextToMs),
+            artworkUrl = artwork,
+            sourceUrl = "$MUSIC_ORIGIN/watch?v=$videoId",
+        )
+    }
+
     internal fun parseSongs(body: String): List<Track> = runCatching {
         val rows = mutableListOf<JsonObject>()
         collectRenderers(json.parseToJsonElement(body), "musicResponsiveListItemRenderer", rows)

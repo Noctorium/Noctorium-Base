@@ -249,6 +249,9 @@ class MpvPlaybackEngine(
      */
     @Volatile private var looping = false
 
+    /** How fast to play. Kept here, like looping, so each new player starts with it. */
+    @Volatile private var speed = 1f
+
     /**
      * Kills the player if the application goes without having been closed properly.
      *
@@ -437,6 +440,7 @@ class MpvPlaybackEngine(
                     // Repeat-one, done by the player: it seeks back to the start out of its own
                     // cache instead of exiting, so there is no gap and nothing is fetched again.
                     if (looping) add("--loop-file=inf")
+                    if (speed != 1f) add("--speed=${"%.2f".format(Locale.ROOT, speed)}")
                     add("--title=Noctorium")
                     addAll(streamOptions(mediaUrl, supported))
                     // Resuming after a recovery, a moment before where it stopped so nothing is lost
@@ -509,6 +513,20 @@ class MpvPlaybackEngine(
     private var equalizer = EqualizerSettings()
 
     /** The equaliser: kept for the next track, and put into the one playing now if there is one. */
+    override suspend fun setSpeed(speed: Float) {
+        val wanted = speed.coerceIn(MIN_SPEED, MAX_SPEED)
+        if (wanted == this.speed) return
+        this.speed = wanted
+        if (process?.isAlive != true) return
+        try {
+            // mpv keeps the pitch by itself (audio-pitch-correction is on unless switched off).
+            sendCommand("set_property", JsonPrimitive("speed"), JsonPrimitive(wanted.toDouble()))
+            PlaybackLog.event("speed_changed", mapOf("speed" to wanted))
+        } catch (error: Exception) {
+            PlaybackLog.event("speed_failed", mapOf("message" to (error.message ?: "unknown")))
+        }
+    }
+
     override suspend fun setEqualizer(settings: EqualizerSettings) {
         if (settings == equalizer) return
         equalizer = settings

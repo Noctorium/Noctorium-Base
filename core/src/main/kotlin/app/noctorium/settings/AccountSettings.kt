@@ -436,6 +436,16 @@ data class NoctoriumPreferences(
      * nobody is: the session itself lives in the credential store, never here.
      */
     val vkAccountName: String = "",
+    /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
+    val playbackSpeed: Float = 1f,
+    /** When the queue runs out, carry on with songs like the last one rather than stopping. */
+    val autoplay: Boolean = true,
+    /** The services that answer a Hybrid search. Each still has to be signed in where it needs that. */
+    val hybridSearch: Set<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH,
+    /** The search mode last chosen, by name, so search opens where it was left. */
+    val searchMode: String = "HYBRID",
+    /** Seconds over which a sleep timer lowers the volume before it pauses. Zero stops it at once. */
+    val sleepFadeSeconds: Int = 0,
     /**
      * The name in the listener's Bandcamp address, `bandcamp.com/<name>`, whose collection the library shows.
      *
@@ -566,6 +576,8 @@ data class PhonePreferences(
      * than a download that will not start is one that will not stop.
      */
     val downloadOnWifiOnly: Boolean = true,
+    /** Lower-quality audio to use less data: never, only on a metered connection, or always. */
+    val dataSaver: DataSaver = DataSaver.OFF,
     /** A short tick under the finger when a control does something. */
     val haptics: Boolean = true,
     /** Swiping the player bar sideways moves through the queue. */
@@ -832,6 +844,24 @@ data class SpotifyConnectionState(
     /** The chosen device's id; blank for whichever one Spotify has active. */
     val device: String = "",
 )
+
+/** Every service a Hybrid search can ask, which is where a fresh install starts. */
+val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
+    app.noctorium.domain.ProviderType.YOUTUBE_MUSIC,
+    app.noctorium.domain.ProviderType.YOUTUBE_VIDEO,
+    app.noctorium.domain.ProviderType.SOUNDCLOUD,
+    app.noctorium.domain.ProviderType.BANDCAMP,
+    app.noctorium.domain.ProviderType.SPOTIFY,
+    app.noctorium.domain.ProviderType.VK,
+)
+
+/** When the phone plays lower-quality audio to use less data. */
+@Serializable
+enum class DataSaver(val displayName: String, val description: String) {
+    OFF("Off", "The best audio every service offers."),
+    ON_MOBILE_DATA("On mobile data", "Smaller audio on a metered connection, the best on Wi-Fi."),
+    ALWAYS("Always", "Smaller audio everywhere."),
+}
 
 /** Where Spotify songs are played. */
 @Serializable

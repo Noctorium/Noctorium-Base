@@ -54,4 +54,17 @@ interface PlaybackEngine : AutoCloseable {
      * every change. An engine with no way of shaping the sound -- a browser tab, say -- leaves this alone.
      */
     suspend fun setEqualizer(settings: EqualizerSettings) {}
+
+    /**
+     * How fast to play, 1 being as recorded: from now on, and for every track after. Pitch stays where it
+     * is, so a faster podcast does not become a chipmunk. An engine that cannot change speed leaves this
+     * alone.
+     */
+    suspend fun setSpeed(speed: Float) {}
 }
+
+/** The slowest Noctorium plays: half the recorded speed. */
+const val MIN_SPEED = 0.5f
+
+/** The fastest: double. Beyond it speech stops being words. */
+const val MAX_SPEED = 2f
