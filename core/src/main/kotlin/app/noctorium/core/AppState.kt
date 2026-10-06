@@ -246,7 +246,7 @@ data class LikeState(
     fun supports(track: Track): Boolean = when (track.provider) {
         ProviderType.SOUNDCLOUD -> soundCloudReady
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
-        ProviderType.SPOTIFY, ProviderType.LOCAL -> false
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
     }
 }
 
@@ -259,6 +259,8 @@ internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.SOUNDCLOUD -> "sc:${track.id}"
     // Read-only: Spotify likes are shown, never written, but the key still has to be its own.
     ProviderType.SPOTIFY -> "spotify:${track.id}"
+    ProviderType.BANDCAMP -> "bc:${track.id}"
+    ProviderType.VK -> "vk:${track.id}"
     ProviderType.LOCAL -> "local:${track.id}"
 }
 
@@ -1288,6 +1290,8 @@ class AppState(
         // Spotify is read here and never written to, so its likes are shown but not changed.
         ProviderType.SPOTIFY ->
             LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Spotify is read-only in Noctorium; like it in Spotify itself.")
+        ProviderType.BANDCAMP, ProviderType.VK ->
+            LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Liking on ${track.provider.displayName} is not here yet.")
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
@@ -2105,7 +2109,7 @@ class AppState(
     ) = when (provider) {
         ProviderType.SOUNDCLOUD -> createSoundCloudPlaylist(title, tracks, isPublic)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> createYouTubePlaylist(title, tracks, isPublic)
-        ProviderType.SPOTIFY, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
             libraryNotice("Playlists cannot be made on ${provider.displayName} from Noctorium.")
     }
 
@@ -2113,7 +2117,7 @@ class AppState(
     fun addTrackToPlaylist(playlist: Playlist, track: Track) = when (playlist.provider) {
         ProviderType.SOUNDCLOUD -> addTrackToSoundCloudPlaylist(playlist.id, track)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> addTrackToYouTubePlaylist(playlist.id, track)
-        ProviderType.SPOTIFY, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
             libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
     }
 
@@ -3765,6 +3769,9 @@ class AppState(
 private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> ProviderType.YOUTUBE_MUSIC
     ProviderType.SOUNDCLOUD -> ProviderType.SOUNDCLOUD
+    // Each its own account, signed in on its own.
+    ProviderType.BANDCAMP -> ProviderType.BANDCAMP
+    ProviderType.VK -> ProviderType.VK
     ProviderType.SPOTIFY, ProviderType.LOCAL -> null
 }
 
@@ -3778,6 +3785,8 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     // Always possible now that Noctorium brings a Spotify app of its own. Whether anybody has signed in is
     // a separate question, and one the provider answers with silence rather than a request.
     ProviderType.SPOTIFY -> true
+    // Until their providers are part of the library.
+    ProviderType.BANDCAMP, ProviderType.VK -> false
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -3809,7 +3818,8 @@ private fun NoctoriumPreferences.withCookies(slot: ProviderType, source: CookieS
 private fun providerLabel(slot: ProviderType): String = when (slot) {
     ProviderType.SOUNDCLOUD -> "SoundCloud"
     ProviderType.SPOTIFY -> "Spotify"
-    else -> "YouTube Music"
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "YouTube Music"
+    else -> slot.displayName
 }
 
 private fun accountStatusFor(outcome: AccountProbeOutcome): AccountConnectionStatus = when (outcome) {

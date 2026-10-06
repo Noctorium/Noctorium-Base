@@ -107,6 +107,8 @@ internal class ListenBrainzClient(
                         ProviderType.SOUNDCLOUD -> "soundcloud.com"
                         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "youtube.com"
                         ProviderType.SPOTIFY -> "spotify"
+                        ProviderType.BANDCAMP -> "bandcamp.com"
+                        ProviderType.VK -> "vk.com"
                         ProviderType.LOCAL -> "local"
                     },
                 )

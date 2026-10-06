@@ -16,6 +16,12 @@ enum class ProviderType(val displayName: String) {
      * the playlists, the liked songs, the running order -- is Spotify's.
      */
     SPOTIFY("Spotify"),
+
+    /** Bandcamp: albums and tracks from its own pages, played as the 128 kbps stream those pages carry. */
+    BANDCAMP("Bandcamp"),
+
+    /** VK's music, through the API its own apps use, with the listener's VK account. */
+    VK("VK Music"),
     LOCAL("Local"),
 }
 
@@ -77,7 +83,7 @@ data class Playlist(
 fun Playlist.editableOnService(): Boolean = when (provider) {
     ProviderType.SOUNDCLOUD -> id.isNotEmpty() && id.all(Char::isDigit)
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id.startsWith("PL") || id.startsWith("VL")
-    ProviderType.SPOTIFY, ProviderType.LOCAL -> false
+    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
 }
 
 @Serializable

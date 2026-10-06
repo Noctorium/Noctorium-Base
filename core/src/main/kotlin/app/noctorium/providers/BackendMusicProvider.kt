@@ -67,7 +67,8 @@ class BackendMusicProvider(
                 "lofi remix" to ("Lo-fi and remixes" to "Uploads and edits"),
             )
             ProviderType.YOUTUBE_VIDEO -> return emptyList()
-            ProviderType.SPOTIFY, ProviderType.LOCAL -> return emptyList()
+            // Each of these has a provider of its own, or none to search.
+            ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> return emptyList()
         }
         return searches.mapIndexed { index, (query, labels) ->
             val (title, subtitle) = labels
@@ -107,7 +108,7 @@ class BackendMusicProvider(
                     sourceUrl = "https://soundcloud.com/$username/likes",
                 )
         }
-        ProviderType.YOUTUBE_VIDEO, ProviderType.SPOTIFY, ProviderType.LOCAL -> emptyList()
+        ProviderType.YOUTUBE_VIDEO, ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> emptyList()
     }
 
     override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
