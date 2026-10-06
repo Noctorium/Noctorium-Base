@@ -299,6 +299,9 @@ class SoundCloudPlaylistClient internal constructor(
         PlaylistWriteResult(false, "SoundCloud would not say what is in that playlist, so nothing was changed.")
 
     private fun describe(response: LikeHttpResponse): String = when (response.status) {
+        // Sent and not answered: the change may well have been made, so it is not reported as refused.
+        app.noctorium.net.BrowserReply.UNANSWERED ->
+            "SoundCloud did not answer in time, so the change may or may not have been made. Reload the playlist to see."
         401 -> "SoundCloud rejected the session (401). Sign in again under Settings › SoundCloud."
         403 -> "SoundCloud refused the change (403), most likely its bot protection.${response.hint()}"
         404 -> "SoundCloud could not find that playlist (404)."

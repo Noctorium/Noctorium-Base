@@ -4,6 +4,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import app.noctorium.net.BrowserReply
 import app.noctorium.net.BrowserRequester
 import app.noctorium.net.Http
 import java.nio.file.Files
@@ -19,6 +20,11 @@ enum class LikeOutcome {
     TOKEN_REJECTED,
     /** The track has no numeric SoundCloud id, so there is nothing to like. */
     UNSUPPORTED_TRACK,
+    /**
+     * Sent, and not answered in time: SoundCloud may have done it or not. The caller keeps the heart as asked and
+     * looks at the account's likes to find out which, rather than taking it back on a guess.
+     */
+    UNCONFIRMED,
     FAILED,
 }
 
@@ -162,6 +168,10 @@ class SoundCloudLikeClient internal constructor(
                 if (liked) LikeOutcome.LIKED else LikeOutcome.UNLIKED,
                 if (liked) "Liked on SoundCloud." else "Removed from your SoundCloud likes.",
             )
+            response.status == BrowserReply.UNANSWERED -> LikeResult(
+                LikeOutcome.UNCONFIRMED,
+                "SoundCloud was slow to answer, so Noctorium is checking your likes to see whether it took it.",
+            )
             // 401 and 403 mean very different things and used to be reported identically, which hid the cause.
             response.status == 401 -> LikeResult(
                 LikeOutcome.TOKEN_REJECTED,
@@ -212,10 +222,11 @@ class SoundCloudLikeClient internal constructor(
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: Exception) {
-                return LikedIds(status, found)
+                return LikedIds(status, found, complete = false)
             }
-            // A later page failing still leaves the earlier ones, which are a better answer than none.
-            if (response.status !in 200..299) return LikedIds(response.status, found)
+            // A later page failing still leaves the earlier ones, which are a better answer than none -- but
+            // only part of one, and said to be, so that the likes on the pages never read are not taken away.
+            if (response.status !in 200..299) return LikedIds(response.status, found, complete = false)
             status = response.status
             val ids = parseLikedIds(response.body)
             // A first page that yields nothing means the shape changed, so keep a little of it for the log.
@@ -225,7 +236,8 @@ class SoundCloudLikeClient internal constructor(
             // An address that repeats would loop until the page limit, so it ends the list instead.
             url = nextPageOf(response.body)?.let { withClientId(it, clientId) }?.takeIf { it != url }
         }
-        return LikedIds(status, found, sample.takeIf { found.isEmpty() })
+        // Stopped by the page limit with more still to read is a part too.
+        return LikedIds(status, found, sample.takeIf { found.isEmpty() }, complete = url == null)
     }
 
     /**
@@ -378,4 +390,9 @@ data class LikedIds(
     val ids: Set<String>,
     val sample: String? = null,
     val source: String? = null,
+    /**
+     * Whether [ids] is the whole of the account's likes. False when a page failed part way, or the page limit
+     * stopped the reading: a heart missing from a part says nothing about the track, and must not be removed.
+     */
+    val complete: Boolean = true,
 )

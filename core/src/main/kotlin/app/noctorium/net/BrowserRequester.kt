@@ -1,7 +1,22 @@
 package app.noctorium.net
 
 /** What a browser on this device answered. */
-data class BrowserReply(val status: Int, val body: String)
+data class BrowserReply(val status: Int, val body: String) {
+    companion object {
+        /**
+         * The request was handed to the page and no answer came back in time.
+         *
+         * Not the same as no browser at all, which is null: this request may well have reached the service and
+         * been carried out -- a like that SoundCloud kept while the page was still waiting -- so it is neither a
+         * success nor a failure, and sending it again by another road is not the answer either. A like sent
+         * again that way met the bot protection, was reported as failed, and its heart was taken back from a
+         * track that SoundCloud had in fact liked.
+         */
+        const val UNANSWERED = -1
+
+        fun unanswered() = BrowserReply(UNANSWERED, "")
+    }
+}
 
 /**
  * Makes a request from inside a real browser on this device, for the endpoints that will take nothing else.

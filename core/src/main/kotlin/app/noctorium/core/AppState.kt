@@ -262,6 +262,33 @@ internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.LOCAL -> "local:${track.id}"
 }
 
+/**
+ * The hearts after reading one service's likes: what the service listed, except where this device has just
+ * changed something the listing does not show yet.
+ *
+ * Both halves were learnt the hard way. SoundCloud's listing can trail a like by a minute or more, and taking
+ * its word straight after liking took the new heart away again -- it reappeared only once the app was opened
+ * afresh. And a listing cut short by a page that failed used to stand for the whole account, so every like on
+ * the pages never read lost its heart. [recent] is key to liked for the writes still within their grace;
+ * [complete] says whether [listed] is the whole of the account, and a part only ever adds.
+ */
+internal fun mergeLikes(
+    current: Set<String>,
+    prefix: String,
+    listed: Set<String>,
+    complete: Boolean,
+    recent: Map<String, Boolean>,
+): Set<String> {
+    val others = current.filterNotTo(LinkedHashSet()) { it.startsWith(prefix) }
+    val mine = LinkedHashSet<String>()
+    if (!complete) current.filterTo(mine) { it.startsWith(prefix) }
+    mine += listed
+    recent.forEach { (key, liked) ->
+        if (key.startsWith(prefix)) { if (liked) mine += key else mine -= key }
+    }
+    return others + mine
+}
+
 
 data class AppUiState(
     val destination: Destination = Destination.HOME,
@@ -1123,10 +1150,16 @@ class AppState(
                     message = null,
                 )
             }
+            // Whatever was being checked about this heart is overtaken by the change just asked for.
+            likeChecks.remove(key)?.cancel()
             val result = writeLike(track, liking)
+            val unconfirmed = result.outcome == LikeOutcome.UNCONFIRMED
+            // Remembered for a while, so the next read of the account's likes -- which can lag behind a change
+            // by a minute or more -- does not take back a heart that was just given.
+            if (result.succeeded || unconfirmed) recentLikes[key] = RecentLike(liking, System.currentTimeMillis())
             mutableLikes.update { state ->
                 val settled = state.copy(busyKeys = state.busyKeys - key, message = result.detail)
-                if (result.succeeded) settled else settled.copy(
+                if (result.succeeded || unconfirmed) settled else settled.copy(
                     // Roll the heart back to what the account still says.
                     likedKeys = if (liking) settled.likedKeys - key else settled.likedKeys + key,
                 )
@@ -1145,8 +1178,83 @@ class AppState(
                     "detail" to result.detail,
                 ),
             )
-            if (result.succeeded) refreshLikes()
+            if (unconfirmed) confirmLike(key, liking) else if (result.succeeded) refreshLikes()
         }
+    }
+
+    /** A like or unlike this device made, and when: kept until the account's own listing has caught up. */
+    private data class RecentLike(val liked: Boolean, val atMillis: Long)
+
+    private val recentLikes = java.util.concurrent.ConcurrentHashMap<String, RecentLike>()
+
+    /** The checks under way on likes SoundCloud never answered, so a new tap can call one off. */
+    private val likeChecks = java.util.concurrent.ConcurrentHashMap<String, Job>()
+
+    /** The recent writes still within their grace, as key to liked, with the old ones forgotten. */
+    private fun recentLikeWrites(): Map<String, Boolean> {
+        val cutoff = System.currentTimeMillis() - RECENT_LIKE_GRACE_MS
+        recentLikes.entries.removeIf { it.value.atMillis < cutoff }
+        return recentLikes.mapValues { it.value.liked }
+    }
+
+    /**
+     * Finds out whether a like SoundCloud never answered was made after all.
+     *
+     * On the phone a like is sent through a page, and a page can be slow to hear back: SoundCloud had kept the
+     * like, the answer came late, and the heart used to be taken back -- only to reappear once the app was
+     * opened again. So the heart stays as asked while the account's likes are read a few times over a few
+     * minutes, since the listing itself takes a moment to show a change. Seen, it stays; never seen, it is
+     * taken back and the listener is told.
+     */
+    private fun confirmLike(key: String, liking: Boolean) {
+        likeChecks[key] = scope.launch {
+            for (wait in LIKE_CHECK_DELAYS_MS) {
+                delay(wait)
+                val listed = soundCloudLikedIds() ?: continue
+                val shown = key in listed.keys
+                // A part of the listing can show a like, but cannot show that one is gone.
+                if (shown == liking && (liking || listed.complete)) {
+                    mutableLikes.update {
+                        it.copy(message = if (liking) "Liked on SoundCloud." else "Removed from your SoundCloud likes.")
+                    }
+                    likeChecks.remove(key)
+                    return@launch
+                }
+            }
+            recentLikes.remove(key)
+            mutableLikes.update { state ->
+                state.copy(
+                    likedKeys = if (liking) state.likedKeys - key else state.likedKeys + key,
+                    message = if (liking) {
+                        "SoundCloud did not keep that like. Try again."
+                    } else {
+                        "SoundCloud still has that like. Try again."
+                    },
+                )
+            }
+            likeChecks.remove(key)
+        }
+    }
+
+    /** The account's SoundCloud likes as heart keys, or null when they could not be read at all. */
+    private suspend fun soundCloudLikedIds(): ListedLikes? {
+        val token = soundCloudToken()?.takeIf(String::isNotBlank) ?: return null
+        val liked = likeClient.likedTrackIds(
+            userId = soundCloudUserId(token).orEmpty(),
+            token = token,
+            clientId = soundCloudClientIds.clientId(),
+            cookies = withContext(Dispatchers.IO) { soundCloudCookies() },
+        )
+        if (liked.status !in 200..299 && liked.ids.isEmpty()) return null
+        return ListedLikes(liked.ids.mapTo(HashSet()) { "sc:$it" }, liked.complete)
+    }
+
+    private data class ListedLikes(val keys: Set<String>, val complete: Boolean)
+
+    /** On signing out of a service: its recent writes mean nothing any more, and its checks stop. */
+    private fun forgetLikeWrites(prefix: String) {
+        recentLikes.keys.removeIf { it.startsWith(prefix) }
+        likeChecks.entries.removeIf { (key, check) -> key.startsWith(prefix).also { if (it) check.cancel() } }
     }
 
     private suspend fun writeLike(track: Track, liking: Boolean): LikeResult = when (track.provider) {
@@ -1347,8 +1455,9 @@ class AppState(
                 )
                 if (liked.ids.isNotEmpty()) {
                     val keys = liked.ids.map { "sc:$it" }.toSet()
+                    val recent = recentLikeWrites()
                     mutableLikes.update { state ->
-                        state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("sc:") }.toSet() + keys)
+                        state.copy(likedKeys = mergeLikes(state.likedKeys, "sc:", keys, liked.complete, recent))
                     }
                 }
             }
@@ -1370,8 +1479,9 @@ class AppState(
                 )
                 if (liked.ids.isNotEmpty()) {
                     val keys = liked.ids.map { "yt:$it" }.toSet()
+                    val recent = recentLikeWrites()
                     mutableLikes.update { state ->
-                        state.copy(likedKeys = state.likedKeys.filterNot { it.startsWith("yt:") }.toSet() + keys)
+                        state.copy(likedKeys = mergeLikes(state.likedKeys, "yt:", keys, liked.complete, recent))
                     }
                 }
             }
@@ -1614,6 +1724,7 @@ class AppState(
     fun disconnectSoundCloudLiking() {
         runCatching { credentials.remove(SOUNDCLOUD_TOKEN) }
         runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) }
+        forgetLikeWrites("sc:")
         mutableLikes.update { state ->
             state.copy(
                 soundCloudReady = false,
@@ -2407,6 +2518,7 @@ class AppState(
             updatePreferences { copy(soundCloudCookies = CookieSource(), soundCloudUsername = "") }
             runCatching { credentials.remove(SOUNDCLOUD_TOKEN) }
             runCatching { credentials.remove(SOUNDCLOUD_REFRESH_TOKEN) }
+            forgetLikeWrites("sc:")
             mutableLikes.update { state ->
                 state.copy(
                     soundCloudReady = false,
@@ -3867,3 +3979,13 @@ private const val HISTORY_AFTER_MS = 5_000L
 /** The first sign-in check waits for launch to settle; after that, one every few hours is plenty. */
 private const val SIGN_IN_CHECK_AFTER_LAUNCH_MS = 15_000L
 private const val SIGN_IN_CHECK_EVERY_MS = 3 * 60 * 60_000L
+
+/**
+ * How long a like this device made outranks the service's own listing: long enough for SoundCloud's to catch
+ * up, which has been seen to take a minute or more, and short enough that a like the service truly lost does
+ * not linger past the next look.
+ */
+private const val RECENT_LIKE_GRACE_MS = 10 * 60 * 1000L
+
+/** When a like SoundCloud never answered is looked for in the account's likes: about three minutes in all. */
+private val LIKE_CHECK_DELAYS_MS = listOf(4_000L, 10_000L, 30_000L, 60_000L, 90_000L)

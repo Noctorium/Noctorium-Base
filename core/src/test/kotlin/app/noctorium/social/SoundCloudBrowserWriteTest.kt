@@ -110,6 +110,38 @@ class SoundCloudBrowserWriteTest {
     }
 
     @Test
+    fun `a like the browser sent but heard nothing back about is unconfirmed, and is not sent again`() = runBlocking {
+        // The phone's page timed out waiting while SoundCloud had in fact kept the like. Sending it again by
+        // the ordinary road met the bot protection, read as a failure, and took the heart back.
+        val http = ScriptedHttp(LikeHttpResponse(403, "captcha"))
+        val browser = ScriptedBrowser(BrowserReply.unanswered())
+
+        val result = SoundCloudLikeClient(http, browser)
+            .setLiked("1", "2", token, clientId, liked = true)
+
+        assertEquals(LikeOutcome.UNCONFIRMED, result.outcome)
+        assertTrue(http.calls.isEmpty(), "an unanswered like is checked on, not sent a second time")
+    }
+
+    @Test
+    fun `a listing that fails part way says it is only a part`() = runBlocking {
+        val first = """{"collection":[1,2],"next_href":"https://api-v2.soundcloud.com/users/1234567890/track_likes?offset=2"}"""
+        val http = ScriptedHttp(LikeHttpResponse(200, first), LikeHttpResponse(500, ""))
+
+        val liked = SoundCloudLikeClient(http, null).likedTrackIds("1234567890", token, clientId)
+
+        assertEquals(setOf("1", "2"), liked.ids)
+        assertEquals(false, liked.complete, "the likes on the page that failed must keep their hearts")
+    }
+
+    @Test
+    fun `a listing read to its end is the whole of it`() = runBlocking {
+        val http = ScriptedHttp(LikeHttpResponse(200, """{"collection":[1,2]}"""))
+        val liked = SoundCloudLikeClient(http, null).likedTrackIds("1234567890", token, clientId)
+        assertEquals(true, liked.complete)
+    }
+
+    @Test
     fun `reading likes never goes near the browser`() = runBlocking {
         val browser = ScriptedBrowser(BrowserReply(200, ""))
         val http = ScriptedHttp(LikeHttpResponse(200, """{"collection":[1,2]}"""))
