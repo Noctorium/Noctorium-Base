@@ -471,6 +471,15 @@ class AppState(
     /** Asked to look for autoplay's songs again, even though nothing about the queue changed. */
     private val suggestionsAsked = MutableStateFlow(0)
 
+    /**
+     * One settings save at a time, each writing the settings as they are when its turn comes.
+     *
+     * Two changes a moment apart used to start two saves of the same file at once. One could fail outright
+     * -- both wrote the same temporary file and only one could move it into place -- and, worse, an older
+     * snapshot could land after a newer one and quietly undo the second change at the next launch.
+     */
+    private val settingsSaving = kotlinx.coroutines.sync.Mutex()
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         BackendMusicProvider(
@@ -3015,8 +3024,10 @@ class AppState(
         mutableSettings.update { it.copy(preferences = updated) }
         applyAccountPreferences(updated)
         scope.launch(Dispatchers.IO) {
-            runCatching { settingsRepository.save(updated) }
-                .onFailure { error ->
+            val saved = settingsSaving.withLock {
+                runCatching { settingsRepository.save(mutableSettings.value.preferences) }
+            }
+            saved.onFailure { error ->
                 // Settings that quietly fail to save are the worst kind of failure: everything works, and
                 // then the next launch has forgotten every choice with no clue as to why.
                 SettingsLog.event("settings_save_failed", mapOf("error" to describeFailure(error)))

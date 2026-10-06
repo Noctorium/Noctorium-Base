@@ -7,6 +7,33 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 class SettingsRepositoryTest {
+    /**
+     * Two changes a moment apart used to start two saves of the same file at once; one of them could fail
+     * with NoSuchFileException, both having written the same temporary file and only one able to move it.
+     */
+    @Test
+    fun `saves from many threads at once all succeed, and the file holds one of them whole`() {
+        val directory = Files.createTempDirectory("noctorium-settings-race")
+        try {
+            val repository = SettingsRepository(directory.resolve("settings.json"))
+            val failures = java.util.concurrent.ConcurrentLinkedQueue<Throwable>()
+            val threads = (1..16).map { n ->
+                Thread {
+                    repeat(10) { round ->
+                        runCatching { repository.save(NoctoriumPreferences(profileName = "Listener $n-$round")) }
+                            .onFailure(failures::add)
+                    }
+                }
+            }
+            threads.forEach(Thread::start)
+            threads.forEach(Thread::join)
+            assertEquals(emptyList(), failures.toList())
+            assert(repository.load().profileName.startsWith("Listener "))
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
     @Test
     fun `account and profile preferences survive reload`() {
         val directory = Files.createTempDirectory("noctorium-settings-test")

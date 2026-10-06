@@ -141,5 +141,13 @@ class SpotifyMusicProvider(
     }
 }
 
+/** Whether a Spotify playlist is really an artist, opened as their newest releases' songs. */
+fun Playlist.isSpotifyArtist(): Boolean =
+    provider == ProviderType.SPOTIFY && id.startsWith(SpotifyClient.ARTIST_PREFIX)
+
+/** Whether a Spotify playlist is really an album. */
+fun Playlist.isSpotifyAlbum(): Boolean =
+    provider == ProviderType.SPOTIFY && id.startsWith(SpotifyClient.ALBUM_PREFIX)
+
 /** A Spotify read that did not happen, with the reason already written for a reader. */
 class SpotifyUnavailable(message: String) : Exception(message)

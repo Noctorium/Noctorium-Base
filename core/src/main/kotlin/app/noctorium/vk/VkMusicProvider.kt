@@ -64,7 +64,6 @@ class VkMusicProvider(private val client: VkClient) : MusicProvider {
             id = MY_MUSIC,
             title = "My music",
             provider = type,
-            ownerName = "VK",
             sourceUrl = "https://vk.ru/audios$userId",
         )
         return listOf(mine) + client.playlists().map { playlist ->

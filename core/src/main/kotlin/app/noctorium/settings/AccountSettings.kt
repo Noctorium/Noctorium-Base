@@ -909,6 +909,7 @@ class SettingsRepository(
         else json.decodeFromString<NoctoriumPreferences>(TextFiles.read(path).orEmpty()).migrated()
     }.getOrDefault(NoctoriumPreferences())
 
+    @Synchronized
     fun save(preferences: NoctoriumPreferences) {
         val path = settingsPath ?: return
         Files.createDirectories(path.parent)
