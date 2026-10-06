@@ -2401,12 +2401,19 @@ class AppState(
             libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
     }
 
+    /**
+     * Whether YouTube can hold this track: only its own. Anything else's id -- a SoundCloud path, a Spotify or
+     * Bandcamp number, a file on this disk -- means nothing to YouTube, and sending one only fails there.
+     */
+    private fun livesOnYouTube(track: Track): Boolean =
+        track.provider == ProviderType.YOUTUBE_MUSIC || track.provider == ProviderType.YOUTUBE_VIDEO
+
     /** Makes a playlist on the YouTube Music account. Private by default, as on SoundCloud. */
     fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
         withYouTubeWrite { session ->
             youTubeMusic.createPlaylist(
                 title = title,
-                videoIds = tracks.filter { it.provider != ProviderType.SOUNDCLOUD }.map { it.id },
+                videoIds = tracks.filter(::livesOnYouTube).map { it.id },
                 isPublic = isPublic,
                 session = session,
             )
@@ -2414,7 +2421,7 @@ class AppState(
     }
 
     fun addTrackToYouTubePlaylist(playlistId: String, track: Track) {
-        if (track.provider == ProviderType.SOUNDCLOUD) {
+        if (!livesOnYouTube(track)) {
             return libraryNotice("Only YouTube tracks can go into a YouTube Music playlist.")
         }
         withYouTubeWrite { session -> youTubeMusic.addToPlaylist(playlistId, track.id, session) }
@@ -2533,7 +2540,7 @@ class AppState(
 
     /** Copies a playlist made in Noctorium up to YouTube Music, keeping only the tracks that live there. */
     fun publishPlaylistToYouTube(playlist: LocalPlaylist, isPublic: Boolean = false) {
-        val youTubeTracks = playlist.tracks.filter { it.provider != ProviderType.SOUNDCLOUD }
+        val youTubeTracks = playlist.tracks.filter(::livesOnYouTube)
         if (youTubeTracks.isEmpty()) {
             return libraryNotice("\"${playlist.title}\" has no YouTube tracks to publish.")
         }
