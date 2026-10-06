@@ -220,6 +220,21 @@ class SpotifyConnectEngineTest {
     }
 
     @Test
+    fun `asked to move on by itself, Spotify's choice is followed even mid-song`() {
+        val http = Scripted { method, url -> if (method == "GET" && url.endsWith("/devices")) devices() else SpotifyResponse(204, "") }
+        val followed = mutableListOf<String>()
+        val engine = SpotifyConnectEngine(SpotifyClient(http), { "token" }, { "" }, scope, followAfterEnd = { next -> followed += next.id; true })
+        runBlocking { engine.play(song) }
+        runBlocking { engine.skipToSpotifysNext() }
+        assertTrue(http.asked.any { it.startsWith("POST") && it.contains("/me/player/next") })
+        val chosen = Track(ProviderType.SPOTIFY, "auto2", "Next by Spotify", song.artists, durationMs = 150_000, sourceUrl = "https://open.spotify.com/track/auto2")
+        engine.follow(song, SpotifyPlayerState(true, 900, "auto2", 150_000, null, track = chosen))
+        assertEquals(listOf("auto2"), followed)
+        assertEquals("auto2", engine.state.value.track?.id)
+        assertEquals(PlaybackStatus.PLAYING, engine.state.value.status)
+    }
+
+    @Test
     fun `pausing in Spotify shows as paused here`() {
         val engine = engine { method, url -> if (method == "GET" && url.endsWith("/devices")) devices() else SpotifyResponse(204, "") }
         playing(engine)

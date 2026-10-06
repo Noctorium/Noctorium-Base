@@ -359,6 +359,10 @@ class SpotifyClient internal constructor(
     suspend fun resume(deviceId: String?, accessToken: String): SpotifyRead<Unit> =
         write("PUT", "$API/me/player/play${deviceQuery(deviceId)}", accessToken)
 
+    /** Moves the account's player on to whatever it has next: its queue, or its own autoplay. */
+    suspend fun skipToNext(deviceId: String?, accessToken: String): SpotifyRead<Unit> =
+        write("POST", "$API/me/player/next${deviceQuery(deviceId)}", accessToken)
+
     suspend fun pause(deviceId: String?, accessToken: String): SpotifyRead<Unit> =
         write("PUT", "$API/me/player/pause${deviceQuery(deviceId)}", accessToken)
 

@@ -40,6 +40,17 @@ class UpNextTest {
     }
 
     @Test
+    fun `a queue that carries on in Spotify's own autoplay still has a next`() {
+        val queue = queueOf("a")
+        queue.setSuggestions("a|SAME", emptyList(), "Spotify chooses what comes next", continuesElsewhere = true)
+        assertTrue(queue.state.value.hasNext)
+        assertNull(queue.state.value.upcoming, "nothing is lined up here: Spotify chooses")
+        assertNull(queue.next())
+        queue.clearSuggestions()
+        assertFalse(queue.state.value.hasNext)
+    }
+
+    @Test
     fun `nothing already in the queue is suggested again`() {
         val queue = queueOf("a", "b")
         queue.setSuggestions("b|SAME", listOf(song("a"), song("x"), song("x")), "radio")

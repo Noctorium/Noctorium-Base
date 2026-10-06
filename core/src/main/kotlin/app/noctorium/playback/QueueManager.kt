@@ -31,6 +31,11 @@ data class QueueState(
     val suggestionsFrom: String? = null,
     /** The song the suggestions follow, and how they were asked for: so they are asked for once a song. */
     val suggestionsSeed: String? = null,
+    /**
+     * The queue carries on somewhere else when it ends: in Spotify's own autoplay, which plays on Spotify and
+     * cannot be lined up here in advance. Next still has somewhere to go -- it asks Spotify to move on.
+     */
+    val continuesElsewhere: Boolean = false,
 ) {
     val current: Track? get() = tracks.getOrNull(currentIndex)
 
@@ -46,7 +51,7 @@ data class QueueState(
      */
     val hasNext: Boolean
         get() = tracks.isNotEmpty() &&
-            (currentIndex < tracks.lastIndex || repeatMode == RepeatMode.ALL || suggestions.isNotEmpty())
+            (currentIndex < tracks.lastIndex || repeatMode == RepeatMode.ALL || suggestions.isNotEmpty() || continuesElsewhere)
 
     val hasPrevious: Boolean
         get() = tracks.isNotEmpty() && (currentIndex > 0 || repeatMode == RepeatMode.ALL)
@@ -183,18 +188,24 @@ class QueueManager(private val random: Random = Random.Default) {
      * Anything already in the queue is left out, so a radio that starts with the song itself, or a song
      * the listener queued anyway, does not play twice in a row.
      */
-    fun setSuggestions(seed: String, tracks: List<Track>, from: String?) = mutableState.update { current ->
+    fun setSuggestions(
+        seed: String,
+        tracks: List<Track>,
+        from: String?,
+        continuesElsewhere: Boolean = false,
+    ) = mutableState.update { current ->
         val queued = current.tracks.mapTo(HashSet(), Track::queueKey)
         current.copy(
             suggestions = tracks.filterNot { it.queueKey in queued }.distinctBy(Track::queueKey),
             suggestionsFrom = from,
             suggestionsSeed = seed,
+            continuesElsewhere = continuesElsewhere && tracks.isEmpty(),
         )
     }
 
     fun clearSuggestions() = mutableState.update {
-        if (it.suggestions.isEmpty() && it.suggestionsSeed == null) it
-        else it.copy(suggestions = emptyList(), suggestionsFrom = null, suggestionsSeed = null)
+        if (it.suggestions.isEmpty() && it.suggestionsSeed == null && !it.continuesElsewhere) it
+        else it.copy(suggestions = emptyList(), suggestionsFrom = null, suggestionsSeed = null, continuesElsewhere = false)
     }
 
     /** Drops one of autoplay's songs. */

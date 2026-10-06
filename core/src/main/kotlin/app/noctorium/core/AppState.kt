@@ -649,7 +649,9 @@ class AppState(
 
         override suspend fun resume() = player.resume()
         override suspend fun pause() = player.pause()
-        override suspend fun next() { queue.next()?.let { playEnriched(it) } }
+        override suspend fun next() {
+            if (spotifyContinues()) spotifyPlayer.skipToSpotifysNext() else queue.next()?.let { playEnriched(it) }
+        }
         override suspend fun previous() { queue.previous()?.let { playEnriched(it) } }
         override suspend fun seekTo(positionMs: Long) = player.seekTo(positionMs)
         override suspend fun setVolume(value: Float) = player.setVolume(value)
@@ -833,7 +835,17 @@ class AppState(
     fun toggleMute() { scope.launch { player.setMuted(!playback.value.isMuted) } }
     fun seekTo(positionMs: Long) { scope.launch { player.seekTo(positionMs) } }
 
-    fun next() { startPlay { queue.next() } }
+    fun next() {
+        // At the end of a queue that carries on in Spotify's own autoplay, next is Spotify's to choose.
+        if (spotifyContinues()) {
+            scope.launch { spotifyPlayer.skipToSpotifysNext() }
+            return
+        }
+        startPlay { queue.next() }
+    }
+
+    /** Whether the queue has run out here and goes on in Spotify's own autoplay. */
+    private fun spotifyContinues(): Boolean = queue.state.value.let { it.upcoming == null && it.continuesElsewhere }
     fun previous() { startPlay { queue.previous() } }
     fun jumpToQueueItem(index: Int) { startPlay { queue.jumpTo(index) } }
     fun moveQueueItem(from: Int, to: Int) = queue.move(from, to)
@@ -3644,7 +3656,7 @@ class AppState(
             val chosen = suggestible(songs, seed, preferences.autoplayAvoidRecent)
             if (chosen.isEmpty()) return@launch
             PlaybackLog.event("autoplay", mapOf("after" to seed.queueKey, "count" to chosen.size, "from" to from.orEmpty()))
-            queue.setSuggestions("${seed.queueKey}|${preferences.autoplayFrom}", chosen, from)
+            queue.setSuggestions("${seed.queueKey}|${preferences.autoplayFrom}", chosen, from, continuesElsewhere = from == SPOTIFY_CHOOSES)
             queue.next()?.let { playEnriched(it) }
         }
     }
@@ -3686,7 +3698,7 @@ class AppState(
                     // Let the song that just started have the connection first.
                     delay(SUGGESTIONS_DELAY_MS)
                     val (songs, from) = suggestionsAfter(seed, request.from)
-                    queue.setSuggestions(key, suggestible(songs, seed, request.avoidRecent), from)
+                    queue.setSuggestions(key, suggestible(songs, seed, request.avoidRecent), from, continuesElsewhere = from == SPOTIFY_CHOOSES)
                 }
         }
     }
@@ -3774,7 +3786,8 @@ class AppState(
         if (!preferences.autoplay || preferences.autoplayFrom != AutoplaySource.SAME_SERVICE) return false
         val state = queue.state.value
         if (state.upcoming != null) return false
-        state.current?.let { ended -> recordListen(ended, ended.durationMs ?: 0, ended.durationMs ?: 0) }
+        // As far as it got: the whole song at its end, less where Spotify was asked to move on early.
+        state.current?.let { ended -> recordListen(ended, playback.value.positionMs, ended.durationMs ?: 0) }
         queue.addToQueue(next)
         queue.next()
         rememberRecent(next)

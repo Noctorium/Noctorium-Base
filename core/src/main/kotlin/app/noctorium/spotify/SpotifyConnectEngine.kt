@@ -95,6 +95,22 @@ class SpotifyConnectEngine(
         }
     }
 
+    /**
+     * Set when Spotify was asked to move on by itself, so that the next song it is found playing is taken as
+     * its choice to follow, rather than as the listener having picked something else in Spotify.
+     */
+    @Volatile private var awaitingSpotifysChoice = false
+
+    /**
+     * Asks Spotify to move on to what it would play next itself -- its own autoplay, at the end of a queue
+     * that carries on there -- and follows what it chooses, as at the end of a song.
+     */
+    suspend fun skipToSpotifysNext() {
+        val token = accessToken() ?: return
+        awaitingSpotifysChoice = true
+        if (client.skipToNext(deviceId, token) !is SpotifyRead.Ok) awaitingSpotifysChoice = false
+    }
+
     override suspend fun pause() {
         val token = accessToken() ?: return
         client.pause(deviceId, token)
@@ -235,8 +251,11 @@ class SpotifyConnectEngine(
         if (player == null || player.trackId != ours.id) {
             // Spotify has moved on from the song. At the end of it, that is the song finishing -- Spotify
             // carries on into something of its own choosing, which is stopped so the queue can say what is
-            // next. Anywhere else it is the listener choosing something in Spotify itself.
-            if (nearEnd) {
+            // next. Anywhere else it is the listener choosing something in Spotify itself -- unless Spotify
+            // was asked to move on by itself, in which case this is its choice and it is followed.
+            val askedToMoveOn = awaitingSpotifysChoice && player?.trackId != null
+            if (askedToMoveOn) awaitingSpotifysChoice = false
+            if (nearEnd || askedToMoveOn) {
                 val next = player?.takeIf { it.isPlaying }?.track
                 if (next != null && followAfterEnd(next)) {
                     // Spotify's autoplay is the queue now: follow the song it chose, as if it had been asked for.
