@@ -23,4 +23,10 @@ data class ServiceStream(
     val userAgent: String? = null,
     /** An HLS playlist rather than a file, which a browser needs telling: it plays one only through hls.js. */
     val isHls: Boolean = false,
+    /**
+     * Some of its HLS segments are AES-128 encrypted, which mpv mishandles: it plays on without them.
+     * A platform playing through mpv routes such a stream through [HlsRelay] first; Android's player and a
+     * browser's hls.js decrypt it themselves.
+     */
+    val decrypt: Boolean = false,
 )

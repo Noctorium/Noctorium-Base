@@ -1,6 +1,11 @@
 package app.noctorium.core
 
 import app.noctorium.bandcamp.BandcampGenre
+import app.noctorium.vk.VkClient
+import app.noctorium.vk.VkCookies
+import app.noctorium.vk.VkMusicProvider
+import app.noctorium.vk.VkSource
+import app.noctorium.vk.VkUnavailable
 import app.noctorium.bandcamp.BandcampMusicProvider
 import app.noctorium.downloads.DownloadManager
 import app.noctorium.downloads.MusicExport
@@ -171,7 +176,8 @@ enum class ProviderFilter(val displayName: String) {
     YOUTUBE_MUSIC("YouTube Music"),
     SOUNDCLOUD("SoundCloud"),
     BANDCAMP("Bandcamp"),
-    SPOTIFY("Spotify");
+    SPOTIFY("Spotify"),
+    VK("VK Music");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -180,6 +186,7 @@ enum class ProviderFilter(val displayName: String) {
         SOUNDCLOUD -> provider == ProviderType.SOUNDCLOUD
         BANDCAMP -> provider == ProviderType.BANDCAMP
         SPOTIFY -> provider == ProviderType.SPOTIFY
+        VK -> provider == ProviderType.VK
     }
 }
 
@@ -190,6 +197,7 @@ enum class SearchMode(val displayName: String) {
     YOUTUBE_VIDEO("YouTube Videos"),
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
+    VK("VK Music"),
 }
 
 data class LibraryState(
@@ -265,6 +273,8 @@ data class LikeState(
     val youTubeReady: Boolean = false,
     /** A Spotify sign-in is stored: hearts on Spotify songs save them to, and take them out of, Liked Songs. */
     val spotifyReady: Boolean = false,
+    /** A VK sign-in is stored: a heart on a VK song adds it to My music. */
+    val vkReady: Boolean = false,
     /** Channels the signed-in Google account owns, for choosing which one Noctorium acts as. */
     val youTubeChannels: List<YouTubeChannel> = emptyList(),
     val message: String? = null,
@@ -275,7 +285,8 @@ data class LikeState(
         ProviderType.SOUNDCLOUD -> soundCloudReady
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
         ProviderType.SPOTIFY -> spotifyReady
-        ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
+        ProviderType.VK -> vkReady
+        ProviderType.BANDCAMP, ProviderType.LOCAL -> false
     }
 }
 
@@ -424,9 +435,19 @@ class AppState(
         homeGenres = { mutableSettings.value.preferences.bandcampGenres },
     )
 
+    /**
+     * VK, through the session of the account signed in on vk.ru. The two cookies that session is made of
+     * are kept in the credential store and nowhere else; see [VkClient].
+     */
+    private val vkClient = VkClient(
+        readCookies = { credentials.get(VK_COOKIES)?.let(VkCookies::parse) },
+        writeCookies = { cookies -> credentials.put(VK_COOKIES, cookies.header) },
+    )
+    private val vk = VkMusicProvider(vkClient)
+
     /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
     private val serviceStreams = ServiceStreams { sourceUrl ->
-        bandcamp.streamFor(sourceUrl)?.let(::ServiceStream)
+        bandcamp.streamFor(sourceUrl)?.let(::ServiceStream) ?: vk.streamFor(sourceUrl)
     }
 
     // Declared before the init block below, which reaches for it while opening the home screen.
@@ -446,6 +467,7 @@ class AppState(
         ),
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
         bandcamp,
+        vk,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -684,10 +706,17 @@ class AppState(
             val soundCloudReady = !soundCloudToken().isNullOrBlank()
             val youTubeSignedIn = youTubeSession()?.sapisid != null
             val spotifySignedIn = spotifyAccess.isConnected()
+            val vkSignedIn = vkClient.isSignedIn()
             mutableLikes.update {
-                it.copy(soundCloudReady = soundCloudReady, youTubeReady = youTubeSignedIn, spotifyReady = spotifySignedIn)
+                it.copy(
+                    soundCloudReady = soundCloudReady,
+                    youTubeReady = youTubeSignedIn,
+                    spotifyReady = spotifySignedIn,
+                    vkReady = vkSignedIn,
+                )
             }
-            if (soundCloudReady || youTubeSignedIn || spotifySignedIn) refreshLikes()
+            publishVkState()
+            if (soundCloudReady || youTubeSignedIn || spotifySignedIn || vkSignedIn) refreshLikes()
         }
     }
 
@@ -1386,6 +1415,7 @@ class AppState(
                     when (track.provider) {
                         ProviderType.SOUNDCLOUD -> state.copy(soundCloudReady = false)
                         ProviderType.SPOTIFY -> state.copy(spotifyReady = false)
+                        ProviderType.VK -> state.copy(vkReady = false)
                         else -> state.copy(youTubeReady = false)
                     }
                 }
@@ -1517,8 +1547,9 @@ class AppState(
                 is SpotifyRead.Failed -> LikeResult(LikeOutcome.FAILED, spotifyRefusal(saved.detail))
             }
         }
-        ProviderType.BANDCAMP, ProviderType.VK ->
-            LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Liking on ${track.provider.displayName} is not here yet.")
+        ProviderType.VK -> vkLike(track, liking)
+        ProviderType.BANDCAMP ->
+            LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Bandcamp has no likes; its wishlist is kept on Bandcamp.")
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
@@ -1713,6 +1744,16 @@ class AppState(
                     val recent = recentLikeWrites()
                     mutableLikes.update { state ->
                         state.copy(likedKeys = mergeLikes(state.likedKeys, "yt:", keys, liked.complete, recent))
+                    }
+                }
+            }
+            // VK's hearts are its My music: the account's own copies, by their own ids.
+            if (vkClient.isSignedIn()) {
+                runCatching { vkClient.myAudio(VK_HEARTS) }.getOrNull()?.let { songs ->
+                    val keys = songs.map { "vk:${it.fullId}" }.toSet()
+                    val recent = recentLikeWrites()
+                    mutableLikes.update { state ->
+                        state.copy(likedKeys = mergeLikes(state.likedKeys, "vk:", keys, songs.size < VK_HEARTS, recent))
                     }
                 }
             }
@@ -3245,12 +3286,17 @@ class AppState(
             val selectedProviders = when (mode) {
                 // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
                 // slower, less certain copy of the YouTube Music result beside it.
-                SearchMode.HYBRID -> providers.filter { it.type != ProviderType.SPOTIFY || spotifyPlaysSongs() }
+                SearchMode.HYBRID -> providers.filter {
+                    (it.type != ProviderType.SPOTIFY || spotifyPlaysSongs()) &&
+                        // VK only for an account signed in to it: otherwise its refusal is all it would add.
+                        (it.type != ProviderType.VK || vkClient.isSignedIn())
+                }
                 SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }
                 SearchMode.YOUTUBE_MUSIC -> providers.filter { it.type == ProviderType.YOUTUBE_MUSIC }
                 SearchMode.YOUTUBE_VIDEO -> providers.filter { it.type == ProviderType.YOUTUBE_VIDEO }
                 SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
                 SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
+                SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -3914,7 +3960,7 @@ class AppState(
     /** Downloads every track in a playlist that is not already here. */
     fun downloadAll(tracks: List<Track>) {
         val keepable = tracks.filter(::canKeep)
-        if (keepable.size < tracks.size) libraryNotice(KEEPING_BANDCAMP)
+        tracks.firstOrNull { !canKeep(it) }?.let { libraryNotice(keepRefusal(it)) }
         val pending = keepable
             .map(::downloadableTrack)
             .filterNot { downloads.state.value.isDownloaded(it) }
@@ -3940,7 +3986,7 @@ class AppState(
      * the song cannot be found, and [resolveSpotify] has already said why.
      */
     private fun onPlayable(track: Track, act: (Track) -> Unit) {
-        if (!canKeep(track)) return libraryNotice(KEEPING_BANDCAMP)
+        if (!canKeep(track)) return libraryNotice(keepRefusal(track))
         if (track.provider != ProviderType.SPOTIFY) return act(track)
         spotifyMatches[track.id]?.let { return act(it) }
         scope.launch { resolveSpotify(track)?.let(act) }
@@ -3964,11 +4010,115 @@ class AppState(
      *
      * Not Bandcamp's. What Bandcamp streams to everybody is there to be heard on the way to being bought,
      * and the file is the artist's to sell -- so Noctorium plays it, and points at the purchase instead.
+     * Not VK's either: VK licenses its music for playing in its own apps, and forbids keeping it.
      */
-    fun canKeep(track: Track): Boolean = track.provider != ProviderType.BANDCAMP
+    fun canKeep(track: Track): Boolean = track.provider != ProviderType.BANDCAMP && track.provider != ProviderType.VK
+
+    private fun keepRefusal(track: Track): String =
+        if (track.provider == ProviderType.VK) KEEPING_VK else KEEPING_BANDCAMP
+
+    // --- VK ---
+
+    /**
+     * Signs in to VK with the session of a browser signed in on vk.ru: its `p` and `remixsid` cookies, in
+     * whatever form they arrive -- harvested from the sign-in page, or pasted.
+     *
+     * The session is checked with VK before anything is kept, so a cookie copied wrong is a message and not
+     * a library that never loads.
+     */
+    fun completeVkSignIn(cookieText: String) {
+        val cookies = VkCookies.parse(cookieText) ?: run {
+            publishVkState(message = "Those are not VK's sign-in cookies. Both p and remixsid are needed.")
+            return
+        }
+        publishVkState(checking = true)
+        scope.launch {
+            try {
+                vkClient.exchange(cookies)
+                withContext(Dispatchers.IO) { credentials.put(VK_COOKIES, cookies.header) }
+                vkClient.adopt(cookies)
+                val name = runCatching { vkClient.profileName() }.getOrDefault("VK")
+                updatePreferences { copy(vkAccountName = name) }
+                mutableLikes.update { it.copy(vkReady = true) }
+                publishVkState(message = "Signed in to VK as $name. VK may hold some songs back outside Russia.")
+                refreshLibrary(force = true)
+                refreshLikes()
+                refreshHome()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Exception) {
+                publishVkState(message = readableFailure(failure, "Could not sign in to VK."))
+            }
+        }
+    }
+
+    /** Forgets the VK session here. Nothing at VK changes. */
+    fun disconnectVk() {
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { credentials.remove(VK_COOKIES) } }
+            vkClient.adopt(null)
+            vkCopies.clear()
+            updatePreferences { copy(vkAccountName = "") }
+            mutableLibrary.update { it.withoutProvider(ProviderType.VK) }
+            mutableLikes.update { state ->
+                state.copy(vkReady = false, likedKeys = state.likedKeys.filterNotTo(LinkedHashSet()) { it.startsWith("vk:") })
+            }
+            forgetLikeWrites("vk:")
+            publishVkState(message = "Signed out of VK.")
+            refreshHome()
+        }
+    }
+
+    private fun publishVkState(checking: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                vk = VkConnectionState(
+                    connected = preferences.vkAccountName.isNotBlank(),
+                    accountName = preferences.vkAccountName,
+                    checking = checking,
+                    message = message,
+                ),
+            )
+        }
+    }
+
+    /**
+     * The account's own copies of songs added from elsewhere this session, by the key of the song added.
+     *
+     * VK adds a song by making a copy under the account, with an id of its own, and only that copy can be
+     * taken out again. So un-hearting the search result that was just hearted means finding its copy.
+     */
+    private val vkCopies = ConcurrentHashMap<String, Track>()
+
+    private suspend fun vkLike(track: Track, liking: Boolean): LikeResult = try {
+        if (liking) {
+            val copy = vk.add(track)
+            if (copy == null) {
+                LikeResult(LikeOutcome.FAILED, "VK would not add that song.")
+            } else {
+                vkCopies[likeKey(track)] = copy
+                recentLikes[likeKey(copy)] = RecentLike(true, System.currentTimeMillis())
+                LikeResult(LikeOutcome.LIKED, "Added to My music on VK.")
+            }
+        } else {
+            val held = vkCopies[likeKey(track)] ?: track
+            if (vk.remove(held)) {
+                vkCopies.remove(likeKey(track))
+                recentLikes[likeKey(held)] = RecentLike(false, System.currentTimeMillis())
+                LikeResult(LikeOutcome.UNLIKED, "Removed from My music on VK.")
+            } else {
+                LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Take it out of My music to unlike it: VK keeps your own copy there.")
+            }
+        }
+    } catch (cancellation: CancellationException) {
+        throw cancellation
+    } catch (failure: VkUnavailable) {
+        LikeResult(if (failure.signedOut) LikeOutcome.TOKEN_REJECTED else LikeOutcome.FAILED, failure.message ?: "VK refused.")
+    }
 
     fun exportAll(tracks: List<Track>) {
-        if (tracks.any { !canKeep(it) }) libraryNotice(KEEPING_BANDCAMP)
+        tracks.firstOrNull { !canKeep(it) }?.let { libraryNotice(keepRefusal(it)) }
         @Suppress("NAME_SHADOWING") val tracks = tracks.filter(::canKeep)
         val folder = exportFolder()
         // Only the last one reveals the folder, or saving an album would open a window per track.
@@ -4049,8 +4199,8 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.SPOTIFY -> true
     // A fan's collection is public, so the name in their address is all it takes.
     ProviderType.BANDCAMP -> bandcampUsername.isNotBlank()
-    // Until its provider is part of the library.
-    ProviderType.VK -> false
+    // Signed in: the name is kept exactly as long as the session is.
+    ProviderType.VK -> vkAccountName.isNotBlank()
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -4263,6 +4413,16 @@ private const val RECENT_LIKE_GRACE_MS = 10 * 60 * 1000L
 
 /** How many of Spotify's Liked Songs are read for the hearts: the most recent, forty pages' worth. */
 private const val SPOTIFY_HEARTS = 2_000
+
+/** Where the VK session's cookies are kept in the credential store. */
+private const val VK_COOKIES = "vk.session_cookies"
+
+/** How many songs of My music are read for VK's hearts. */
+private const val VK_HEARTS = 1_000
+
+/** Why a VK song is not downloaded or saved. See [AppState.canKeep]. */
+private const val KEEPING_VK =
+    "VK songs play in Noctorium but cannot be downloaded: VK licenses its music for playing, not keeping."
 
 /** Why a Bandcamp song is not downloaded or saved. See [AppState.canKeep]. */
 private const val KEEPING_BANDCAMP =

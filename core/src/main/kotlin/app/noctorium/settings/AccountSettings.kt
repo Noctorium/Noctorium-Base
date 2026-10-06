@@ -432,6 +432,11 @@ data class NoctoriumPreferences(
     /** The Spotify device to play on, by Spotify's id. Blank for whichever one Spotify has active. */
     val spotifyDevice: String = "",
     /**
+     * The name of the VK account signed in, kept so Settings can say whose music is showing. Blank when
+     * nobody is: the session itself lives in the credential store, never here.
+     */
+    val vkAccountName: String = "",
+    /**
      * The name in the listener's Bandcamp address, `bandcamp.com/<name>`, whose collection the library shows.
      *
      * A name rather than a sign-in: Bandcamp shows a fan's collection to anybody, so this is all it takes.
@@ -779,6 +784,16 @@ data class SettingsState(
     val soundCloudAccount: AccountConnectionState = AccountConnectionState(),
     val spotify: SpotifyConnectionState = SpotifyConnectionState(),
     val bandcamp: BandcampConnectionState = BandcampConnectionState(),
+    val vk: VkConnectionState = VkConnectionState(),
+)
+
+/** The VK account, and how the last sign-in went. */
+data class VkConnectionState(
+    val connected: Boolean = false,
+    val accountName: String = "",
+    /** True while a sign-in is being checked with VK. */
+    val checking: Boolean = false,
+    val message: String? = null,
 )
 
 /** The Bandcamp collection the library shows, and how the last look for it went. */

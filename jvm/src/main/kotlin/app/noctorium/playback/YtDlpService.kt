@@ -183,6 +183,12 @@ class YtDlpService(
             }
         }
 
+    /** Decrypts the HLS streams mpv cannot, for the player. Started the first time one is played. */
+    private val relay by lazy { HlsRelay() }
+
+    /** What mpv is given for a stream core found: the stream itself, or the relay's clear copy of it. */
+    private fun forMpv(stream: ServiceStream): String = if (stream.decrypt) relay.relay(stream.address) else stream.address
+
     override suspend fun resolveAudio(sourceUrl: String): String {
         require(sourceUrl.startsWith("https://") || sourceUrl.startsWith("http://")) {
             "Only HTTP media sources are accepted"
@@ -190,7 +196,7 @@ class YtDlpService(
         return addresses.resolve(sourceUrl) {
             // Core's own services first: yt-dlp would be asked to read a page it does not need to read, or
             // one it cannot read at all.
-            serviceStream(sourceUrl)?.let { return@resolve it.address }
+            serviceStream(sourceUrl)?.let { return@resolve forMpv(it) }
             // A lookup that fails the instant a laptop changes Wi-Fi is asked once more before anyone is
             // told about it. See retryingTransientFailures for why only quick failures are retried.
             retryingTransientFailures { withContext(Dispatchers.IO) { fetchAudioAddress(sourceUrl) } }

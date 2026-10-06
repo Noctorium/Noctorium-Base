@@ -62,7 +62,11 @@ data class Track(
  * The same as [Track.sourceUrl], except where Noctorium writes what it needs to play the track after it --
  * which means nothing to anybody else.
  */
-val Track.pageUrl: String get() = app.noctorium.bandcamp.BandcampSource.page(sourceUrl)
+val Track.pageUrl: String get() = when (provider) {
+    ProviderType.BANDCAMP -> app.noctorium.bandcamp.BandcampSource.page(sourceUrl)
+    ProviderType.VK -> app.noctorium.vk.VkSource.page(sourceUrl)
+    else -> sourceUrl
+}
 
 @Serializable
 data class Playlist(
