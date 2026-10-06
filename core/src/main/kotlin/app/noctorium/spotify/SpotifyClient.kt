@@ -232,6 +232,15 @@ class SpotifyClient internal constructor(
         }
     }
 
+    /** One song by its Spotify id, as a pasted link names it. */
+    suspend fun track(trackId: String, accessToken: String): SpotifyRead<Track> =
+        when (val page = read("$API/tracks/${encodePathSegment(trackId)}", accessToken)) {
+            is SpotifyRead.Ok -> trackOf(page.value)?.let { SpotifyRead.Ok(it) }
+                ?: SpotifyRead.Failed("That Spotify link is not a song Noctorium can play.")
+            is SpotifyRead.Unauthorized -> page
+            is SpotifyRead.Failed -> page
+        }
+
     /** An album's songs, in order, each carrying the album it is on. */
     suspend fun albumTracks(albumId: String, accessToken: String): SpotifyRead<List<Track>> {
         val page = when (val read = read("$API/albums/${encodePathSegment(albumId)}", accessToken)) {

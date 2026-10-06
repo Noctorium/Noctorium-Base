@@ -4285,6 +4285,11 @@ class AppState(
                     // Read by its own client, which finds the song, the album or the artist behind the address.
                     link.provider == ProviderType.BANDCAMP -> bandcamp.tracksAt(link.url)
                         .ifEmpty { throw BackendException("That Bandcamp page has nothing on it that can be played.") }
+                    // Spotify and VK are read by their own clients, signed in.
+                    link.provider == ProviderType.SPOTIFY -> spotifyLinkTracks(link)
+                        .ifEmpty { throw BackendException("That Spotify link has nothing in it that can be played.") }
+                    link.provider == ProviderType.VK -> vkLinkTracks(link)
+                        .ifEmpty { throw BackendException("That VK link has nothing in it that can be played.") }
                     link.kind == LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
                         .ifEmpty { throw BackendException("That playlist has nothing in it that can be played, or it is private.") }
                     else -> link.placeholderTrack().let { placeholder ->
@@ -4325,6 +4330,30 @@ class AppState(
                     it.copy(status = LinkStatus.FAILED, message = readableFailure(error, "Could not open that link."))
                 }
             }
+        }
+    }
+
+    /** What a pasted Spotify link names: a song, or the songs of an album, an artist or a playlist. */
+    private suspend fun spotifyLinkTracks(link: MusicLink): List<Track> {
+        val token = spotifyAccessToken()
+            ?: throw BackendException("Connect Spotify in Settings to open Spotify links.")
+        return when (link.kind) {
+            LinkKind.TRACK -> when (val song = spotifyClient.track(link.id, token)) {
+                is SpotifyRead.Ok -> listOf(song.value)
+                is SpotifyRead.Unauthorized -> throw BackendException(song.detail)
+                is SpotifyRead.Failed -> throw BackendException(spotifyRefusal(song.detail))
+            }
+            else -> providers.first { it.type == ProviderType.SPOTIFY }
+                .getPlaylistTracks(Playlist(link.id, "", ProviderType.SPOTIFY, sourceUrl = link.url))
+        }
+    }
+
+    /** What a pasted VK link names: a song, or a playlist's songs. */
+    private suspend fun vkLinkTracks(link: MusicLink): List<Track> {
+        if (!vkClient.isSignedIn()) throw BackendException("Sign in to VK in Settings to open VK links.")
+        return when (link.kind) {
+            LinkKind.TRACK -> listOfNotNull(vk.getTrack(link.id))
+            else -> vk.getPlaylistTracks(Playlist(link.id, "", ProviderType.VK, sourceUrl = link.url))
         }
     }
 
@@ -4682,7 +4711,8 @@ private const val WARM_UP_AFTER_MS = 2_500L
 private const val LINK_DETAILS_WAIT_MS = 60_000L
 
 internal const val NOT_A_MUSIC_LINK =
-    "That isn't a link to a song or a playlist. Paste one from YouTube Music, YouTube or SoundCloud."
+    "That isn't a link to a song or a playlist. Paste one from YouTube Music, YouTube, SoundCloud, Bandcamp, " +
+        "Spotify or VK."
 
 /**
  * What to say once a link has been dealt with, or null where the screen already shows it: a song that is

@@ -43,6 +43,18 @@ data class MusicLink(
  */
 fun findMusicLink(text: String): MusicLink? =
     CANDIDATE.findAll(text).firstNotNullOfOrNull { match -> readLink(match.value.trimEnd(*TRAILING)) }
+        ?: spotifyUri(text)
+
+/**
+ * A Spotify URI -- `spotify:track:<id>` -- which is what Spotify's desktop app copies with Shift held, and
+ * what some share sheets hand over instead of an address.
+ */
+private fun spotifyUri(text: String): MusicLink? {
+    val match = SPOTIFY_URI.find(text) ?: return null
+    return spotify(listOf(match.groupValues[1].lowercase(), match.groupValues[2]))
+}
+
+private val SPOTIFY_URI = Regex("""spotify:(track|album|playlist|artist):([A-Za-z0-9]{22})""")
 
 /** Whether [text] carries a link [findMusicLink] would read, for deciding whether to offer anything. */
 fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
@@ -52,7 +64,7 @@ fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
  * purpose: [readLink] is the part that decides, this only finds places worth asking about.
  */
 private val CANDIDATE = Regex(
-    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com)(?:/[^\s<>"']*)?""",
+    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com)(?:/[^\s<>"']*)?""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -91,6 +103,11 @@ private fun readLink(raw: String): MusicLink? {
             }
         host == "soundcloud.com" || host == "m.soundcloud.com" -> soundCloud(segments)
         host.endsWith(".bandcamp.com") -> bandcamp(host, segments)
+        host == "open.spotify.com" -> spotify(segments)
+        host == "spotify.link" -> segments.firstOrNull()?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
+            MusicLink(ProviderType.SPOTIFY, LinkKind.SHORT, code, "https://spotify.link/$code")
+        }
+        host == "vk.ru" || host == "vk.com" || host == "m.vk.ru" || host == "m.vk.com" -> vk(segments)
         else -> null
     }
 }
@@ -141,6 +158,46 @@ private fun bandcamp(host: String, segments: List<String>): MusicLink? {
 }
 
 private val BANDCAMP_SLUG = Regex("""[A-Za-z0-9_-]+""")
+
+/**
+ * A song, an album, a playlist or an artist on Spotify, `open.spotify.com/track/<id>` and the like.
+ *
+ * A localised address (`/intl-de/track/...`) is the same thing, and so is one with a share token after it.
+ * Albums and artists are named the way Noctorium opens them as playlists: `album:<id>`, `artist:<id>`.
+ */
+private fun spotify(segments: List<String>): MusicLink? {
+    val parts = if (segments.firstOrNull()?.startsWith("intl-") == true) segments.drop(1) else segments
+    val id = parts.getOrNull(1)?.takeIf(SPOTIFY_ID::matches) ?: return null
+    return when (parts.firstOrNull()) {
+        "track" -> MusicLink(ProviderType.SPOTIFY, LinkKind.TRACK, id, "https://open.spotify.com/track/$id")
+        "album" -> MusicLink(ProviderType.SPOTIFY, LinkKind.PLAYLIST, "album:$id", "https://open.spotify.com/album/$id")
+        "artist" -> MusicLink(ProviderType.SPOTIFY, LinkKind.PLAYLIST, "artist:$id", "https://open.spotify.com/artist/$id")
+        "playlist" -> MusicLink(ProviderType.SPOTIFY, LinkKind.PLAYLIST, id, "https://open.spotify.com/playlist/$id")
+        else -> null
+    }
+}
+
+private val SPOTIFY_ID = Regex("""[A-Za-z0-9]{22}""")
+
+/**
+ * A VK song, `vk.ru/audio<owner>_<id>`, or a VK playlist or album, `vk.ru/music/playlist/<owner>_<id>_<key>`.
+ * Either host, vk.ru or vk.com, is the same place.
+ */
+private fun vk(segments: List<String>): MusicLink? {
+    val first = segments.firstOrNull() ?: return null
+    VK_SONG.matchEntire(first)?.let { match ->
+        val id = "${match.groupValues[1]}_${match.groupValues[2]}"
+        return MusicLink(ProviderType.VK, LinkKind.TRACK, id, "https://vk.ru/audio$id")
+    }
+    if (first == "music" && segments.getOrNull(1) in setOf("playlist", "album")) {
+        val id = segments.getOrNull(2)?.takeIf(VK_PLAYLIST::matches) ?: return null
+        return MusicLink(ProviderType.VK, LinkKind.PLAYLIST, "playlist:$id", "https://vk.ru/music/playlist/$id")
+    }
+    return null
+}
+
+private val VK_SONG = Regex("""audio(-?\d+)_(\d+)""")
+private val VK_PLAYLIST = Regex("""-?\d+_\d+(_[A-Za-z0-9]+)?""")
 
 private fun soundCloud(segments: List<String>): MusicLink? {
     val user = segments.getOrNull(0)?.takeIf(SOUNDCLOUD_NAME::matches) ?: return null
