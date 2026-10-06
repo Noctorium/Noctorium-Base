@@ -3770,12 +3770,16 @@ class AppState(
         }
     }
 
-    /** Writes the queue down as it changes -- and every little while as a song plays -- when it is kept. */
+    /**
+     * Writes the queue down when it is kept: as it changes, when playback pauses or stops, and once a
+     * minute while a song plays -- so a phone that ends the app without warning loses a minute at most,
+     * without the file being rewritten every few seconds.
+     */
     private fun observeQueueForKeeping() {
         scope.launch {
             combine(
                 queue.state,
-                playback.map { it.positionMs / KEEP_POSITION_STEP_MS }.distinctUntilChanged(),
+                playback.map { it.status to it.positionMs / KEEP_POSITION_STEP_MS }.distinctUntilChanged(),
                 mutableSettings.map { it.preferences.keepQueue }.distinctUntilChanged(),
             ) { state, _, keep -> state to keep }
                 .collectLatest { (state, keep) ->
@@ -4848,7 +4852,7 @@ private const val SUGGESTIONS_DELAY_MS = 4_000L
 private const val RESUME_MIN_MS = 5_000L
 
 /** How often, in playing time, the kept queue's position is written down. */
-private const val KEEP_POSITION_STEP_MS = 10_000L
+private const val KEEP_POSITION_STEP_MS = 60_000L
 
 /** How long the queue must stay as it is before it is written, so a burst of changes is one write. */
 private const val KEEP_QUEUE_PAUSE_MS = 1_500L
