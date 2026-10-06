@@ -499,6 +499,16 @@ class AppState(
      */
     private val settingsSaving = kotlinx.coroutines.sync.Mutex()
 
+    /*
+     * The playlist file is written one write at a time, each of the list as it stands by then, and [close] writes
+     * it once more if a change has not reached it yet. Before, every change launched a writer of its own copy:
+     * two in quick succession -- a playlist made, then deleted -- were written at once in either order, and the
+     * file kept whichever finished last; and a change made just before quitting went with the scope.
+     */
+    private val playlistWrites = Any()
+    private val playlistVersion = java.util.concurrent.atomic.AtomicLong()
+    @Volatile private var playlistsWritten = 0L
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         BackendMusicProvider(
@@ -2858,7 +2868,18 @@ class AppState(
                 },
             )
         }
-        scope.launch(Dispatchers.IO) { runCatching { playlistRepository.save(playlists) } }
+        playlistVersion.incrementAndGet()
+        scope.launch(Dispatchers.IO) { writePlaylists() }
+    }
+
+    /** Writes the playlists as they stand now, unless that much has been written already. See [playlistWrites]. */
+    private fun writePlaylists() {
+        synchronized(playlistWrites) {
+            val version = playlistVersion.get()
+            if (version <= playlistsWritten) return
+            runCatching { playlistRepository.save(mutableLibrary.value.localPlaylists) }
+                .onSuccess { playlistsWritten = version }
+        }
     }
 
     fun closePlaylist() {
@@ -4646,6 +4667,8 @@ class AppState(
         if (mutableSettings.value.preferences.keepQueue && queue.state.value.tracks.isNotEmpty()) {
             runCatching { queueStore.save(keptQueue(queue.state.value)) }
         }
+        // A playlist changed a moment ago is written now, rather than dropped with the scope's pending writes.
+        writePlaylists()
         sleeper.cancel()
         player.close()
         connectManager.close()
