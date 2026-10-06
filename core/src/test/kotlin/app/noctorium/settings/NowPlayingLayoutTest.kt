@@ -81,7 +81,7 @@ class NowPlayingLayoutTest {
 
     @Test
     fun `every option has a name, and every layout and look says what it is`() {
-        assertEquals(6, NowPlayingLayout.entries.size)
+        assertEquals(11, NowPlayingLayout.entries.size)
         NowPlayingLayout.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
         CoverStyle.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
         NowPlayingBackdrop.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
@@ -92,8 +92,35 @@ class NowPlayingLayoutTest {
     @Test
     fun `only the layouts with nothing beside the record go without the panel`() {
         assertEquals(
-            setOf(NowPlayingLayout.STAGE, NowPlayingLayout.FOCUS),
+            setOf(
+                NowPlayingLayout.STAGE,
+                NowPlayingLayout.FOCUS,
+                NowPlayingLayout.IMMERSIVE,
+                NowPlayingLayout.COVER_FLOW,
+                NowPlayingLayout.POSTER,
+            ),
             NowPlayingLayout.entries.filterNot { it.hasPanel }.toSet(),
         )
+    }
+
+    @Test
+    fun `the phone opens on the screen it always had, and keeps the one chosen`() {
+        val older = """{"phone":{"playerBarStyle":"SLIM","haptics":false}}"""
+        val preferences = json.decodeFromString<NoctoriumPreferences>(older)
+        assertEquals(PhoneNowPlayingLayout.CLASSIC, preferences.phone.nowPlayingLayout)
+        assertEquals(PhonePlayerBarStyle.SLIM, preferences.phone.playerBarStyle)
+
+        val chosen = preferences.copy(phone = preferences.phone.copy(nowPlayingLayout = PhoneNowPlayingLayout.COVER_FLOW))
+        val restored = json.decodeFromString<NoctoriumPreferences>(json.encodeToString(chosen))
+        assertEquals(PhoneNowPlayingLayout.COVER_FLOW, restored.phone.nowPlayingLayout)
+        PhoneNowPlayingLayout.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
+    }
+
+    @Test
+    fun `a phone layout this build does not know reads as the classic one`() {
+        val newer = """{"phone":{"nowPlayingLayout":"HOLOGRAM","haptics":false}}"""
+        val phone = json.decodeFromString<NoctoriumPreferences>(newer).phone
+        assertEquals(PhoneNowPlayingLayout.CLASSIC, phone.nowPlayingLayout)
+        assertEquals(false, phone.haptics)
     }
 }

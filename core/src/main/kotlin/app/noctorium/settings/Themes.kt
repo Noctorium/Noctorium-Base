@@ -32,7 +32,13 @@ data class ThemeColours(
  * own -- the listener's are kept in the preferences beside the choice.
  */
 @Serializable
-enum class ThemePreset(val displayName: String, val family: String, val colours: ThemeColours?) {
+enum class ThemePreset(
+    val displayName: String,
+    val family: String,
+    val colours: ThemeColours?,
+    /** How it is drawn beyond its colours. Nearly every theme is only colours. */
+    val skin: ThemeSkin = ThemeSkin.STANDARD,
+) {
     NOCTORIUM_NIGHT("Night", "Noctorium", ThemeColours(0xFF000000, 0xFF07050A, 0xFF15101C, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF)),
     NOCTORIUM_DUSK("Dusk", "Noctorium", ThemeColours(0xFF0D0B12, 0xFF141019, 0xFF1D1826, 0xFFF3F1F8, 0xFFC9C2D6, 0xFFB47CFF)),
     NOCTORIUM_DAY("Day", "Noctorium", ThemeColours(0xFFFAF7FF, 0xFFFFFFFF, 0xFFECE6F6, 0xFF1A1425, 0xFF5B5470, 0xFF7C3AED, light = true)),
@@ -60,15 +66,144 @@ enum class ThemePreset(val displayName: String, val family: String, val colours:
      * Two desktops everybody of a certain age can picture. 98 is the grey of its window face with white
      * where a list sat and the navy of a title bar for the accent; XP is Luna's beige page, the pale blue of
      * Explorer's task pane and the blue of its taskbar. The system colours those releases shipped with,
-     * as near as a six-colour theme can hold them. Sharp corners and the Classic seek bar finish the look.
+     * as near as a six-colour theme can hold them -- and then the skin draws the rest, the bevels, title
+     * bars and taskbars, from [Windows98Colours] and [WindowsXpColours].
      */
-    WINDOWS_98("98", "Windows", ThemeColours(0xFFC0C0C0, 0xFFB4B4B4, 0xFFFFFFFF, 0xFF000000, 0xFF3A3A3A, 0xFF000080, light = true)),
-    WINDOWS_XP("XP", "Windows", ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true)),
+    WINDOWS_98("98", "Windows", ThemeColours(0xFFC0C0C0, 0xFFB4B4B4, 0xFFFFFFFF, 0xFF000000, 0xFF3A3A3A, 0xFF000080, light = true), ThemeSkin.WINDOWS_98),
+    WINDOWS_XP("XP", "Windows", ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true), ThemeSkin.WINDOWS_XP),
     CUSTOM("Custom", "Yours", null),
 }
 
 /** The colours in force: the preset's, or the listener's own when the preset is CUSTOM. */
 fun NoctoriumPreferences.themeColours(): ThemeColours = theme.colours ?: customTheme
+
+/** The skin in force. The listener's own colours are only colours. */
+val NoctoriumPreferences.themeSkin: ThemeSkin get() = theme.skin
+
+/**
+ * How a theme is drawn beyond its colours.
+ *
+ * Nearly every theme is a palette: the same interface in other colours. The Windows ones cannot be -- 98 is
+ * bevelled grey slabs, navy title bars and a teal desktop, XP is Luna's rounded blue and its green start
+ * button -- and as palettes alone they were a grey or beige page that only reminded anybody of Windows. A
+ * skin is the rest of the look, which each player draws in its own way from the same numbers.
+ */
+enum class ThemeSkin { STANDARD, WINDOWS_98, WINDOWS_XP }
+
+/**
+ * Windows 98's system colours, as its Windows Standard scheme set them: what every bevel, title bar and list
+ * of the time was drawn with, so that the 98 skin is the same grey on every player.
+ *
+ * A raised edge is two lines on each side: [HIGHLIGHT] then [LIGHT] along the top and the left, [DARK_SHADOW]
+ * then [SHADOW] along the bottom and the right, outermost first. A sunken one is the same four the other way
+ * round. A window's frame swaps the outer pair for [LIGHT] outside and [HIGHLIGHT] within.
+ */
+object Windows98Colours {
+    const val FACE = 0xFFC0C0C0
+    const val HIGHLIGHT = 0xFFFFFFFF
+    const val LIGHT = 0xFFDFDFDF
+    const val SHADOW = 0xFF808080
+    const val DARK_SHADOW = 0xFF000000
+
+    /** Where a list, a field or a document sat: white, inside a sunken edge. */
+    const val WINDOW = 0xFFFFFFFF
+    const val TEXT = 0xFF000000
+
+    /** Writing on something that cannot be used, with [HIGHLIGHT] a pixel below and to the right of it. */
+    const val GREY_TEXT = 0xFF808080
+    const val SELECTION = 0xFF000080
+    const val SELECTION_TEXT = 0xFFFFFFFF
+
+    /** The active title bar, from the first to the second, left to right; then a window not in use. */
+    const val TITLE = 0xFF000080
+    const val TITLE_END = 0xFF1084D0
+    const val INACTIVE_TITLE = 0xFF808080
+    const val INACTIVE_TITLE_END = 0xFFB5B5B5
+    const val TITLE_TEXT = 0xFFFFFFFF
+    const val TOOLTIP = 0xFFFFFFE1
+
+    /** The desktop behind every window: the teal 98 was installed with. */
+    const val DESKTOP = 0xFF008080
+}
+
+/**
+ * Windows XP's Luna, in its default blue: its windows, title bars, buttons, progress bars and taskbar.
+ *
+ * Luna drew most of itself from bitmaps rather than from system colours, so these are read off them: the stops
+ * of its gradients rather than one flat value each.
+ */
+object WindowsXpColours {
+    /** The window face: the beige every dialog and toolbar sat on. */
+    const val FACE = 0xFFECE9D8
+    const val WINDOW = 0xFFFFFFFF
+    const val TEXT = 0xFF000000
+    const val GREY_TEXT = 0xFFACA899
+    const val SELECTION = 0xFF316AC5
+    const val SELECTION_TEXT = 0xFFFFFFFF
+
+    /** The title bar, top to bottom: a bright rim, the deep blue, lighter again towards a darker foot. */
+    const val TITLE_TOP = 0xFF0997FF
+    const val TITLE = 0xFF0053EE
+    const val TITLE_LOW = 0xFF0066FF
+    const val TITLE_FOOT = 0xFF003DD7
+    const val INACTIVE_TITLE = 0xFF7A96DF
+    const val TITLE_TEXT = 0xFFFFFFFF
+
+    /** The frame round a window, in the same blue. */
+    const val FRAME = 0xFF0831D9
+
+    /** The caption buttons: blue with a white glyph, and the close button's red. */
+    const val CAPTION_BUTTON = 0xFF2A6CF0
+    const val CLOSE = 0xFFE0532F
+
+    /** A button: a rounded edge of this dark blue over white fading to [BUTTON_FOOT], glowing [HOT] when pointed at. */
+    const val BUTTON_EDGE = 0xFF003C74
+    const val BUTTON_FOOT = 0xFFD6D0C5
+    const val HOT = 0xFFF8B636
+    const val FOCUS = 0xFF98B8EA
+
+    /** The pale blue round a text box or a list. */
+    const val FIELD_EDGE = 0xFF7F9DB9
+
+    /** A group box's edge, and the blue of its title. */
+    const val GROUP_EDGE = 0xFFD0D0BF
+    const val GROUP_TITLE = 0xFF0046D5
+
+    /** A tab's edge, and the orange along the top of the one chosen. */
+    const val TAB_EDGE = 0xFF919B9C
+    const val TAB_CHOSEN = 0xFFFFC83C
+
+    /** The progress bar's green blocks: pale at their top and bottom, deep through the middle. */
+    const val PROGRESS_LIGHT = 0xFFACEDAD
+    const val PROGRESS = 0xFF2ED330
+
+    /** The scroll bar's pale blue thumb and arrow buttons, edged a little darker, with dark blue arrows. */
+    const val SCROLL_THUMB = 0xFFC8D6FB
+    const val SCROLL_EDGE = 0xFFA4B9F1
+    const val SCROLL_ARROW = 0xFF4D6185
+
+    /** The taskbar, top to bottom; the start button's green; the tray at its right end, edged on its left. */
+    const val TASKBAR_TOP = 0xFF3168D5
+    const val TASKBAR = 0xFF245DDA
+    const val TASKBAR_FOOT = 0xFF1941A5
+    const val START = 0xFF3C9A3C
+    const val START_LIGHT = 0xFF5DB85D
+    const val TRAY = 0xFF0F8BF2
+    const val TRAY_EDGE = 0xFF1042AF
+
+    /** Explorer's task pane down the left of a folder: a blue gradient, top to bottom, holding pale panels. */
+    const val TASK_PANE_TOP = 0xFF7BA2E7
+    const val TASK_PANE_FOOT = 0xFF6375D6
+    const val TASK_PANEL = 0xFFD6DFF7
+    const val TASK_PANEL_TITLE = 0xFF215DC6
+    const val TOOLTIP = 0xFFFFFFE1
+
+    /** A desktop of a blue sky over a green hill: only the colours of one, since XP's was a photograph. */
+    const val SKY = 0xFF3B73D4
+    const val SKY_LOW = 0xFFA8CBF3
+    const val HILL = 0xFF5CA332
+    const val HILL_SHADE = 0xFF2F7D1F
+}
 
 /**
  * The accent in force, given what the artwork offered.

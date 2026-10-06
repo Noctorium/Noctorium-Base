@@ -96,6 +96,45 @@ class ThemesTest {
     }
 
     @Test
+    fun `only the Windows themes are more than colours, and the listener's own are only colours`() {
+        assertEquals(
+            mapOf(ThemePreset.WINDOWS_98 to ThemeSkin.WINDOWS_98, ThemePreset.WINDOWS_XP to ThemeSkin.WINDOWS_XP),
+            ThemePreset.entries.filter { it.skin != ThemeSkin.STANDARD }.associateWith { it.skin },
+        )
+        assertEquals(ThemeSkin.STANDARD, NoctoriumPreferences(theme = ThemePreset.CUSTOM).themeSkin)
+        assertEquals(ThemeSkin.WINDOWS_98, NoctoriumPreferences(theme = ThemePreset.WINDOWS_98).themeSkin)
+    }
+
+    /** The skins and the six colours are two descriptions of one look, and must not drift apart. */
+    @Test
+    fun `the skins' system colours agree with the themes' own`() {
+        val ninetyEight = ThemePreset.WINDOWS_98.colours!!
+        assertEquals(Windows98Colours.FACE, ninetyEight.background)
+        assertEquals(Windows98Colours.TITLE, ninetyEight.accent)
+        assertEquals(Windows98Colours.WINDOW, ninetyEight.card)
+        assertEquals(WindowsXpColours.FACE, ThemePreset.WINDOWS_XP.colours!!.background)
+    }
+
+    @Test
+    fun `writing on the skins' title bars, selections and buttons can be read`() {
+        listOf(
+            Windows98Colours.TITLE_TEXT to Windows98Colours.TITLE,
+            Windows98Colours.TITLE_TEXT to Windows98Colours.TITLE_END,
+            Windows98Colours.SELECTION_TEXT to Windows98Colours.SELECTION,
+            Windows98Colours.TEXT to Windows98Colours.FACE,
+            Windows98Colours.TEXT to Windows98Colours.TOOLTIP,
+            WindowsXpColours.TITLE_TEXT to WindowsXpColours.TITLE,
+            WindowsXpColours.SELECTION_TEXT to WindowsXpColours.SELECTION,
+            WindowsXpColours.TEXT to WindowsXpColours.FACE,
+            WindowsXpColours.TEXT to WindowsXpColours.BUTTON_FOOT,
+            WindowsXpColours.TASK_PANEL_TITLE to WindowsXpColours.TASK_PANEL,
+            WindowsXpColours.GROUP_TITLE to WindowsXpColours.FACE,
+        ).forEach { (text, behind) ->
+            assertTrue(contrastRatio(text, behind) >= 3.0, "%08X on %08X".format(text, behind))
+        }
+    }
+
+    @Test
     fun `a settings file from before themes still reads, with the default theme`() {
         val json = Json { ignoreUnknownKeys = true }
         val preferences = json.decodeFromString<NoctoriumPreferences>("""{"accent":"MAGENTA","backgroundDepth":"AMOLED"}""")

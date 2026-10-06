@@ -175,6 +175,22 @@ enum class PlayerBarStyle(val displayName: String, val description: String) {
         "Spotlight",
         "A taller bar with a large cover, tinted with the colours of the artwork.",
     ),
+    FLOATING(
+        "Floating",
+        "The bar lifted off the edge of the window and rounded, with a gap all round it, like a dock.",
+    ),
+    ISLAND(
+        "Island",
+        "Only a small pill in the middle: the cover, the track, previous, play and next, and the progress along its edge.",
+    ),
+    DISPLAY(
+        "Display",
+        "The track in a display at the centre, like a stereo's, with the controls to its left and the volume to its right.",
+    ),
+    TASKBAR(
+        "Taskbar",
+        "A desktop's taskbar: a start button that opens Now playing, the song as a pressed button, and a tray with the volume and the clock.",
+    ),
 }
 
 /**
@@ -202,6 +218,22 @@ enum class PhonePlayerBarStyle(val displayName: String, val description: String)
     SPOTLIGHT(
         "Spotlight",
         "A larger cover, over a blur of the artwork.",
+    ),
+    FLOATING(
+        "Floating",
+        "A rounded bar floating above the tabs, with a margin all round and the progress along its foot.",
+    ),
+    LINE(
+        "Line",
+        "Only the title and the artist over a thin line of progress, and play: the least that still says what is on.",
+    ),
+    RECORD(
+        "Record",
+        "The cover as a small record that turns while the music plays, with the track and play beside it.",
+    ),
+    TASKBAR(
+        "Taskbar",
+        "A start button, the song as a pressed taskbar button, and a clock, like the desktops of old.",
     ),
 }
 
@@ -247,9 +279,34 @@ enum class ProgressBarStyle(val displayName: String, val description: String) {
         "Capsule",
         "One thick rounded bar, filled from the left. No handle, nothing else.",
     ),
+    /**
+     * Bars of different heights, which look like a waveform and are not one: Noctorium never holds the audio
+     * to measure -- the services stream it straight to the player -- so the heights are a pattern the song
+     * keeps instead. See [SeekBar.barHeights].
+     */
+    BARS(
+        "Bars",
+        "A row of thin bars of different heights, lit as the song plays. Every song has a row of its own.",
+    ),
+    BEADS(
+        "Beads",
+        "A string of dots: the ones played are filled in, and the one the song has reached is larger.",
+    ),
+    NEON(
+        "Neon",
+        "A bright line with a glow round it and a spark at its head, and what is still to come in faint dashes.",
+    ),
+    RULER(
+        "Ruler",
+        "A tick every few seconds and a longer one each minute, with a pointer riding above the song's place.",
+    ),
     CLASSIC(
         "Classic",
         "The old Windows kind: a sunken well filling with square blocks, and a raised slab for a handle.",
+    ),
+    LUNA(
+        "Luna",
+        "Windows XP's: green blocks filling a rounded white well, and its pointed handle.",
     ),
     ;
 
@@ -311,6 +368,106 @@ object SeekBar {
 
     /** What an unplayed track is drawn at, against the writing colour. */
     const val TRACK_ALPHA = .22f
+
+    /** One bar and the gap after it, and how wide the bar itself is within that. */
+    const val BARS_PITCH_DP = 5
+    const val BARS_WIDTH_DP = 3
+
+    /** The tallest a bar stands. The rest are a fraction of it, and none less than [BARS_MIN_FRACTION]. */
+    const val BARS_HEIGHT_DP = 22
+    const val BARS_MIN_FRACTION = .18f
+
+    /** One bead and the gap after it, a bead, and the larger one the song has reached. */
+    const val BEAD_PITCH_DP = 10
+    const val BEAD_RADIUS_DP = 2.5f
+    const val BEAD_HEAD_RADIUS_DP = 5
+
+    /** The neon line, how far its glow spreads either side, and the dashes of what is still to come. */
+    const val NEON_LINE_DP = 2
+    const val NEON_GLOW_DP = 8
+    const val NEON_DASH_DP = 6
+    const val NEON_DASH_GAP_DP = 5
+
+    /** The ruler: a tick, the longer one on each minute, and the pointer riding above them. */
+    const val RULER_TICK_DP = 6
+    const val RULER_MAJOR_TICK_DP = 12
+    const val RULER_POINTER_DP = 8
+
+    /** XP's well, the blocks that fill it and the gap after each, and its pointed handle. */
+    const val LUNA_WELL_DP = 14
+    const val LUNA_BLOCK_DP = 6
+    const val LUNA_BLOCK_GAP_DP = 2
+    const val LUNA_THUMB_WIDTH_DP = 11
+    const val LUNA_THUMB_HEIGHT_DP = 21
+
+    /** How many swells a song's bars rise and fall through from end to end, and how finely they are made. */
+    private const val BARS_SECTIONS = 8
+    private const val BARS_SAMPLES = 160
+
+    /**
+     * The heights of [count] bars for the song keyed [seed], each from [BARS_MIN_FRACTION] up to 1.
+     *
+     * Taken along the song rather than bar by bar, so a wider bar has more of them and the same shape: the
+     * same song rises and falls in the same places on a phone, in a window and in a terminal. Slow swells
+     * across its length, like the sections of a song, with quicker beats inside them softened against their
+     * neighbours, so the row reads as music rather than as static. Made with FNV-1a and xorshift, which the
+     * web player repeats in a few lines of its own.
+     */
+    fun barHeights(seed: String, count: Int): FloatArray {
+        if (count <= 0) return FloatArray(0)
+        var hash = 0x811C9DC5.toInt()
+        seed.forEach { hash = (hash xor it.code) * 16777619 }
+        var state = if (hash == 0) 0x9E3779B9.toInt() else hash
+        fun next(): Float {
+            state = state xor (state shl 13)
+            state = state xor (state ushr 17)
+            state = state xor (state shl 5)
+            return (state ushr 8) / 16_777_216f
+        }
+        val sections = FloatArray(BARS_SECTIONS + 1) { .35f + .65f * next() }
+        val raw = FloatArray(BARS_SAMPLES) { next() }
+        val beats = FloatArray(BARS_SAMPLES) { i ->
+            (raw[(i - 1).coerceAtLeast(0)] + 2 * raw[i] + raw[(i + 1).coerceAtMost(BARS_SAMPLES - 1)]) / 4
+        }
+        return FloatArray(count) { i ->
+            val along = (i + .5f) / count
+            val height = (sampled(sections, along) * (.45f + .55f * sampled(beats, along))).coerceIn(0f, 1f)
+            BARS_MIN_FRACTION + (1 - BARS_MIN_FRACTION) * height
+        }
+    }
+
+    /** [values] read at [along], from 0 to 1, between the two nearest. */
+    private fun sampled(values: FloatArray, along: Float): Float {
+        val at = along.coerceIn(0f, 1f) * (values.size - 1)
+        val below = at.toInt().coerceAtMost(values.size - 2)
+        return values[below] + (values[below + 1] - values[below]) * (at - below)
+    }
+
+    /** One of the ruler's ticks: how far along the song it is, from 0 to 1, and whether it marks a minute. */
+    data class RulerTick(val fraction: Float, val major: Boolean)
+
+    /** The spacings a ruler is allowed, in seconds, finest first. */
+    private val RULER_STEPS = listOf(5, 10, 15, 30, 60, 120, 300, 600)
+
+    /**
+     * Where the ruler's ticks fall along a song [durationMs] long, no more than [maxTicks] of them: the finest
+     * spacing that fits, from every five seconds up to every ten minutes. The long ones are the minutes, or
+     * every five minutes once a tick is a minute or more apart, or every half hour on a set hours long. The
+     * ends are left bare, since the times are written there. Nothing for a song with no length yet.
+     */
+    fun rulerTicks(durationMs: Long, maxTicks: Int): List<RulerTick> {
+        if (durationMs <= 0 || maxTicks <= 0) return emptyList()
+        val seconds = durationMs / 1000.0
+        val step = RULER_STEPS.firstOrNull { seconds / it <= maxTicks } ?: return emptyList()
+        val majorEvery = when {
+            step < 60 -> 60
+            step < 300 -> 300
+            else -> 1800
+        }
+        return (step until seconds.toInt() step step).map { at ->
+            RulerTick((at / seconds).toFloat(), major = at % majorEvery == 0)
+        }
+    }
 }
 
 @Serializable
@@ -549,6 +706,38 @@ data class UpdatePreferences(
     val dismissedVersion: String = "",
 )
 
+/**
+ * How the phone's now playing screen is arranged, chosen apart from the desktop's: a tall screen held in one
+ * hand and a wide window want different things, as the player bars found first.
+ */
+@Serializable
+enum class PhoneNowPlayingLayout(val displayName: String, val description: String) {
+    CLASSIC(
+        "Classic",
+        "The cover, then the track, the seek bar and the controls, as it has always been.",
+    ),
+    FULL_COVER(
+        "Full cover",
+        "The cover fills the screen behind everything, with the track and the controls over its foot.",
+    ),
+    RECORD(
+        "Record",
+        "The cover set into a record that turns while the music plays.",
+    ),
+    COVER_FLOW(
+        "Cover flow",
+        "The queue's covers in a row with the one playing in the middle, to swipe through.",
+    ),
+    SING_ALONG(
+        "Sing along",
+        "The lyrics fill the screen, with a small cover and the controls beneath them.",
+    ),
+    BIG_TYPE(
+        "Big type",
+        "No cover: the title and the artist set large, like a poster.",
+    ),
+}
+
 /** The shape of the cover on the now playing screen. */
 @Serializable
 enum class ArtworkShape(val displayName: String, val cornerPercent: Int) {
@@ -594,6 +783,8 @@ data class PhonePreferences(
     val hiddenDestinations: Set<Destination> = emptySet(),
     /** How the player bar above the tabs is laid out. */
     val playerBarStyle: PhonePlayerBarStyle = PhonePlayerBarStyle.CLASSIC,
+    /** How the now playing screen is arranged. */
+    val nowPlayingLayout: PhoneNowPlayingLayout = PhoneNowPlayingLayout.CLASSIC,
     /**
      * How far a double tap on the cover jumps, in seconds.
      *
@@ -709,6 +900,31 @@ enum class NowPlayingLayout(val displayName: String, val description: String, va
         "Sing along",
         "The lyrics large across most of the screen, with the cover and controls in a column beside them.",
         hasPanel = true,
+    ),
+    IMMERSIVE(
+        "Full cover",
+        "The cover fills the screen, and the track and the controls sit over its foot.",
+        hasPanel = false,
+    ),
+    SPLIT(
+        "Split",
+        "The cover fills the left half from top to bottom, and the track, the controls and the panel share the right.",
+        hasPanel = true,
+    ),
+    COVER_FLOW(
+        "Cover flow",
+        "The queue as a row of covers turned towards the one playing, with the track and the controls beneath.",
+        hasPanel = false,
+    ),
+    TURNTABLE(
+        "Turntable",
+        "The record on a turntable whose arm crosses it as the song plays, with the queue and lyrics beside it.",
+        hasPanel = true,
+    ),
+    POSTER(
+        "Big type",
+        "No cover: the title and the artist set large, like a poster, with the controls under them.",
+        hasPanel = false,
     ),
 }
 
