@@ -148,6 +148,8 @@ enum class PlayerButton(val displayName: String) {
     QUEUE("Queue"),
     SLEEP_TIMER("Sleep timer"),
     VOLUME("Volume"),
+    /** The playback speed, a button of its own rather than a part of the volume's. */
+    SPEED("Speed"),
     DEVICES("Devices and Connect"),
 }
 
