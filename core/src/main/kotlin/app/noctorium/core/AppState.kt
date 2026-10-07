@@ -818,8 +818,12 @@ class AppState(
         when (playback.value.status) {
             PlaybackStatus.PLAYING -> scope.launch { player.pause() }
             PlaybackStatus.PAUSED -> scope.launch { player.resume() }
-            PlaybackStatus.IDLE, PlaybackStatus.ERROR ->
-                queue.state.value.current?.let { track -> startPlay { track } }
+            PlaybackStatus.IDLE, PlaybackStatus.ERROR -> queue.state.value.current?.let { track ->
+                // A song that failed part-way is picked up where it failed, as the kept queue's song is picked up
+                // where it was left: the failure was the stream's, not a wish to hear the song from the top.
+                keepPlaceIn(track)
+                startPlay { track }
+            }
             /*
              * Give up on a track that is taking too long, rather than nothing at all.
              *
@@ -828,9 +832,19 @@ class AppState(
              * stop button: press it and playback goes back to somewhere another press can act on.
              */
             PlaybackStatus.RESOLVING -> {
+                // And the place it had reached kept for the press after this one, which starts it again there.
+                playback.value.track?.let(::keepPlaceIn)
                 playJob?.cancel()
                 scope.launch { player.stop() }
             }
+        }
+    }
+
+    /** Remembers how far [track] had got, if it is what the player holds, so its next start picks it up there. */
+    private fun keepPlaceIn(track: Track) {
+        val now = playback.value
+        if (now.track?.queueKey == track.queueKey && now.positionMs > RESUME_MIN_MS) {
+            pendingResume = track.queueKey to now.positionMs
         }
     }
 
