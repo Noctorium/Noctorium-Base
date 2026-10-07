@@ -211,6 +211,10 @@ internal fun UpdateChannel.matches(
     // terminal installers are named noctorium-installer-cli-*, which is the trap this line also closes for
     // the archive below: they mention the CLI and they are not it.
     if ("installer" in name) return false
+    // Noctorium Stats rides along too: an .apk of its own, and archives for every system named much like the
+    // terminal player's. A different program, never this one's update. GitHub happens to list the player's
+    // .apk first, by name, which is all that kept a release with both from being a coin toss.
+    if (name.startsWith("noctorium-stats")) return false
     val extensionFits = when (this) {
         // The msi, not the exe. The exe is only the msi wrapped up: run, it writes the whole 300 MB msi out
         // to a temporary folder again and hands that to msiexec, and an antivirus reads every byte both
