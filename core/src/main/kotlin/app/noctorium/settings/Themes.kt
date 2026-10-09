@@ -198,11 +198,16 @@ data class Windows98Palette(
          * 98 in Noctorium's night: a dark violet face lit along its top edges in a paler violet, lists and fields
          * as black as Night's panels, title bars from a deep violet into Noctorium's own, Day's violet for a
          * selection, and behind it all a night sky rather than the teal.
+         *
+         * The lit edges are brighter than 98's are against its grey, on purpose. 98's depth comes mostly from the
+         * black along the bottom and the right, and black on a dark face hardly shows; so here the light along the
+         * top and the left carries it, standing out from the face more than twice as much as 98's white does from
+         * its grey, or every button reads as a flat box.
          */
         val NOCTORIUM = Windows98Palette(
             face = 0xFF231B2E,
-            highlight = 0xFF6E5C8C,
-            light = 0xFF3A2F4A,
+            highlight = 0xFF8F7BB8,
+            light = 0xFF45395A,
             shadow = 0xFF120D18,
             darkShadow = 0xFF000000,
             window = 0xFF0B0810,
