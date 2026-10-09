@@ -70,7 +70,13 @@ enum class ThemePreset(
      * bars and taskbars, from [Windows98Colours] and [WindowsXpColours].
      */
     WINDOWS_98("98", "Windows", ThemeColours(0xFFC0C0C0, 0xFFB4B4B4, 0xFFFFFFFF, 0xFF000000, 0xFF3A3A3A, 0xFF000080, light = true), ThemeSkin.WINDOWS_98),
-    WINDOWS_XP("XP", "Windows", ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true), ThemeSkin.WINDOWS_XP),
+    /*
+     * 98 as Noctorium would have shipped it: the same bevels, title bars, taskbar and desktop, drawn in the
+     * night instead of the grey -- a dark violet face, black lists, violet title bars and a night-sky desktop,
+     * with Noctorium's own accent for links. The 98 skin draws it from [Windows98Palette.NOCTORIUM].
+     */
+    WINDOWS_98_NOCTORIUM("Noctorium 98", "Windows", ThemeColours(0xFF231B2E, 0xFF1B1524, 0xFF0B0810, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF), ThemeSkin.WINDOWS_98),
+    WINDOWS_XP("XP", "Windows",ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true), ThemeSkin.WINDOWS_XP),
     CUSTOM("Custom", "Yours", null),
 }
 
@@ -79,6 +85,13 @@ fun NoctoriumPreferences.themeColours(): ThemeColours = theme.colours ?: customT
 
 /** The skin in force. The listener's own colours are only colours. */
 val NoctoriumPreferences.themeSkin: ThemeSkin get() = theme.skin
+
+/** The colours the 98 skin is drawn in for this theme: Noctorium's for Noctorium 98, 98's own grey otherwise. */
+val ThemePreset.windows98Palette: Windows98Palette
+    get() = if (this == ThemePreset.WINDOWS_98_NOCTORIUM) Windows98Palette.NOCTORIUM else Windows98Palette.STANDARD
+
+/** The colours the 98 skin is drawn in, while it is the skin in force. */
+val NoctoriumPreferences.windows98Palette: Windows98Palette get() = theme.windows98Palette
 
 /**
  * How a theme is drawn beyond its colours.
@@ -124,6 +137,88 @@ object Windows98Colours {
 
     /** The desktop behind every window: the teal 98 was installed with. */
     const val DESKTOP = 0xFF008080
+}
+
+/**
+ * Everything the 98 skin is drawn with, as one set: [STANDARD], which is [Windows98Colours] as 98 shipped them,
+ * or [NOCTORIUM], the same look at night.
+ *
+ * 98 let anybody change its scheme -- Eggplant, Plum, High Contrast Black -- and every bevel and title bar
+ * followed, because each was drawn from these roles rather than from a grey of its own. The skins read them
+ * the same way, so a palette here is a whole 98 on every player. The bevel rule is the one written on
+ * [Windows98Colours]: on a dark face it holds as long as [highlight] and [light] are paler than [face], and
+ * [shadow] and [darkShadow] darker.
+ */
+data class Windows98Palette(
+    val face: Long,
+    val highlight: Long,
+    val light: Long,
+    val shadow: Long,
+    val darkShadow: Long,
+    /** Where a list, a field or a document sits, inside a sunken edge; [text] is written on it and on [face]. */
+    val window: Long,
+    val text: Long,
+    val greyText: Long,
+    val selection: Long,
+    val selectionText: Long,
+    val title: Long,
+    val titleEnd: Long,
+    val inactiveTitle: Long,
+    val inactiveTitleEnd: Long,
+    val titleText: Long,
+    /** A tooltip's face, with [text] on it. */
+    val tooltip: Long,
+    val desktop: Long,
+) {
+    /** True when [face] is a dark one, for whatever a player needs to turn round, such as its system bars. */
+    val dark: Boolean get() = contrastRatio(0xFFFFFFFF, face) > contrastRatio(0xFF000000, face)
+
+    companion object {
+        val STANDARD = Windows98Palette(
+            face = Windows98Colours.FACE,
+            highlight = Windows98Colours.HIGHLIGHT,
+            light = Windows98Colours.LIGHT,
+            shadow = Windows98Colours.SHADOW,
+            darkShadow = Windows98Colours.DARK_SHADOW,
+            window = Windows98Colours.WINDOW,
+            text = Windows98Colours.TEXT,
+            greyText = Windows98Colours.GREY_TEXT,
+            selection = Windows98Colours.SELECTION,
+            selectionText = Windows98Colours.SELECTION_TEXT,
+            title = Windows98Colours.TITLE,
+            titleEnd = Windows98Colours.TITLE_END,
+            inactiveTitle = Windows98Colours.INACTIVE_TITLE,
+            inactiveTitleEnd = Windows98Colours.INACTIVE_TITLE_END,
+            titleText = Windows98Colours.TITLE_TEXT,
+            tooltip = Windows98Colours.TOOLTIP,
+            desktop = Windows98Colours.DESKTOP,
+        )
+
+        /**
+         * 98 in Noctorium's night: a dark violet face lit along its top edges in a paler violet, lists and fields
+         * as black as Night's panels, title bars from a deep violet into Noctorium's own, Day's violet for a
+         * selection, and behind it all a night sky rather than the teal.
+         */
+        val NOCTORIUM = Windows98Palette(
+            face = 0xFF231B2E,
+            highlight = 0xFF6E5C8C,
+            light = 0xFF3A2F4A,
+            shadow = 0xFF120D18,
+            darkShadow = 0xFF000000,
+            window = 0xFF0B0810,
+            text = 0xFFF8F4FF,
+            greyText = 0xFF7D7191,
+            selection = 0xFF7C3AED,
+            selectionText = 0xFFFFFFFF,
+            title = 0xFF2B0E5C,
+            titleEnd = 0xFF8B5CF6,
+            inactiveTitle = 0xFF2D2737,
+            inactiveTitleEnd = 0xFF5A5068,
+            titleText = 0xFFFFFFFF,
+            tooltip = 0xFF1D1826,
+            desktop = 0xFF140A26,
+        )
+    }
 }
 
 /**

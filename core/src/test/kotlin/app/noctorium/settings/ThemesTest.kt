@@ -41,13 +41,17 @@ class ThemesTest {
     }
 
     @Test
-    fun `the Windows themes are light, with their system colours`() {
+    fun `the Windows themes have their system colours, and only Noctorium 98 is dark`() {
         val windows = ThemePreset.entries.filter { it.family == "Windows" }
-        assertEquals(listOf(ThemePreset.WINDOWS_98, ThemePreset.WINDOWS_XP), windows)
+        assertEquals(listOf(ThemePreset.WINDOWS_98, ThemePreset.WINDOWS_98_NOCTORIUM, ThemePreset.WINDOWS_XP), windows)
         assertEquals(0xFFC0C0C0, ThemePreset.WINDOWS_98.colours?.background, "98's window face")
         assertEquals(0xFF000080, ThemePreset.WINDOWS_98.colours?.accent, "98's title bar")
         assertEquals(0xFFECE9D8, ThemePreset.WINDOWS_XP.colours?.background, "Luna's window face")
-        windows.forEach { assertTrue(it.colours?.light == true, "${it.name} is a light theme") }
+        assertEquals(0xFFB47CFF, ThemePreset.WINDOWS_98_NOCTORIUM.colours?.accent, "Noctorium's own accent")
+        assertEquals(
+            listOf(ThemePreset.WINDOWS_98_NOCTORIUM),
+            windows.filter { it.colours?.light == false },
+        )
         // The accent is also a colour for links and highlights on the page, so it has to read there too.
         windows.forEach { preset ->
             val colours = preset.colours!!
@@ -98,7 +102,11 @@ class ThemesTest {
     @Test
     fun `only the Windows themes are more than colours, and the listener's own are only colours`() {
         assertEquals(
-            mapOf(ThemePreset.WINDOWS_98 to ThemeSkin.WINDOWS_98, ThemePreset.WINDOWS_XP to ThemeSkin.WINDOWS_XP),
+            mapOf(
+                ThemePreset.WINDOWS_98 to ThemeSkin.WINDOWS_98,
+                ThemePreset.WINDOWS_98_NOCTORIUM to ThemeSkin.WINDOWS_98,
+                ThemePreset.WINDOWS_XP to ThemeSkin.WINDOWS_XP,
+            ),
             ThemePreset.entries.filter { it.skin != ThemeSkin.STANDARD }.associateWith { it.skin },
         )
         assertEquals(ThemeSkin.STANDARD, NoctoriumPreferences(theme = ThemePreset.CUSTOM).themeSkin)
@@ -113,6 +121,56 @@ class ThemesTest {
         assertEquals(Windows98Colours.TITLE, ninetyEight.accent)
         assertEquals(Windows98Colours.WINDOW, ninetyEight.card)
         assertEquals(WindowsXpColours.FACE, ThemePreset.WINDOWS_XP.colours!!.background)
+        // Each 98 theme's page is its palette's face and its cards are its palette's lists.
+        listOf(ThemePreset.WINDOWS_98, ThemePreset.WINDOWS_98_NOCTORIUM).forEach { preset ->
+            assertEquals(preset.windows98Palette.face, preset.colours!!.background, "${preset.name}: the page is the face")
+            assertEquals(preset.windows98Palette.window, preset.colours!!.card, "${preset.name}: a card is a list")
+        }
+    }
+
+    @Test
+    fun `the 98 skin is drawn in Noctorium's colours only for Noctorium 98`() {
+        assertEquals(Windows98Palette.NOCTORIUM, ThemePreset.WINDOWS_98_NOCTORIUM.windows98Palette)
+        assertEquals(Windows98Palette.STANDARD, ThemePreset.WINDOWS_98.windows98Palette)
+        assertEquals(Windows98Palette.STANDARD, NoctoriumPreferences(theme = ThemePreset.NORD).windows98Palette)
+        assertEquals(Windows98Palette.NOCTORIUM, NoctoriumPreferences(theme = ThemePreset.WINDOWS_98_NOCTORIUM).windows98Palette)
+        // The standard palette is 98's own numbers, not a copy that could drift from them.
+        assertEquals(Windows98Colours.FACE, Windows98Palette.STANDARD.face)
+        assertEquals(Windows98Colours.DESKTOP, Windows98Palette.STANDARD.desktop)
+        assertEquals(false, Windows98Palette.STANDARD.dark)
+        assertEquals(true, Windows98Palette.NOCTORIUM.dark)
+    }
+
+    /** How bright a colour is, as its contrast against black: rising with its luminance, so fine for comparing. */
+    private fun luminance(argb: Long) = contrastRatio(argb, 0xFF000000)
+
+    /** A bevel reads as raised only when its top-left edges are lighter than the face and its bottom-right darker. */
+    @Test
+    fun `both 98 palettes light their bevels from the top left`() {
+        listOf(Windows98Palette.STANDARD, Windows98Palette.NOCTORIUM).forEach { palette ->
+            val face = luminance(palette.face)
+            assertTrue(luminance(palette.highlight) > luminance(palette.light), "highlight brighter than light")
+            assertTrue(luminance(palette.light) >= face, "light no darker than the face")
+            assertTrue(luminance(palette.shadow) < face, "shadow darker than the face")
+            assertTrue(luminance(palette.darkShadow) <= luminance(palette.shadow), "dark shadow the darkest")
+        }
+    }
+
+    @Test
+    fun `writing on Noctorium 98 can be read`() {
+        val night = Windows98Palette.NOCTORIUM
+        listOf(
+            night.titleText to night.title,
+            night.titleText to night.titleEnd,
+            night.selectionText to night.selection,
+            night.text to night.face,
+            night.text to night.window,
+            night.text to night.tooltip,
+        ).forEach { (text, behind) ->
+            assertTrue(contrastRatio(text, behind) >= 3.0, "%08X on %08X".format(text, behind))
+        }
+        // Grey writing is meant to look unusable, but it should still be there.
+        assertTrue(contrastRatio(night.greyText, night.face) >= 2.5)
     }
 
     @Test
