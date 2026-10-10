@@ -272,6 +272,27 @@ class QueueManager(private val random: Random = Random.Default) {
         current.copy(tracks = kept, originalOrder = current.originalOrder.filter { it.queueKey in keptKeys })
     }
 
+    /**
+     * The queue down to the song playing, alone: what played before it and what was to come both go, and it
+     * plays on. Autoplay's songs go with them unless they were found for this very song -- they followed the old
+     * last song -- and autoplay finds its songs after this one as it does after any last song.
+     *
+     * Nothing changes when nothing is playing: there is no "this song" to keep.
+     */
+    fun clearAllButCurrent() = mutableState.update { current ->
+        val playing = current.current ?: return@update current
+        val suggestionsFollowIt = current.suggestionsSeed?.startsWith("${playing.queueKey}|") == true
+        current.copy(
+            tracks = listOf(playing),
+            currentIndex = 0,
+            originalOrder = listOf(playing),
+            suggestions = if (suggestionsFollowIt) current.suggestions else emptyList(),
+            suggestionsFrom = if (suggestionsFollowIt) current.suggestionsFrom else null,
+            suggestionsSeed = if (suggestionsFollowIt) current.suggestionsSeed else null,
+            continuesElsewhere = suggestionsFollowIt && current.continuesElsewhere,
+        )
+    }
+
     /** A queue kept from an earlier session, put back as it was, without playing anything. */
     fun restore(tracks: List<Track>, index: Int, context: PlaybackContext?, repeatMode: RepeatMode) {
         if (tracks.isEmpty() || mutableState.value.tracks.isNotEmpty()) return

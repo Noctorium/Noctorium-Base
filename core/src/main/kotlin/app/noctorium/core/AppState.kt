@@ -1001,6 +1001,13 @@ class AppState(
     /** Empties what is still to come, keeping the song playing. */
     fun clearUpcoming() = queue.clearUpcoming()
 
+    /**
+     * Clear all but this song: the queue becomes the song playing, alone -- what came before it and what was to
+     * come both go -- and it plays on; autoplay finds its songs after it as usual. Beside [clearQueue], which
+     * stops the music, and [clearUpcoming], which keeps what has played. Nothing happens with nothing playing.
+     */
+    fun clearAllButCurrent() = queue.clearAllButCurrent()
+
     /** Drops one of autoplay's songs. */
     fun removeSuggestion(index: Int) = queue.removeSuggestion(index)
 
@@ -3647,6 +3654,25 @@ class AppState(
             }
         }
     }
+
+    /**
+     * A song picked on Home -- from a service's shelf, Pinned or Played lately -- played the way the listener
+     * chose in [NoctoriumPreferences.homePlay]: by default the song alone, with autoplay's songs after it, as a
+     * radio started from it; or, the old way, with the rest of its [shelf] after it.
+     *
+     * With autoplay switched off there is no radio to start, and a song that played and stopped would read as
+     * Home being broken, so the rest of the shelf follows it instead, as it always did.
+     */
+    fun playFromHome(track: Track, shelf: List<Track> = listOf(track)) {
+        val preferences = mutableSettings.value.preferences
+        if (preferences.homePlay == HomePlay.SHELF || !preferences.autoplay) {
+            play(track, PlaybackOrigin.HOME, shelf)
+        } else {
+            play(track, PlaybackOrigin.HOME, listOf(track))
+        }
+    }
+
+    fun setHomePlay(choice: HomePlay) = updatePreferences { copy(homePlay = choice) }
 
     fun play(
         track: Track,
