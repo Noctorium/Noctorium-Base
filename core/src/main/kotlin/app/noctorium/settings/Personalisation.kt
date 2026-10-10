@@ -138,9 +138,13 @@ enum class LyricsAlignment(val displayName: String) {
 /**
  * The buttons a player can do without. Play, pause, next and previous are not here: a player without them is
  * not one. Each platform keeps its own set of hidden ones, because its player is a different shape.
+ *
+ * An [optIn] button is one that came after the bars were designed. It is offered rather than shown: a bar
+ * draws it only once the listener asks for it -- see [isShown] -- so a bar somebody already has does not grow
+ * a button overnight. A layout built around one, as the Toolbar is around Stop, shows it unless it is put away.
  */
 @Serializable
-enum class PlayerButton(val displayName: String) {
+enum class PlayerButton(val displayName: String, val optIn: Boolean = false) {
     SHUFFLE("Shuffle"),
     REPEAT("Repeat"),
     LIKE("Like"),
@@ -151,7 +155,42 @@ enum class PlayerButton(val displayName: String) {
     /** The playback speed, a button of its own rather than a part of the volume's. */
     SPEED("Speed"),
     DEVICES("Devices and Connect"),
+    /** Back to the start of the song, paused, the queue as it was: see [app.noctorium.core.AppState.stop]. */
+    STOP("Stop", optIn = true),
+    ;
+
+    /**
+     * Whether a bar shows this button, given the buttons put away ([hidden]) and the opt-in ones asked for
+     * ([shown]). An ordinary button is shown unless it was put away; an opt-in one only once asked for, unless
+     * [partOfLayout] -- the bar was designed around it, as the Toolbar is around Stop -- when it is shown unless
+     * put away like any other.
+     */
+    fun isShown(hidden: Set<PlayerButton>, shown: Set<PlayerButton>, partOfLayout: Boolean = false): Boolean = when {
+        this in hidden -> false
+        optIn && !partOfLayout -> this in shown
+        else -> true
+    }
 }
+
+/** Whether the desktop's player bar shows [button]. See [PlayerButton.isShown]. */
+fun DesktopPreferences.showsPlayerButton(button: PlayerButton, partOfLayout: Boolean = false): Boolean =
+    button.isShown(hiddenPlayerButtons, shownPlayerButtons, partOfLayout)
+
+/** The desktop's player bar with [button] shown or put away, whichever kind of button it is. */
+fun DesktopPreferences.withPlayerButton(button: PlayerButton, shown: Boolean): DesktopPreferences = copy(
+    hiddenPlayerButtons = if (shown) hiddenPlayerButtons - button else hiddenPlayerButtons + button,
+    shownPlayerButtons = if (shown) shownPlayerButtons + button else shownPlayerButtons - button,
+)
+
+/** Whether the phone's player shows [button]. See [PlayerButton.isShown]. */
+fun PhonePreferences.showsPlayerButton(button: PlayerButton, partOfLayout: Boolean = false): Boolean =
+    button.isShown(hiddenPlayerButtons, shownPlayerButtons, partOfLayout)
+
+/** The phone's player with [button] shown or put away, whichever kind of button it is. */
+fun PhonePreferences.withPlayerButton(button: PlayerButton, shown: Boolean): PhonePreferences = copy(
+    hiddenPlayerButtons = if (shown) hiddenPlayerButtons - button else hiddenPlayerButtons + button,
+    shownPlayerButtons = if (shown) shownPlayerButtons + button else shownPlayerButtons - button,
+)
 
 /** What Home is made of, each of which can be put away. */
 @Serializable

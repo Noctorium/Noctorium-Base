@@ -488,6 +488,16 @@ class AppState(
     /** Where in its song the queue was left last time, to pick up from when that song is next played. */
     @Volatile private var pendingResume: Pair<String, Long>? = null
 
+    /**
+     * The song whose next start is from the top whatever the player last said about it: one that played to its
+     * end, or one stopped with the Stop button while there was no player to send back to the start. Let go of
+     * as soon as anything plays. Declared up here, like the rest the watchers started in init reach for.
+     */
+    @Volatile private var fromTheTop: String? = null
+
+    /** Stop after this song. See [stopAfterCurrent]. */
+    private val mutableStopAfterCurrent = MutableStateFlow(false)
+
     /** Asked to look for autoplay's songs again, even though nothing about the queue changed. */
     private val suggestionsAsked = MutableStateFlow(0)
 
@@ -844,11 +854,52 @@ class AppState(
 
     /** Remembers how far [track] had got, if it is what the player holds, so its next start picks it up there. */
     private fun keepPlaceIn(track: Track) {
+        // A song that played to its end, or was stopped, starts again from the top: the place it reached is
+        // the end, or a place the listener chose to leave.
+        if (track.queueKey == fromTheTop) return
         val now = playback.value
         if (now.track?.queueKey == track.queueKey && now.positionMs > RESUME_MIN_MS) {
             pendingResume = track.queueKey to now.positionMs
         }
     }
+
+    /**
+     * The Stop button: the song goes back to its start and waits there, paused, with the queue as it was, so
+     * play starts it again from the top.
+     *
+     * Not [PlaybackEngine.stop], which lets go of the song altogether -- that is what clearing the queue and
+     * another device taking over still use. A song still being looked up is given up on, as the spinner's own
+     * press does, and starts from the top when played. Whatever the queue was going to pick up where it was
+     * left, it does not: stopping is going back to the start.
+     */
+    fun stop() {
+        pendingResume = null
+        when (playback.value.status) {
+            PlaybackStatus.PLAYING, PlaybackStatus.PAUSED -> scope.launch {
+                player.pause()
+                player.seekTo(0)
+            }
+            PlaybackStatus.RESOLVING -> {
+                playJob?.cancel()
+                scope.launch { player.stop() }
+            }
+            PlaybackStatus.IDLE, PlaybackStatus.ERROR -> fromTheTop = queue.state.value.current?.queueKey
+        }
+    }
+
+    /**
+     * Stop after this song: when the song playing now ends, nothing more plays -- not the next in the queue, not
+     * autoplay's songs, not the same song again on repeat-one. The queue moves on to what would have been
+     * next, so play carries on from there; then this clears itself. Not kept between launches: it is about the
+     * song playing now.
+     */
+    val stopAfterCurrent: StateFlow<Boolean> = mutableStopAfterCurrent.asStateFlow()
+
+    fun setStopAfterCurrent(enabled: Boolean) {
+        mutableStopAfterCurrent.value = enabled
+    }
+
+    fun toggleStopAfterCurrent() = mutableStopAfterCurrent.update { !it }
 
     fun setVolume(value: Float) {
         scope.launch {
@@ -3562,6 +3613,7 @@ class AppState(
         val shown = enriched.edited(mutableUi.value.trackEdits)
         if (shown != playable) queue.replace(playable.queueKey, shown)
         rememberRecent(enriched)
+        fromTheTop = null
         player.play(shown)
         // The song the queue was left in last time, picked up where it was left.
         pendingResume?.let { (key, at) ->
@@ -3591,22 +3643,34 @@ class AppState(
                     current.status == PlaybackStatus.IDLE && current.track != null
                 if (finished) {
                     previous.track?.let { recordListen(it, previous.positionMs, previous.durationMs) }
-                    // A sleep timer set to the end of the track ends here. The listen is still counted;
-                    // the queue is left where it is rather than moved on for nobody.
-                    if (!sleeper.trackEnded()) {
-                        queue.next(respectRepeatOne = true)?.let { playEnriched(it) } ?: carryOn(previous.track)
+                    // Played to its end, so played again it starts from the top, not from its last second.
+                    fromTheTop = previous.track?.queueKey
+                    // Both asked: a sleep timer set for the end of the track and stop-after-this-song are
+                    // each used up here, whichever of them there is.
+                    val sleepEnded = sleeper.trackEnded()
+                    val stopHere = mutableStopAfterCurrent.compareAndSet(true, false)
+                    when {
+                        // Stopped here, with the queue on what would have played next, so play goes on from
+                        // there. The same song on repeat-one; the end of a queue with nothing after it stays put.
+                        stopHere -> queue.next(respectRepeatOne = true)
+                        // A sleep timer set to the end of the track ends here. The listen is still counted;
+                        // the queue is left where it is rather than moved on for nobody.
+                        sleepEnded -> Unit
+                        else -> queue.next(respectRepeatOne = true)?.let { playEnriched(it) } ?: carryOn(previous.track)
                     }
                 }
                 // The player went round again on its own. That is a whole listen, counted as one; and
-                // if a sleep timer was waiting for the end of the track, this was it. Looping is switched
-                // off while such a timer is set, so this second part is belt and braces.
+                // if a sleep timer or stop-after-this-song was waiting for the end of the track, this was it.
+                // Looping is switched off while either is set, so this second part is belt and braces.
                 val looped = current.track != null &&
                     current.track?.queueKey == previous.track?.queueKey &&
                     current.loops > previous.loops
                 if (looped) {
                     val heard = if (previous.durationMs > 0) previous.durationMs else previous.positionMs
                     previous.track?.let { recordListen(it, heard, previous.durationMs) }
-                    if (sleeper.trackEnded()) player.pause()
+                    val sleepEnded = sleeper.trackEnded()
+                    val stopHere = mutableStopAfterCurrent.compareAndSet(true, false)
+                    if (sleepEnded || stopHere) player.pause()
                 }
                 previous = current
             }
@@ -3616,14 +3680,15 @@ class AppState(
     /**
      * Tells the player to loop exactly when repeat-one is on and nothing is waiting for the track to end.
      *
-     * A sleep timer set to "end of track" needs the track to actually end, so looping is lifted for as
-     * long as one is set and put back when it is cancelled or goes off. The engine is told on every change
-     * rather than once, because it forgets nothing but a new track starts from whatever it was last told.
+     * A sleep timer set to "end of track", and stop-after-this-song, need the track to actually end, so
+     * looping is lifted for as long as either is set and put back when it is cancelled or used up. The engine
+     * is told on every change rather than once, because it forgets nothing but a new track starts from
+     * whatever it was last told.
      */
     private fun observeLooping() {
         scope.launch {
-            combine(queue.state, sleeper.state) { queued, timer ->
-                queued.repeatMode == RepeatMode.ONE && timer != SleepTimerState.EndOfTrack
+            combine(queue.state, sleeper.state, mutableStopAfterCurrent) { queued, timer, stopAfter ->
+                queued.repeatMode == RepeatMode.ONE && timer != SleepTimerState.EndOfTrack && !stopAfter
             }.distinctUntilChanged().collect { looping ->
                 runCatching { player.setLooping(looping) }
             }

@@ -793,6 +793,8 @@ data class PhonePreferences(
     val swipeToChangeTrack: Boolean = true,
     /** Buttons left off the phone's player, the bar and the full screen both. */
     val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
+    /** Opt-in buttons the listener asked for ([PlayerButton.optIn]); every other button is shown unless hidden. */
+    val shownPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Tabs left off the bar along the bottom. Home and Settings are always reachable whatever is here. */
     val hiddenDestinations: Set<Destination> = emptySet(),
     /** How the player bar above the tabs is laid out. */
@@ -848,6 +850,8 @@ data class DesktopPreferences(
     val nowPlaying: NowPlayingPreferences = NowPlayingPreferences(),
     /** Buttons left off the player bar. */
     val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
+    /** Opt-in buttons the listener asked for ([PlayerButton.optIn]); every other button is shown unless hidden. */
+    val shownPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Items left off the sidebar. Home and Settings are always there whatever is here. */
     val hiddenDestinations: Set<Destination> = emptySet(),
     /** A note from the tray, or the system's notifications, each time a new track starts. Off unless asked for. */
