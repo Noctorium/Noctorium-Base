@@ -346,12 +346,21 @@ data class AppUiState(
     val providerFilter: ProviderFilter = ProviderFilter.ALL,
     val homeSections: List<HomeSection> = emptyList(),
     val homeLoading: Boolean = true,
+    /** What was typed into the search box, bang and all. */
     val searchQuery: String = "",
     val searchMode: SearchMode = SearchMode.HYBRID,
+    /**
+     * The bang in what was typed -- "!sc" -- which sends this search to its service whatever [searchMode] says,
+     * for a search box to show beside the words. Null when there is none. See [SearchBangs].
+     */
+    val searchBang: SearchBang? = null,
     val searchResults: SearchResults = SearchResults(),
     val searchLoading: Boolean = false,
     val errorMessage: String? = null,
-)
+) {
+    /** Where the search shown is from: the bang's service when there is one, the search page's choice otherwise. */
+    val activeSearchMode: SearchMode get() = searchBang?.mode ?: searchMode
+}
 
 /**
  * Everything Noctorium does, above the line where the platforms differ.
@@ -820,6 +829,11 @@ class AppState(
     fun setSearchMode(mode: SearchMode) {
         if (mutableUi.value.searchMode == mode) return
         updatePreferences { copy(searchMode = mode.name) }
+        // A bang in the search box outranks the page's choice, so its results stand until the bang goes.
+        if (mutableUi.value.searchBang != null) {
+            mutableUi.update { it.copy(searchMode = mode) }
+            return
+        }
         mutableUi.update { it.copy(searchMode = mode, searchResults = SearchResults(), errorMessage = null) }
         search(mutableUi.value.searchQuery)
     }
@@ -3536,7 +3550,14 @@ class AppState(
         }
     }
 
-    fun search(query: String) {
+    /**
+     * Searches for [text] as typed, bangs and all: `!ytm daft punk` or `daft punk !sc` searches that one service
+     * for "daft punk", whatever the search page is set to, and [AppUiState.searchBang] says which bang is in
+     * force. See [SearchBangs].
+     */
+    fun search(text: String) {
+        val parsed = SearchBangs.parse(text)
+        val query = parsed.query
         /*
          * A pending search counts as a loading search.
          *
@@ -3545,7 +3566,7 @@ class AppState(
          * state exactly as it reads: "Nothing found", flashing it on every keystroke before a single
          * request had been made.
          */
-        mutableUi.update { it.copy(searchQuery = query, searchLoading = query.isNotBlank()) }
+        mutableUi.update { it.copy(searchQuery = text, searchBang = parsed.bang, searchLoading = query.isNotBlank()) }
         searchJob?.cancel()
         searchJob = scope.launch {
             if (query.isBlank()) {
@@ -3553,7 +3574,7 @@ class AppState(
                 return@launch
             }
             kotlinx.coroutines.delay(350)
-            val mode = mutableUi.value.searchMode
+            val mode = parsed.mode ?: mutableUi.value.searchMode
             mutableUi.update { it.copy(errorMessage = null) }
             val selectedProviders = when (mode) {
                 // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
@@ -3733,7 +3754,7 @@ class AppState(
         val next = if (included) current + provider else current - provider
         if (next.isEmpty()) return
         updatePreferences { copy(hybridSearch = next) }
-        if (mutableUi.value.searchMode == SearchMode.HYBRID) search(mutableUi.value.searchQuery)
+        if (mutableUi.value.activeSearchMode == SearchMode.HYBRID) search(mutableUi.value.searchQuery)
     }
 
     /** How many seconds a sleep timer spends lowering the volume before it pauses; zero for none. */
