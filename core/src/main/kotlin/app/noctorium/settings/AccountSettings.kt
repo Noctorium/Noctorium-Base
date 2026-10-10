@@ -901,6 +901,8 @@ data class DesktopPreferences(
     val hiddenDestinations: Set<Destination> = emptySet(),
     /** A note from the tray, or the system's notifications, each time a new track starts. Off unless asked for. */
     val announceTracks: Boolean = false,
+    /** The listener's keyboard shortcuts: the in-app ones changed, and the global ones. See [ShortcutPreferences]. */
+    val shortcuts: ShortcutPreferences = ShortcutPreferences(),
 )
 
 /**

@@ -1128,6 +1128,33 @@ class AppState(
     fun updateDesktop(transform: DesktopPreferences.() -> DesktopPreferences) =
         updatePreferences { copy(desktop = desktop.transform()) }
 
+    /**
+     * Binds [action] -- the desktop's own name for it -- to [chord], in Noctorium or [global]ly. The chord is kept
+     * written the one way [KeyChord] writes it; a blank one takes the shortcut away. False, and nothing kept, for
+     * text that is not a chord.
+     */
+    fun setShortcut(action: String, chord: String, global: Boolean = false): Boolean {
+        val written = if (chord.isBlank()) "" else KeyChord.normalise(chord) ?: return false
+        updateDesktop {
+            copy(
+                shortcuts = if (global) {
+                    shortcuts.copy(global = if (written.isEmpty()) shortcuts.global - action else shortcuts.global + (action to written))
+                } else {
+                    shortcuts.copy(inApp = shortcuts.inApp + (action to written))
+                },
+            )
+        }
+        return true
+    }
+
+    /** Puts [action]'s shortcut back as it came: its default in Noctorium, none globally. */
+    fun resetShortcut(action: String, global: Boolean = false) = updateDesktop {
+        copy(shortcuts = if (global) shortcuts.copy(global = shortcuts.global - action) else shortcuts.copy(inApp = shortcuts.inApp - action))
+    }
+
+    /** Whether the global shortcuts are registered at all. Off until the listener switches them on. */
+    fun setGlobalShortcuts(enabled: Boolean) = updateDesktop { copy(shortcuts = shortcuts.copy(globalEnabled = enabled)) }
+
     /** The now playing screen's arrangement, one field at a time, the same way. */
     fun updateNowPlaying(transform: NowPlayingPreferences.() -> NowPlayingPreferences) =
         updateDesktop { copy(nowPlaying = nowPlaying.transform()) }
