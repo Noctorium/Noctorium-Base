@@ -45,7 +45,9 @@ class SpotifyConnectEngine(
     private val followAfterEnd: (Track) -> Boolean = { false },
     private val clock: () -> Long = System::currentTimeMillis,
 ) : PlaybackEngine {
-    private val mutableState = MutableStateFlow(PlaybackState())
+    // No booster: Spotify makes the sound in its own app, out of reach. Said from the start, so the volume
+    // popover can say so rather than offer a slider that would do nothing.
+    private val mutableState = MutableStateFlow(PlaybackState(volumeBoostAvailable = false))
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
 
     private val lock = Mutex()
@@ -74,6 +76,7 @@ class SpotifyConnectEngine(
                 volume = it.volume,
                 isMuted = it.isMuted,
                 durationMs = track.durationMs ?: 0,
+                volumeBoostAvailable = false,
             )
         }
         val token = accessToken() ?: return fail(track, NOT_CONNECTED)
@@ -166,8 +169,9 @@ class SpotifyConnectEngine(
         mutableState.update { it.copy(isMuted = muted) }
     }
 
-    /** Spotify has no boost to give; the flag stays off. */
+    /** Spotify has no boost to give; the flag stays off, and [PlaybackState.volumeBoostAvailable] says why. */
     override suspend fun setVolumeBoost(enabled: Boolean) = Unit
+    override suspend fun setVolumeBoostPercent(percent: Int) = Unit
 
     /**
      * Stops following, and stops Spotify if it is still playing Noctorium's song.

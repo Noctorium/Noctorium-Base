@@ -47,13 +47,19 @@ class RoutingPlaybackEngine(
             val leaving = active
             active = target
             // Ours first, so nothing the engine being left says on its way out is mistaken for the end of a
-            // song; then the one being left is stopped, so two things are never playing at once.
+            // song; then the one being left is stopped, so two things are never playing at once. The booster
+            // is the new engine's from the start: Spotify's app has none, and saying so a moment late would
+            // flash a slider that does nothing.
+            val arriving = target.state.value
             mutableState.value = PlaybackState(
                 status = PlaybackStatus.RESOLVING,
                 track = track,
                 volume = mutableState.value.volume,
                 isMuted = mutableState.value.isMuted,
                 durationMs = track.durationMs ?: 0,
+                volumeBoostEnabled = arriving.volumeBoostEnabled,
+                volumeBoostPercent = arriving.volumeBoostPercent,
+                volumeBoostAvailable = arriving.volumeBoostAvailable,
             )
             follow(target, expecting = track)
             runCatching { leaving.stop() }
@@ -77,7 +83,9 @@ class RoutingPlaybackEngine(
         if (active === elsewhere) elsewhere.setMuted(muted)
     }
 
+    /** Only this device's player has a booster; it is kept there, and in force again when that player next plays. */
     override suspend fun setVolumeBoost(enabled: Boolean) = local.setVolumeBoost(enabled)
+    override suspend fun setVolumeBoostPercent(percent: Int) = local.setVolumeBoostPercent(percent)
     override suspend fun setLooping(enabled: Boolean) {
         local.setLooping(enabled)
         elsewhere.setLooping(enabled)

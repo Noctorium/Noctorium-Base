@@ -37,6 +37,7 @@ import app.noctorium.playback.MIN_SPEED
 import app.noctorium.playback.MAX_SPEED
 import app.noctorium.playback.PlaybackState
 import app.noctorium.playback.PlaybackStatus
+import app.noctorium.playback.VolumeBoost
 import app.noctorium.playlists.LocalPlaylist
 import app.noctorium.playlists.LocalPlaylistRepository
 import app.noctorium.playlists.PlaylistShareLink
@@ -747,6 +748,7 @@ class AppState(
         observeTrackCompletion()
         observeLooping()
         observeEqualizer()
+        observeVolumeBoost()
         observeSpeed()
         observeSleepFade()
         observeUpcoming()
@@ -853,8 +855,30 @@ class AppState(
             player.setVolume(value)
         }
     }
+    /**
+     * The volume booster's level, from 100% (off) to 1000%: kept in the settings, and put into the player within
+     * a moment (see [observeVolumeBoost]). A level is remembered as the one the boost button goes back to.
+     */
+    fun setVolumeBoostPercent(percent: Int) {
+        val level = VolumeBoost.clamp(percent)
+        updatePreferences {
+            copy(
+                volumeBoostPercent = level,
+                lastVolumeBoostPercent = if (VolumeBoost.isOn(level)) level else lastVolumeBoostPercent,
+            )
+        }
+    }
+
+    /** The boost button: off when it is on, and back to the last level above 100% when it is off -- 200% the first time. */
     fun toggleVolumeBoost() {
-        scope.launch { player.setVolumeBoost(!playback.value.volumeBoostEnabled) }
+        val preferences = mutableSettings.value.preferences
+        setVolumeBoostPercent(
+            if (VolumeBoost.isOn(preferences.volumeBoostPercent)) {
+                VolumeBoost.OFF_PERCENT
+            } else {
+                VolumeBoost.clamp(preferences.lastVolumeBoostPercent).takeIf(VolumeBoost::isOn) ?: VolumeBoost.FIRST_PERCENT
+            },
+        )
     }
     fun toggleMute() { scope.launch { player.setMuted(!playback.value.isMuted) } }
     fun seekTo(positionMs: Long) { scope.launch { player.seekTo(positionMs) } }
@@ -3901,6 +3925,18 @@ class AppState(
         scope.launch {
             mutableSettings.map { it.preferences.equalizer }.distinctUntilChanged().collect { equalizer ->
                 runCatching { player.setEqualizer(equalizer) }
+            }
+        }
+    }
+
+    /**
+     * Keeps the player's booster at the level in the settings: told once at start, which is what brings a boost
+     * back after a restart, and again on every change. A player that cannot boost leaves it alone.
+     */
+    private fun observeVolumeBoost() {
+        scope.launch {
+            mutableSettings.map { VolumeBoost.clamp(it.preferences.volumeBoostPercent) }.distinctUntilChanged().collect { level ->
+                runCatching { player.setVolumeBoostPercent(level) }
             }
         }
     }

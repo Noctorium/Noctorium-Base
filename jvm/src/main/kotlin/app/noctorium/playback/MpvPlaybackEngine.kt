@@ -1,7 +1,6 @@
 package app.noctorium.playback
 
 import app.noctorium.settings.AppDirectories
-import app.noctorium.settings.Equalizer
 import app.noctorium.settings.EqualizerSettings
 import app.noctorium.domain.Track
 import app.noctorium.platform.isMacOs
@@ -42,54 +41,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 internal const val NORMAL_MAX_VOLUME = 1f
-
-/**
- * What the boost actually is: a compressor with make-up gain, and a limiter to catch what it throws.
- *
- * It used to be raw gain -- mpv's `volume` pushed to 200, then as far as 1000. That does not work, and
- * measuring it says why. mpv's volume is a cubic curve, so 200 is not twice as loud, it is eight times
- * the amplitude; against music mastered near full scale the samples saturate at once. Rendered to a file
- * and measured, a tone at volume 200 came out at exactly 100% of full scale, and at volume 400 it was
- * still exactly 100% -- louder by nothing at all, just squarer. Which is what the toggle was doing:
- * distortion, then no further change, which is exactly what it looks like when it appears to do nothing.
- *
- * Making something genuinely louder means raising the quiet parts rather than pushing the loud ones past
- * the ceiling. Same measurement, same tone, this chain: peak held at full scale and RMS -- which is what
- * loudness follows -- up from 8.8% to 63.8%. Seven times, and not a clipped sample in it.
- */
-internal const val BOOST_FILTER = "lavfi=[acompressor=threshold=-20dB:ratio=4:makeup=8,alimiter=limit=0.95]"
-
-/**
- * Every filter Noctorium puts in front of the speakers, as one chain for mpv's af: the equaliser, then the
- * boost, then one limiter for whatever either of them pushed towards the ceiling. Empty when there is
- * nothing to do, which is how most tracks play.
- *
- * One chain, set whole, because both are changed while a track plays: setting the property replaces what
- * was there, so the equaliser cannot pile up copies of itself, or knock the boost off by being set.
- *
- * Each band is ffmpeg's peaking filter an octave wide at the band's centre. A curve that lifts anything is
- * given half its highest lift back as headroom before the bands -- most of what is lifted is quieter
- * than the loudest part of the record -- and the limiter catches the rest, so no preset ever clips.
- */
-internal fun audioFilterChain(equalizer: EqualizerSettings, boost: Boolean): String {
-    val stages = mutableListOf<String>()
-    var lifts = false
-    if (equalizer.shapesSound) {
-        val gains = equalizer.gains
-        val highest = gains.maxOrNull() ?: 0f
-        val preamp = equalizer.preampDb - (highest.coerceAtLeast(0f) / 2f)
-        if (preamp != 0f) stages += "volume=${decibels(preamp)}dB"
-        Equalizer.BANDS_HZ.zip(gains).filter { (_, gain) -> gain != 0f }.forEach { (hz, gain) ->
-            stages += "equalizer=f=$hz:t=o:w=1:g=${decibels(gain)}"
-        }
-        lifts = highest > 0f || equalizer.preampDb > 0f
-    }
-    if (boost) stages += "acompressor=threshold=-20dB:ratio=4:makeup=8"
-    if (boost || lifts) stages += "alimiter=limit=0.95"
-    return if (stages.isEmpty()) "" else "lavfi=[${stages.joinToString(",")}]"
-}
-
-private fun decibels(value: Float): String = String.format(Locale.ROOT, "%.1f", value)
 
 /**
  * The line out of an mpv log that says what went wrong, or null if nothing did.
@@ -252,6 +203,36 @@ class MpvPlaybackEngine(
     /** How fast to play. Kept here, like looping, so each new player starts with it. */
     @Volatile private var speed = 1f
 
+    /** The booster's level, kept like the speed so each new player starts with it. */
+    @Volatile private var boostPercent = VolumeBoost.OFF_PERCENT
+
+    /** The last level above 100%, for the old on-off [setVolumeBoost] to go back to. */
+    @Volatile private var lastBoostOn = VolumeBoost.FIRST_PERCENT
+
+    @Volatile
+    private var equalizer = EqualizerSettings()
+
+    /**
+     * The `af` list the running mpv was last given, exactly, and the boost level written into it.
+     *
+     * Kept because mpv keeps every filter whose settings are unchanged when the list is set again, and that is
+     * worth arranging for: a limiter left alone loses nothing, one rebuilt mid-song drops its look-ahead. A level
+     * changed while a song plays is sent to the gain inside the booster's filter ([BOOST_GAIN]) rather than
+     * written into a new list, so the list goes on saying the level it was built with -- [writtenBoost] -- and
+     * any later list is built with that same number, for mpv to recognise the filter and keep it.
+     */
+    private var appliedChain = ""
+    private var writtenBoost = VolumeBoost.OFF_PERCENT
+
+    /** The level the booster's gain actually has in the running mpv, which `af-command` moves without a new list. */
+    private var liveBoost = VolumeBoost.OFF_PERCENT
+
+    /** One change to the filters at a time, so two of them cannot each work from what the other is replacing. */
+    private val filtersMutex = Mutex()
+
+    /** What this mpv's FFmpeg can do, asked once (see [mpvFilterSupport]); nothing beyond the basics until then. */
+    @Volatile private var filterSupport = MpvFilterSupport()
+
     /**
      * Kills the player if the application goes without having been closed properly.
      *
@@ -268,8 +249,13 @@ class MpvPlaybackEngine(
     init {
         runCatching { Runtime.getRuntime().addShutdownHook(shutdownHook) }
         // Asked now, off to one side, so the first song of the session is not the one that waits the
-        // quarter of a second mpv takes to list what it understands.
-        scope.launch(Dispatchers.IO) { executable()?.let(::optionsOf) }
+        // quarter of a second mpv takes to list what it understands, or to try its filters.
+        scope.launch(Dispatchers.IO) {
+            executable()?.let { mpv ->
+                optionsOf(mpv)
+                filterSupport = mpvFilterSupport(mpv)
+            }
+        }
     }
 
     /**
@@ -328,6 +314,7 @@ class MpvPlaybackEngine(
                 "mpv is missing, so there is nothing to play through. Settings, then Playback tools, installs it.",
             )
             val supported = withContext(Dispatchers.IO) { optionsOf(mpv) }
+            filterSupport = withContext(Dispatchers.IO) { mpvFilterSupport(mpv) }
             launch(track, mpv, mediaAddress(track), supported, startMs)
             delay(400)
             // Addresses are remembered for hours now, and one the server has since stopped accepting --
@@ -411,12 +398,21 @@ class MpvPlaybackEngine(
             mapOf(
                 "track" to track.queueKey,
                 "volumePercent" to mutableState.value.volume * 100,
-                "boostEnabled" to mutableState.value.volumeBoostEnabled,
+                "boostPercent" to boostPercent,
                 "muted" to mutableState.value.isMuted,
             ),
         )
         val log = newLogFile()
         processLog = log
+        // A new process for every track, so the boost and the equaliser have to be asked for again each time
+        // or they would quietly lapse at the end of every song. Written as they are now, for mpv to start with.
+        val filters = filtersMutex.withLock {
+            audioFilterChain(equalizer, boostPercent, filterSupport).also { chain ->
+                appliedChain = chain
+                writtenBoost = boostPercent
+                liveBoost = boostPercent
+            }
+        }
         process = withContext(Dispatchers.IO) {
             ProcessBuilder(
                 buildList {
@@ -433,9 +429,7 @@ class MpvPlaybackEngine(
                     log?.let { add("--log-file=$it") }
                     add("--input-ipc-server=${ipcEndpoint!!}")
                     add("--volume=${(mutableState.value.volume * 100).toInt()}")
-                    // A new process for every track, so the boost and the equaliser have to be asked for
-                    // again each time or they would quietly lapse at the end of every song.
-                    audioFilterChain(equalizer, mutableState.value.volumeBoostEnabled).takeIf { it.isNotEmpty() }?.let { add("--af=$it") }
+                    if (filters.isNotEmpty()) add("--af=$filters")
                     add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
                     // Repeat-one, done by the player: it seeks back to the start out of its own
                     // cache instead of exiting, so there is no gap and nothing is fetched again.
@@ -487,32 +481,85 @@ class MpvPlaybackEngine(
         }
     }
 
+    /** The booster as a switch: on is the last level above 100%, 200% the first time. */
+    override suspend fun setVolumeBoost(enabled: Boolean) =
+        setVolumeBoostPercent(if (enabled) lastBoostOn else VolumeBoost.OFF_PERCENT)
+
     /**
-     * Turns the loudness chain on or off, leaving the volume alone.
+     * Sets the booster's level, leaving the volume alone.
      *
-     * It used to move the slider too -- straight to 200% on, back to where it was off -- which is how a
-     * boost that only distorted still looked like it had done something.
+     * The boost is gain inside mpv's filters, in floating point, followed by a limiter -- not mpv's own volume
+     * pushed past a hundred, which is what it was first. mpv's volume is a cubic curve and clips at the
+     * output: rendered and measured, a tone at volume 200 came out at exactly full scale and at 400 still
+     * exactly full scale, louder by nothing, just squarer. Gain in the filters never clips on the way through,
+     * and the limiter holds what it lifts under the ceiling. See [VolumeBoost].
+     *
+     * Applied to the song playing without a gap: a new level goes straight to the gain in the booster's
+     * filter, and switching the booster on or off adds or takes away only that filter. Either way the slider
+     * means the same thing it always did and cannot be dragged into distortion.
      */
-    override suspend fun setVolumeBoost(enabled: Boolean) {
-        if (mutableState.value.volumeBoostEnabled == enabled) return
+    override suspend fun setVolumeBoostPercent(percent: Int) {
+        val wanted = VolumeBoost.clamp(percent)
+        if (VolumeBoost.isOn(wanted)) lastBoostOn = wanted
+        boostPercent = wanted
+        mutableState.update { it.copy(volumeBoostPercent = wanted, volumeBoostEnabled = VolumeBoost.isOn(wanted), errorMessage = null) }
         try {
-            if (process?.isAlive == true) {
-                // Replacing the whole chain rather than adding to it, so toggling twice cannot leave two
-                // compressors in series; the equaliser is part of the same chain and goes back in with it.
-                sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(audioFilterChain(equalizer, enabled)))
-            }
-            mutableState.update { it.copy(volumeBoostEnabled = enabled, errorMessage = null) }
-            PlaybackLog.event("volume_boost_changed", mapOf("enabled" to enabled, "filter" to audioFilterChain(equalizer, enabled)))
+            applyFilters()
+            PlaybackLog.event("volume_boost_changed", mapOf("percent" to wanted))
         } catch (error: Exception) {
             mutableState.update { it.copy(errorMessage = error.message ?: "Volume boost failed") }
-            PlaybackLog.event("volume_boost_failed", mapOf("enabled" to enabled, "message" to (error.message ?: "unknown")))
+            PlaybackLog.event("volume_boost_failed", mapOf("percent" to wanted, "message" to (error.message ?: "unknown")))
         }
     }
 
-    @Volatile
-    private var equalizer = EqualizerSettings()
+    /**
+     * Brings the running mpv's filters into line with the equaliser, the boost and everything else they are
+     * made from, changing as little as it can.
+     *
+     * Nothing when no mpv is running: the next one is started with them. Otherwise a new list only when the
+     * filters themselves change -- the equaliser moved, the booster switched on or off -- written with the
+     * boost level mpv's booster filter was built with, so that mpv recognises that filter and keeps it; then
+     * the level itself, sent to the gain inside that filter. An mpv too old to be sent a command for one
+     * filter inside a graph gets the list again with the new level written in, which costs the limiter its
+     * look-ahead and nothing worse.
+     */
+    private suspend fun applyFilters() = filtersMutex.withLock {
+        if (process?.isAlive != true) return@withLock
+        val booster = needsLimiter(equalizer, boostPercent)
+        val boosterRunning = appliedChain.contains("@$BOOST_LABEL:")
+        // The booster's filter keeps the level it was written with while it stays; a new one starts at the level wanted.
+        val written = if (booster && boosterRunning) writtenBoost else boostPercent
+        val chain = audioFilterChain(equalizer, written, filterSupport)
+        if (chain != appliedChain) {
+            sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(chain))
+            if (!boosterRunning) liveBoost = written
+            appliedChain = chain
+            writtenBoost = written
+            PlaybackLog.event("filters_changed", mapOf("filters" to chain))
+        }
+        if (booster && liveBoost != boostPercent) {
+            val sent = runCatching {
+                sendCommand(
+                    "af-command",
+                    JsonPrimitive(BOOST_LABEL),
+                    JsonPrimitive("volume"),
+                    JsonPrimitive(boostFactor(boostPercent)),
+                    JsonPrimitive(BOOST_GAIN),
+                )
+            }
+            if (sent.isSuccess) {
+                liveBoost = boostPercent
+            } else {
+                val rewritten = audioFilterChain(equalizer, boostPercent, filterSupport)
+                sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(rewritten))
+                appliedChain = rewritten
+                writtenBoost = boostPercent
+                liveBoost = boostPercent
+                PlaybackLog.event("filters_rewritten", mapOf("filters" to rewritten))
+            }
+        }
+    }
 
-    /** The equaliser: kept for the next track, and put into the one playing now if there is one. */
     override suspend fun setSpeed(speed: Float) {
         val wanted = speed.coerceIn(MIN_SPEED, MAX_SPEED)
         if (wanted == this.speed) return
@@ -527,14 +574,12 @@ class MpvPlaybackEngine(
         }
     }
 
+    /** The equaliser: kept for the next track, and put into the one playing now if there is one. */
     override suspend fun setEqualizer(settings: EqualizerSettings) {
         if (settings == equalizer) return
         equalizer = settings
-        if (process?.isAlive != true) return
-        val chain = audioFilterChain(settings, mutableState.value.volumeBoostEnabled)
         try {
-            sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(chain))
-            PlaybackLog.event("equalizer_changed", mapOf("filter" to chain))
+            applyFilters()
         } catch (error: Exception) {
             PlaybackLog.event("equalizer_failed", mapOf("message" to (error.message ?: "unknown")))
         }

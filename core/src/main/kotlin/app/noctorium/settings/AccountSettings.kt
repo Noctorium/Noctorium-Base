@@ -601,6 +601,14 @@ data class NoctoriumPreferences(
     val vkAccountName: String = "",
     /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
     val playbackSpeed: Float = 1f,
+    /**
+     * The volume booster's level, as a percentage of the amplitude: 100 is off, 1000 the most there is. See
+     * [app.noctorium.playback.VolumeBoost]. Kept, so a restart comes back as loud as it was left -- which is
+     * why the booster says so on the volume button whenever it is on.
+     */
+    val volumeBoostPercent: Int = app.noctorium.playback.VolumeBoost.OFF_PERCENT,
+    /** The last level above 100% that was used, for the boost button to go back to: 200% until there is one. */
+    val lastVolumeBoostPercent: Int = app.noctorium.playback.VolumeBoost.FIRST_PERCENT,
     /** When the queue runs out, carry on with songs like the last one rather than stopping. */
     val autoplay: Boolean = true,
     /** Where autoplay's songs come from: the service of the song that ended the queue, or always YouTube Music. */
