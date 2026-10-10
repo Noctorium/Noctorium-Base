@@ -611,6 +611,16 @@ class AppState(
     val playback: StateFlow<PlaybackState> = player.state
 
     /**
+     * What the sound is doing now, for a visualiser: a spectrum, the channels' levels, or null -- see
+     * [PlaybackEngine.analysis]. The player measures only while something collects this, so a screen collects
+     * it only while its visualiser is showing, and draws [VisualiserStyle.shownWith] what a frame holds.
+     */
+    val audioAnalysis: StateFlow<app.noctorium.playback.AudioAnalysis?> = player.analysis
+
+    /** The most the player playing now can tell about the sound; a frame of [audioAnalysis] says what it holds. */
+    val audioAnalysisKind: app.noctorium.playback.AudioAnalysisKind get() = player.analysisKind
+
+    /**
      * The sleep timer, one for both players.
      *
      * It lived inside the phone's engine, which left the desktop without one and put how long it ran
@@ -759,6 +769,7 @@ class AppState(
         observeLooping()
         observeEqualizer()
         observeVolumeBoost()
+        observeVisualiser()
         observeSpeed()
         observeSleepFade()
         observeUpcoming()
@@ -1084,6 +1095,7 @@ class AppState(
     fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
     fun setAnimations(enabled: Boolean) = updatePreferences { copy(animations = enabled) }
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
+    fun setVisualiser(style: VisualiserStyle) = updatePreferences { copy(visualiser = style) }
 
     /**
      * The phone-only settings, changed one field at a time through the block they live in.
@@ -3990,6 +4002,15 @@ class AppState(
         scope.launch {
             mutableSettings.map { it.preferences.equalizer }.distinctUntilChanged().collect { equalizer ->
                 runCatching { player.setEqualizer(equalizer) }
+            }
+        }
+    }
+
+    /** Tells the player how much of the sound to measure for the visualiser chosen: once at start, and on every change. */
+    private fun observeVisualiser() {
+        scope.launch {
+            mutableSettings.map { it.preferences.visualiser }.distinctUntilChanged().collect { style ->
+                runCatching { player.setAnalysis(style.wants) }
             }
         }
     }

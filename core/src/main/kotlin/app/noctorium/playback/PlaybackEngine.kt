@@ -2,7 +2,9 @@ package app.noctorium.playback
 
 import app.noctorium.domain.Track
 import app.noctorium.settings.EqualizerSettings
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 enum class PlaybackStatus { IDLE, RESOLVING, PLAYING, PAUSED, ERROR }
 
@@ -103,6 +105,35 @@ interface PlaybackEngine : AutoCloseable {
     suspend fun setVolumeBoostPercent(percent: Int) {
         setVolumeBoost(VolumeBoost.isOn(percent))
     }
+
+    /**
+     * The most this engine can tell about the sound it plays: a spectrum, levels, or nothing. A frame of
+     * [analysis] says what it actually holds, which can be less -- mpv gives a spectrum for mono and stereo,
+     * and levels for anything else.
+     */
+    val analysisKind: AudioAnalysisKind get() = AudioAnalysisKind.NONE
+
+    /**
+     * What the sound is doing now, measured from the audio itself, about [Visualiser.FRAMES_PER_SECOND] times
+     * a second while something plays: band levels for a spectrum where the engine can see them, the channels'
+     * levels where it can only see those, and null where it can see nothing, or nothing is playing.
+     *
+     * Measured only while something collects it, so a visualiser costs nothing when none is on screen, and
+     * never by anything that changes what is heard. The default is an engine that cannot see the audio at all.
+     */
+    val analysis: StateFlow<AudioAnalysis?> get() = NoAnalysis.flow
+
+    /**
+     * How much of [analysis] is wanted: [AudioAnalysisKind.SPECTRUM] for bars, [AudioAnalysisKind.LEVELS] for
+     * a level meter, which costs less to measure, and [AudioAnalysisKind.NONE] for none. Told at start and on
+     * every change, from the visualiser the listener chose.
+     */
+    suspend fun setAnalysis(wanted: AudioAnalysisKind) {}
+}
+
+/** The analysis of an engine that cannot see the audio: always nothing. */
+private object NoAnalysis {
+    val flow: StateFlow<AudioAnalysis?> = MutableStateFlow<AudioAnalysis?>(null).asStateFlow()
 }
 
 /** The slowest Noctorium plays: half the recorded speed. */

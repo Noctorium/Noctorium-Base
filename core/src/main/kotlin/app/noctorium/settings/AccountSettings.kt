@@ -609,6 +609,8 @@ data class NoctoriumPreferences(
     val volumeBoostPercent: Int = app.noctorium.playback.VolumeBoost.OFF_PERCENT,
     /** The last level above 100% that was used, for the boost button to go back to: 200% until there is one. */
     val lastVolumeBoostPercent: Int = app.noctorium.playback.VolumeBoost.FIRST_PERCENT,
+    /** What the visualiser draws, where there is one on screen. Shared by every player, like the equaliser. */
+    val visualiser: VisualiserStyle = VisualiserStyle.BARS,
     /** When the queue runs out, carry on with songs like the last one rather than stopping. */
     val autoplay: Boolean = true,
     /** Where autoplay's songs come from: the service of the song that ended the queue, or always YouTube Music. */

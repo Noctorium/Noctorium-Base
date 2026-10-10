@@ -16,6 +16,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -91,6 +95,18 @@ private val HTTP_REFUSAL = Regex("""HTTP error 4\d\d|Server returned 4\d\d""")
 
 /** How often, in ticks of a quarter of a second, the format is asked for once it is known: once a second. */
 private const val FORMAT_EVERY_TICKS = 4
+
+/** mpv's own default for how much sound it keeps queued for the device, for an mpv that will not say. */
+private const val DEFAULT_AUDIO_BUFFER_S = 0.2
+
+/** What the audio device itself holds on top of mpv's queue, near enough: a period or two. */
+private const val METER_DEVICE_ALLOWANCE_MS = 20.0
+
+/** How long the visualiser waits before asking a meter that did not answer again. */
+private const val METER_RETRY_MS = 250L
+
+/** The meter in a running mpv: the IPC address to ask, and what its channels are. */
+internal data class MeterTarget(val endpoint: String, val layout: MeterLayout)
 
 /** Ten seconds of asking at the ticker's rate, after which a stream is taken to have no length. */
 private const val MAX_DURATION_PROBES = 40
@@ -172,6 +188,11 @@ class MpvPlaybackEngine(
      * downloads are kept — only whether there is a file to play instead of a stream to go and find.
      */
     private val downloadedFile: (Track) -> Path? = { null },
+    /**
+     * mpv's audio output, when it is not to be the system's own: "null" plays to nothing, at the speed of
+     * playing, which is how the live tests hear a song without anybody else hearing it. Null is mpv's choice.
+     */
+    private val audioOutput: String? = null,
 ) : PlaybackEngine {
     private val mutableState = MutableStateFlow(PlaybackState())
     override val state: StateFlow<PlaybackState> = mutableState.asStateFlow()
@@ -238,6 +259,32 @@ class MpvPlaybackEngine(
     /** What this mpv's FFmpeg can do, asked once (see [mpvFilterSupport]); nothing beyond the basics until then. */
     @Volatile private var filterSupport = MpvFilterSupport()
 
+    private val mutableAnalysis = MutableStateFlow<AudioAnalysis?>(null)
+
+    /**
+     * The visualiser's feed: a spectrum for mono and stereo streams, the channels' levels for anything else,
+     * measured by FFmpeg inside mpv from the audio on its way to the speakers -- see [spectrumMeter] for how
+     * that is done without touching what is heard. Measured only while something collects this.
+     */
+    override val analysis: StateFlow<AudioAnalysis?> = mutableAnalysis.asStateFlow()
+
+    /** The most this mpv can give, known once it has been asked, a moment after the engine starts. */
+    override val analysisKind: AudioAnalysisKind
+        get() = when {
+            filterSupport.spectrum -> AudioAnalysisKind.SPECTRUM
+            filterSupport.levels -> AudioAnalysisKind.LEVELS
+            else -> AudioAnalysisKind.NONE
+        }
+
+    /** How much analysis the listener's visualiser wants. See [setAnalysis]. */
+    @Volatile private var analysisWanted = AudioAnalysisKind.NONE
+
+    /** Whether anything is collecting [analysis]: the meter is in the filters, and read, only while something is. */
+    @Volatile private var analysisWatched = false
+
+    /** The meter in the running mpv and where to read it, or null when there is none. */
+    private val installedMeter = MutableStateFlow<MeterTarget?>(null)
+
     /**
      * Kills the player if the application goes without having been closed properly.
      *
@@ -261,6 +308,80 @@ class MpvPlaybackEngine(
                 filterSupport = mpvFilterSupport(mpv)
             }
         }
+        // The meter goes into the filters when something starts watching, and out when the last thing stops.
+        scope.launch {
+            mutableAnalysis.subscriptionCount.map { it > 0 }.distinctUntilChanged().collect { watched ->
+                analysisWatched = watched
+                runCatching { applyFilters() }
+            }
+        }
+        // And it is read while a song plays through it; nothing is said while nothing plays.
+        scope.launch(Dispatchers.IO) {
+            combine(installedMeter, mutableState.map { it.status == PlaybackStatus.PLAYING }.distinctUntilChanged()) { meter, playing ->
+                meter.takeIf { playing }
+            }.distinctUntilChanged().collectLatest { meter ->
+                if (meter == null) mutableAnalysis.value = null else readMeter(meter)
+            }
+        }
+    }
+
+    /**
+     * Asks the meter what the sound is doing, [Visualiser.FRAMES_PER_SECOND] times a second, until told to stop.
+     *
+     * What mpv measures is what it has just handed to the audio device, which plays it a little later: mpv keeps
+     * `audio-buffer` of sound queued, a fifth of a second unless told otherwise, and the device a little more.
+     * Measured against mpv's own idea of what is being heard, the meter ran that far ahead, so each frame is held
+     * back that long before it is published -- the bars move with the music rather than before it.
+     */
+    private suspend fun readMeter(meter: MeterTarget) {
+        while (true) {
+            val connection = MpvConnection(meter.endpoint, isWindows)
+            try {
+                withContext(Dispatchers.IO) { connection.open() }
+                val bufferedMs = ((connection.property("audio-buffer") as? JsonPrimitive)?.doubleOrNull ?: DEFAULT_AUDIO_BUFFER_S) * 1_000
+                val leadNanos = ((bufferedMs + METER_DEVICE_ALLOWANCE_MS) * 1_000_000).toLong()
+                val waiting = ArrayDeque<Pair<Long, AudioAnalysis?>>()
+                while (true) {
+                    val frame = analysisFrom(connection.property("af-metadata/$METER_LABEL"), meter.layout)
+                    val now = System.nanoTime()
+                    waiting.addLast(now + leadNanos to frame)
+                    while (waiting.isNotEmpty() && waiting.first().first <= now) mutableAnalysis.value = waiting.removeFirst().second
+                    delay(Visualiser.FRAME_MS)
+                }
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (gone: Exception) {
+                // mpv went away -- the song ended, or another began -- or would not answer for a moment. Whatever
+                // replaces it is a new meter; until then, try again shortly rather than give up for good.
+                mutableAnalysis.value = null
+                delay(METER_RETRY_MS)
+            } finally {
+                connection.close()
+            }
+        }
+    }
+
+    /**
+     * How much of the visualiser's feed to measure: bars want the spectrum, a level meter only the levels, which
+     * cost a third as much, and nothing wants nothing. Put into the song playing now, without a gap.
+     */
+    override suspend fun setAnalysis(wanted: AudioAnalysisKind) {
+        analysisWanted = wanted
+        runCatching { applyFilters() }
+    }
+
+    /** The meter the filters should have now, and how to read it: null for none. */
+    private fun meterNow(): Pair<String, MeterLayout>? {
+        val wanted = if (analysisWatched) analysisWanted else AudioAnalysisKind.NONE
+        val support = filterSupport
+        if (wanted == AudioAnalysisKind.NONE || !support.levels) return null
+        if (wanted == AudioAnalysisKind.SPECTRUM && support.spectrum) {
+            // Only once mpv has said what the channels are: the spectrum is built for them.
+            val channels = streamChannels
+            val spectrum = channels?.let(::spectrumMeter)
+            if (spectrum != null) return spectrum to MeterLayout(channels, Visualiser.BAND_COUNT)
+        }
+        return levelsMeter() to MeterLayout(null, 0)
     }
 
     /**
@@ -418,8 +539,11 @@ class MpvPlaybackEngine(
         processLog = log
         // A new process for every track, so the boost and the equaliser have to be asked for again each time
         // or they would quietly lapse at the end of every song. Written as they are now, for mpv to start with.
+        val endpoint = ipcEndpoint!!
         val filters = filtersMutex.withLock {
-            audioFilterChain(equalizer, boostPercent, filterSupport).also { chain ->
+            val meter = meterNow()
+            audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first).also { chain ->
+                installedMeter.value = meter?.let { MeterTarget(endpoint, it.second) }
                 appliedChain = chain
                 writtenBoost = boostPercent
                 liveBoost = boostPercent
@@ -440,6 +564,7 @@ class MpvPlaybackEngine(
                     // finished: a second of nothing, then silence, with no message anywhere.
                     log?.let { add("--log-file=$it") }
                     add("--input-ipc-server=${ipcEndpoint!!}")
+                    audioOutput?.let { add("--ao=$it") }
                     add("--volume=${(mutableState.value.volume * 100).toInt()}")
                     if (filters.isNotEmpty()) add("--af=$filters")
                     add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
@@ -537,16 +662,19 @@ class MpvPlaybackEngine(
      */
     private suspend fun applyFilters() = filtersMutex.withLock {
         if (process?.isAlive != true) return@withLock
+        val endpoint = ipcEndpoint ?: return@withLock
         val booster = needsLimiter(equalizer, boostPercent)
         val boosterRunning = appliedChain.contains("@$BOOST_LABEL:")
         // The booster's filter keeps the level it was written with while it stays; a new one starts at the level wanted.
         val written = if (booster && boosterRunning) writtenBoost else boostPercent
-        val chain = audioFilterChain(equalizer, written, filterSupport)
+        val meter = meterNow()
+        val chain = audioFilterChain(equalizer, written, filterSupport, meter?.first)
         if (chain != appliedChain) {
             sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(chain))
             if (!boosterRunning) liveBoost = written
             appliedChain = chain
             writtenBoost = written
+            installedMeter.value = meter?.let { MeterTarget(endpoint, it.second) }
             PlaybackLog.event("filters_changed", mapOf("filters" to chain))
         }
         if (booster && liveBoost != boostPercent) {
@@ -562,7 +690,7 @@ class MpvPlaybackEngine(
             if (sent.isSuccess) {
                 liveBoost = boostPercent
             } else {
-                val rewritten = audioFilterChain(equalizer, boostPercent, filterSupport)
+                val rewritten = audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first)
                 sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(rewritten))
                 appliedChain = rewritten
                 writtenBoost = boostPercent
@@ -672,6 +800,7 @@ class MpvPlaybackEngine(
     private fun stopProcess() {
         progressJob?.cancel()
         progressJob = null
+        installedMeter.value = null
         process?.takeIf { it.isAlive }?.let { player ->
             // Forcibly, and waited for. Asking politely and moving on leaves the audio playing for as
             // long as it takes the player to notice, which on the way out is until after we have gone.

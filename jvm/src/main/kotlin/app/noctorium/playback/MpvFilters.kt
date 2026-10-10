@@ -52,6 +52,10 @@ private const val LIMITER_LATENCY = ":latency=1"
 internal data class MpvFilterSupport(
     /** The limiter can make up its own delay. */
     val limiterLatency: Boolean = false,
+    /** astats can be told what to measure and to put it on each frame: the level meter. */
+    val levels: Boolean = false,
+    /** The crossover and the merging the spectrum is made with. */
+    val spectrum: Boolean = false,
 )
 
 /**
@@ -71,9 +75,12 @@ internal fun audioFilterChain(
     equalizer: EqualizerSettings,
     boostPercent: Int,
     support: MpvFilterSupport = MpvFilterSupport(),
+    /** The visualiser's meter, last of all so it measures what is heard: [levelsMeter] or [spectrumMeter]. */
+    meter: String? = null,
 ): String = listOfNotNull(
     equalizerFilter(equalizer),
     boostFilter(equalizer, boostPercent, support),
+    meter,
 ).joinToString(",")
 
 /** The equaliser's own filter, or null when it shapes nothing. */
@@ -106,6 +113,59 @@ internal fun boostFactor(boostPercent: Int): String = String.format(Locale.ROOT,
 
 private fun decibels(value: Float): String = String.format(Locale.ROOT, "%.1f", value)
 
+/** The visualiser's filter, whose measurements are read back as `af-metadata/noctorium-meter`. */
+internal const val METER_LABEL = "noctorium-meter"
+
+/**
+ * FFmpeg's audio statistics, put on every frame as it passes and reset for the next, and only the two that are
+ * drawn: each channel's peak and its RMS, in dBFS. It passes the audio through as it came. Measured against
+ * playing with no filters at all: about a percent and a half of one core more for mpv.
+ */
+private const val METER_STATS = "astats=metadata=1:reset=1:measure_perchannel=Peak_level+RMS_level:measure_overall=none"
+
+/** What the meter in the running mpv measures: how many of its channels are the sound's own, then how many bands. */
+internal data class MeterLayout(
+    /** The sound's own channels, or null when not known -- then every channel the meter reports is the sound's. */
+    val channels: Int?,
+    val bands: Int,
+)
+
+/** The level meter: the channels' peaks and RMS, whatever the channels are. */
+internal fun levelsMeter(): String = "@$METER_LABEL:lavfi=[$METER_STATS]"
+
+/**
+ * The spectrum, for a stream of [channels] channels, or null for anything but mono and stereo.
+ *
+ * mpv reads back only what is on the frames that come out of a filter, so the bands have to travel on the very
+ * frames that are heard. The sound is split in two: one copy, folded to mono, goes through a crossover into ten
+ * bands at [Visualiser.BAND_EDGES_HZ], and the bands are joined on as extra channels after the sound's own. The
+ * statistics measure every channel -- the sound's own for the level meter, then each band -- and the extra
+ * channels are dropped again by a pure channel mapping, which copies samples rather than mixing them.
+ *
+ * So nothing changes what is heard, and that was checked rather than assumed: sixty seconds of Opus rendered
+ * through ffmpeg with this graph and without it came out byte for byte the same, and so did a render through
+ * mpv with the meter put in and taken out mid-song four times. It costs mpv about five percent of one core more
+ * than playing with no filters, measured over twenty seconds of real-time playback.
+ *
+ * Built for the channels mpv says the stream has, because the channel mapping at the end has to name them; a
+ * stream that changes its channels is noticed, and the meter built again. The format is fixed at the start as
+ * a guard, so that even then the bands could not be heard: a stream that arrived with other channels would be
+ * converted to these rather than have a band take the place of a channel.
+ */
+internal fun spectrumMeter(channels: Int): String? {
+    val outputs = (0 until Visualiser.BAND_COUNT).joinToString("") { "[b$it]" }
+    val split = "acrossover=split=${Visualiser.BAND_EDGES_HZ.joinToString(" ")}$outputs"
+    val bands = "${outputs}amerge=inputs=${Visualiser.BAND_COUNT}[bands]"
+    return when (channels) {
+        1 -> "@$METER_LABEL:lavfi=[aformat=channel_layouts=mono,asplit=2[main][analysis];[analysis]$split;$bands;" +
+            "[main][bands]amerge=inputs=2,$METER_STATS,pan=mono|c0=c0]"
+        2 -> "@$METER_LABEL:lavfi=[aformat=channel_layouts=stereo,asplit=2[main][analysis];" +
+            "[analysis]pan=mono|c0=0.5*c0+0.5*c1,$split;$bands;" +
+            "[main][bands]amerge=inputs=2,$METER_STATS,pan=stereo|c0=c0|c1=c1]"
+        else -> null
+    }
+}
+
 /** What each mpv on this machine was found able to do, asked once per executable. */
 private val knownSupport = ConcurrentHashMap<Path, MpvFilterSupport>()
 
@@ -119,9 +179,18 @@ private val knownSupport = ConcurrentHashMap<Path, MpvFilterSupport>()
  * shown to work is left off, which plays exactly as before.
  */
 internal fun mpvFilterSupport(mpv: Path): MpvFilterSupport = knownSupport.getOrPut(mpv) {
-    MpvFilterSupport(
-        limiterLatency = filtersWork(mpv, "lavfi=[$LIMITER$LIMITER_LATENCY]"),
-    )
+    val latency = "lavfi=[$LIMITER$LIMITER_LATENCY]"
+    val spectrum = spectrumMeter(2)!!
+    // Everything at once first, which on any recent mpv is the only probe made; one at a time otherwise.
+    if (filtersWork(mpv, "$latency,$spectrum")) {
+        MpvFilterSupport(limiterLatency = true, levels = true, spectrum = true)
+    } else {
+        MpvFilterSupport(
+            limiterLatency = filtersWork(mpv, latency),
+            levels = filtersWork(mpv, levelsMeter()),
+            spectrum = filtersWork(mpv, spectrum),
+        )
+    }
 }
 
 /** Whether [mpv] plays a moment of silence through [af] and exits cleanly, which it does not if a filter fails. */

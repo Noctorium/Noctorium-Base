@@ -7,6 +7,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -34,8 +38,30 @@ class RoutingPlaybackEngine(
     @Volatile private var active: PlaybackEngine = local
     @Volatile private var mirror: Job? = null
 
+    /** The engine playing, as a flow, for the analysis to follow it. */
+    private val activeEngine = MutableStateFlow(local)
+    private val mutableAnalysis = MutableStateFlow<AudioAnalysis?>(null)
+
+    /**
+     * The playing engine's analysis, asked of it only while something here is collecting this -- so the engine
+     * underneath, which measures only while it is watched, is watched exactly when this is.
+     */
+    override val analysis: StateFlow<AudioAnalysis?> = mutableAnalysis.asStateFlow()
+    override val analysisKind: AudioAnalysisKind get() = active.analysisKind
+
     init {
         follow(local, expecting = null)
+        scope.launch {
+            combine(activeEngine, mutableAnalysis.subscriptionCount.map { it > 0 }.distinctUntilChanged()) { engine, watched ->
+                engine.takeIf { watched }
+            }.collectLatest { engine ->
+                if (engine == null) {
+                    mutableAnalysis.value = null
+                } else {
+                    engine.analysis.collect { mutableAnalysis.value = it }
+                }
+            }
+        }
     }
 
     /** Whether the last track went to the other player. */
@@ -46,6 +72,7 @@ class RoutingPlaybackEngine(
         if (target !== active) {
             val leaving = active
             active = target
+            activeEngine.value = target
             // Ours first, so nothing the engine being left says on its way out is mistaken for the end of a
             // song; then the one being left is stopped, so two things are never playing at once. The booster
             // is the new engine's from the start: Spotify's app has none, and saying so a moment late would
@@ -91,6 +118,10 @@ class RoutingPlaybackEngine(
         elsewhere.setLooping(enabled)
     }
     override suspend fun setEqualizer(settings: EqualizerSettings) = local.setEqualizer(settings)
+    override suspend fun setAnalysis(wanted: AudioAnalysisKind) {
+        local.setAnalysis(wanted)
+        elsewhere.setAnalysis(wanted)
+    }
     override suspend fun setSpeed(speed: Float) = local.setSpeed(speed)
 
     override fun close() {
