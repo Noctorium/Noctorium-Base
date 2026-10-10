@@ -191,6 +191,16 @@ enum class PlayerBarStyle(val displayName: String, val description: String) {
         "Taskbar",
         "A desktop's taskbar: a start button that opens Now playing, the song as a pressed button, and a tray with the volume and the clock.",
     ),
+    /**
+     * A desktop music player's toolbar: flat buttons in one row -- add to a playlist, previous, play, pause, stop and
+     * next -- then a slider, the time, and repeat, shuffle and the volume. Play and pause are two buttons here,
+     * as they were on the players it is drawn after, and Stop is among the buttons whether or not it is asked
+     * for elsewhere: see [PlayerButton.isShown] and its partOfLayout.
+     */
+    TOOLBAR(
+        "Toolbar",
+        "One row of flat buttons, as a desktop music player has them: add to a playlist, previous, play, pause, stop and next, a slider and the time, then repeat, shuffle and the volume.",
+    ),
 }
 
 /**
@@ -234,6 +244,11 @@ enum class PhonePlayerBarStyle(val displayName: String, val description: String)
     TASKBAR(
         "Taskbar",
         "A start button, the song as a pressed taskbar button, and a clock, like the desktops of old.",
+    ),
+    /** Flat buttons in a row under the track, Stop among them, over a thin slider: the desktop's Toolbar, for a thumb. */
+    TOOLBAR(
+        "Toolbar",
+        "The track over a row of flat buttons -- previous, play, pause, stop and next -- with a thin slider and the time.",
     ),
 }
 
@@ -307,6 +322,11 @@ enum class ProgressBarStyle(val displayName: String, val description: String) {
     LUNA(
         "Luna",
         "Windows XP's: green blocks filling a rounded white well, and its pointed handle.",
+    ),
+    /** A desktop music player's slider: a thin groove, the accent up to where the song is, and a small round handle. */
+    SLIDER(
+        "Slider",
+        "A thin groove that fills with the accent as the song plays, and a small round handle to drag.",
     ),
     ;
 
@@ -399,6 +419,10 @@ object SeekBar {
     const val LUNA_BLOCK_GAP_DP = 2
     const val LUNA_THUMB_WIDTH_DP = 11
     const val LUNA_THUMB_HEIGHT_DP = 21
+
+    /** The slider's groove, top to bottom, and the radius of its round handle. Thin and small, like a desktop's own. */
+    const val SLIDER_GROOVE_DP = 4
+    const val SLIDER_HANDLE_RADIUS_DP = 7
 
     /** How many swells a song's bars rise and fall through from end to end, and how finely they are made. */
     private const val BARS_SECTIONS = 8
@@ -611,6 +635,16 @@ data class NoctoriumPreferences(
     val lastVolumeBoostPercent: Int = app.noctorium.playback.VolumeBoost.FIRST_PERCENT,
     /** What the visualiser draws, where there is one on screen. Shared by every player, like the equaliser. */
     val visualiser: VisualiserStyle = VisualiserStyle.BARS,
+    /** The columns of the queue's table in the Playlist layout, in their order. Read through [QueueColumn.normalised]. */
+    @Serializable(with = QueueColumnListSerializer::class)
+    val queueColumns: List<QueueColumn> = QueueColumn.DEFAULT,
+    /**
+     * The status bar along the foot of the Playlist layout: what is playing -- "Opus, stereo, 48 kHz, 128 kbit/s" --
+     * on the left, and how far into the whole queue on the right. On, as it is part of the look.
+     */
+    val statusBar: Boolean = true,
+    /** The icons the player's buttons are drawn with. Standard is each player's own, as they have always been. */
+    val iconSet: IconSet = IconSet.STANDARD,
     /** When the queue runs out, carry on with songs like the last one rather than stopping. */
     val autoplay: Boolean = true,
     /** Where autoplay's songs come from: the service of the song that ended the queue, or always YouTube Music. */
@@ -752,6 +786,11 @@ enum class PhoneNowPlayingLayout(val displayName: String, val description: Strin
         "Big type",
         "No cover: the title and the artist set large, like a poster.",
     ),
+    /** The Playlist layout for a phone: a small cover and the track over the queue as a table, and a visualiser. */
+    PLAYLIST(
+        "Playlist",
+        "A small cover and the title over the queue as a list with columns, and a visualiser beside the title.",
+    ),
 }
 
 /** The shape of the cover on the now playing screen. */
@@ -794,8 +833,10 @@ data class PhonePreferences(
     /** Swiping the player bar sideways moves through the queue. */
     val swipeToChangeTrack: Boolean = true,
     /** Buttons left off the phone's player, the bar and the full screen both. */
+    @Serializable(with = PlayerButtonSetSerializer::class)
     val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Opt-in buttons the listener asked for ([PlayerButton.optIn]); every other button is shown unless hidden. */
+    @Serializable(with = PlayerButtonSetSerializer::class)
     val shownPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Tabs left off the bar along the bottom. Home and Settings are always reachable whatever is here. */
     val hiddenDestinations: Set<Destination> = emptySet(),
@@ -851,8 +892,10 @@ data class DesktopPreferences(
     /** How the now playing screen is laid out and dressed. */
     val nowPlaying: NowPlayingPreferences = NowPlayingPreferences(),
     /** Buttons left off the player bar. */
+    @Serializable(with = PlayerButtonSetSerializer::class)
     val hiddenPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Opt-in buttons the listener asked for ([PlayerButton.optIn]); every other button is shown unless hidden. */
+    @Serializable(with = PlayerButtonSetSerializer::class)
     val shownPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Items left off the sidebar. Home and Settings are always there whatever is here. */
     val hiddenDestinations: Set<Destination> = emptySet(),
@@ -944,6 +987,17 @@ enum class NowPlayingLayout(val displayName: String, val description: String, va
     POSTER(
         "Big type",
         "No cover: the title and the artist set large, like a poster, with the controls under them.",
+        hasPanel = false,
+    ),
+    /**
+     * A desktop music player's window: the cover in a panel of its own on the left, the queue as a table with
+     * columns ([QueueColumn]) in tabs, an info bar with the cover, the title set large and a visualiser, and a
+     * status bar ([NoctoriumPreferences.statusBar]). No panel in the sense of [hasPanel]: the queue's table is
+     * the screen itself rather than a panel beside the record, so there is nothing to put away or to widen.
+     */
+    PLAYLIST(
+        "Playlist",
+        "The cover in a panel on the left, the queue as a table with columns, and an info bar with the title large and a visualiser.",
         hasPanel = false,
     ),
 }

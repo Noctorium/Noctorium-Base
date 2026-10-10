@@ -76,6 +76,6 @@ class SeekBarShapesTest {
     @Test
     fun `every new seek bar says what it is`() {
         ProgressBarStyle.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
-        assertEquals(11, ProgressBarStyle.entries.size)
+        assertEquals(12, ProgressBarStyle.entries.size)
     }
 }

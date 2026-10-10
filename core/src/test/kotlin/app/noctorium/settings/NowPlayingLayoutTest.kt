@@ -81,7 +81,7 @@ class NowPlayingLayoutTest {
 
     @Test
     fun `every option has a name, and every layout and look says what it is`() {
-        assertEquals(11, NowPlayingLayout.entries.size)
+        assertEquals(12, NowPlayingLayout.entries.size)
         NowPlayingLayout.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
         CoverStyle.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
         NowPlayingBackdrop.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }
@@ -89,8 +89,9 @@ class NowPlayingLayoutTest {
         assertEquals(listOf("Up next", "Lyrics", "Related"), NowPlayingTab.entries.map { it.displayName })
     }
 
+    /** The Playlist layout's table is the screen itself rather than a panel beside the record, so it has none to put away. */
     @Test
-    fun `only the layouts with nothing beside the record go without the panel`() {
+    fun `only the layouts with nothing beside the record, and the table that is its own screen, go without the panel`() {
         assertEquals(
             setOf(
                 NowPlayingLayout.STAGE,
@@ -98,6 +99,7 @@ class NowPlayingLayoutTest {
                 NowPlayingLayout.IMMERSIVE,
                 NowPlayingLayout.COVER_FLOW,
                 NowPlayingLayout.POSTER,
+                NowPlayingLayout.PLAYLIST,
             ),
             NowPlayingLayout.entries.filterNot { it.hasPanel }.toSet(),
         )

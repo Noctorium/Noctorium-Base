@@ -1097,6 +1097,11 @@ class AppState(
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
     fun setVisualiser(style: VisualiserStyle) = updatePreferences { copy(visualiser = style) }
 
+    /** The queue table's columns, in this order; the title is kept whatever is asked. See [QueueColumn.normalised]. */
+    fun setQueueColumns(columns: List<QueueColumn>) = updatePreferences { copy(queueColumns = QueueColumn.normalised(columns)) }
+    fun setStatusBar(shown: Boolean) = updatePreferences { copy(statusBar = shown) }
+    fun setIconSet(icons: IconSet) = updatePreferences { copy(iconSet = icons) }
+
     /**
      * The phone-only settings, changed one field at a time through the block they live in.
      *
