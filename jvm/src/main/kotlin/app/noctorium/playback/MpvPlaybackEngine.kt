@@ -22,6 +22,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
@@ -86,6 +88,9 @@ internal fun refusalIn(lines: List<String>): Boolean = lines.any { line ->
 
 /** curl's way of saying it, then ffmpeg's, which mpv falls back to for some streams. */
 private val HTTP_REFUSAL = Regex("""HTTP error 4\d\d|Server returned 4\d\d""")
+
+/** How often, in ticks of a quarter of a second, the format is asked for once it is known: once a second. */
+private const val FORMAT_EVERY_TICKS = 4
 
 /** Ten seconds of asking at the ticker's rate, after which a stream is taken to have no length. */
 private const val MAX_DURATION_PROBES = 40
@@ -298,6 +303,12 @@ class MpvPlaybackEngine(
     @Volatile private var recoveries = 0
 
     private suspend fun start(track: Track, startMs: Long): Unit = playMutex.withLock {
+        // The same song brought back after a failure is the same stream; anything else is learnt afresh.
+        val sameSong = mutableState.value.track?.queueKey == track.queueKey
+        if (!sameSong) {
+            streamChannels = null
+            streamParams = null
+        }
         mutableState.update { it.copy(
             status = PlaybackStatus.RESOLVING,
             track = track,
@@ -305,6 +316,7 @@ class MpvPlaybackEngine(
             positionMs = startMs,
             durationMs = track.durationMs ?: 0,
             loops = 0,
+            format = if (sameSong) it.format else null,
         ) }
         // Logged on the way in as well as the way out, so that next time the difference between "never
         // started" and "started and vanished" is a fact rather than a deduction.
@@ -671,8 +683,39 @@ class MpvPlaybackEngine(
         ipcEndpoint = null
     }
 
+    /** Ticks of the progress ticker since the format was last asked for. */
+    private var formatTicks = 0
+
+    /** How many channels the stream decodes to, once mpv has said: what decides whether the meter can show a spectrum. */
+    @Volatile private var streamChannels: Int? = null
+
+    /** The decoder's output as mpv last described it, to notice it change. */
+    @Volatile private var streamParams: JsonElement? = null
+
+    /**
+     * Asks mpv what the stream is and puts it in the state for the status bar.
+     *
+     * The decoder's output changing under a running player -- rare, a stream that changes its channels -- makes
+     * mpv build its filters afresh from the list as written, so the booster's gain is back at the level written
+     * there; the level wanted is sent again, and the meter is built for the new channels.
+     */
+    private suspend fun refreshFormat(playingKey: String?) {
+        val known = mutableState.value.format
+        val codec = known?.codec?.let(::JsonPrimitive) ?: propertyOrNull("audio-codec-name")
+        val params = propertyOrNull("audio-params")
+        val format = streamFormatFrom(codec, params, propertyOrNull("audio-bitrate")) ?: return
+        mutableState.update { latest -> if (latest.track?.queueKey != playingKey) latest else latest.copy(format = format) }
+        if (params == null || params == streamParams) return
+        val rebuilt = streamParams != null
+        streamParams = params
+        streamChannels = format.channels
+        if (rebuilt) filtersMutex.withLock { liveBoost = writtenBoost }
+        runCatching { applyFilters() }
+    }
+
     private fun startProgressTicker() {
         progressJob?.cancel()
+        formatTicks = 0
         progressJob = scope.launch {
             var lastTick = System.nanoTime()
             var durationAttempts = 0
@@ -736,6 +779,13 @@ class MpvPlaybackEngine(
                     if (streamLengthMs == 0L && lengthProbes < MAX_DURATION_PROBES) {
                         lengthProbes++
                         streamLengthMs = measuredDurationMs()
+                    }
+                    // The format for the status bar: on every tick until mpv can say what the stream is, then
+                    // once a second, which is how often mpv measures the bitrate anyway.
+                    formatTicks++
+                    val learning = formatTicks <= FORMAT_EVERY_TICKS * 2 && mutableState.value.format?.channels == null
+                    if (learning || formatTicks % FORMAT_EVERY_TICKS == 0) {
+                        refreshFormat(current.track?.queueKey)
                     }
                     // Ask mpv how long the stream is until it can say. A YouTube Music listing carries no
                     // duration field at all, so a track played from one arrives here with nothing to scale
@@ -881,6 +931,10 @@ class MpvPlaybackEngine(
         }
         throw BackendException("mpv IPC did not become ready", lastError)
     }
+
+    /** A property's value, or null when mpv has none to give yet -- or cannot be asked. */
+    private suspend fun propertyOrNull(name: String): JsonElement? =
+        runCatching { sendCommand("get_property", JsonPrimitive(name))["data"] }.getOrNull()?.takeUnless { it is JsonNull }
 
     private suspend fun getNumberProperty(name: String): Double? =
         sendCommand("get_property", JsonPrimitive(name))["data"]?.jsonPrimitive?.doubleOrNull

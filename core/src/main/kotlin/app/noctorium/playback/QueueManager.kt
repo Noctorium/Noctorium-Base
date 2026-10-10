@@ -43,6 +43,16 @@ data class QueueState(
     val upNext: List<Track> get() = if (currentIndex < 0) tracks else tracks.drop(currentIndex + 1)
 
     /**
+     * The whole queue's length, for a status bar's "2:31 / 1:03:41": every song whose length is known. A song
+     * still without one adds nothing rather than a guess.
+     */
+    val durationMs: Long get() = tracks.sumOf { (it.durationMs ?: 0L).coerceAtLeast(0L) }
+
+    /** How far into the whole queue [positionMs] into the song playing is: the songs before it, and that much of it. */
+    fun elapsedMs(positionMs: Long): Long =
+        tracks.take(currentIndex.coerceAtLeast(0)).sumOf { (it.durationMs ?: 0L).coerceAtLeast(0L) } + positionMs.coerceAtLeast(0L)
+
+    /**
      * Whether next and previous would go anywhere.
      *
      * The same conditions next() and previous() decide by, said before the fact. The lock screen and a

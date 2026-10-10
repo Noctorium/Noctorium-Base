@@ -36,6 +36,11 @@ data class PlaybackState(
      * nothing. See [VolumeBoost.UNAVAILABLE].
      */
     val volumeBoostAvailable: Boolean = true,
+    /**
+     * What is playing, as far as the player can tell -- codec, channels, sample rate, bitrate -- for the status
+     * bar: [StreamFormat.describe] writes it out. Null until the player knows, and for a new song until it does.
+     */
+    val format: StreamFormat? = null,
 ) {
     val isPlaying: Boolean get() = status == PlaybackStatus.PLAYING
 }
