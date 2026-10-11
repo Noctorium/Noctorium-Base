@@ -692,7 +692,9 @@ class AppState(
         override suspend fun next() {
             if (spotifyContinues()) spotifyPlayer.skipToSpotifysNext() else queue.next()?.let { playEnriched(it) }
         }
-        override suspend fun previous() { queue.previous()?.let { playEnriched(it) } }
+        override suspend fun previous() {
+            if (restartsRatherThanGoesBack()) player.seekTo(0) else queue.previous()?.let { playEnriched(it) }
+        }
         override suspend fun seekTo(positionMs: Long) = player.seekTo(positionMs)
         override suspend fun setVolume(value: Float) = player.setVolume(value)
         override suspend fun setShuffle(enabled: Boolean) = queue.setShuffle(enabled)
@@ -970,7 +972,30 @@ class AppState(
 
     /** Whether the queue has run out here and goes on in Spotify's own autoplay. */
     private fun spotifyContinues(): Boolean = queue.state.value.let { it.upcoming == null && it.continuesElsewhere }
-    fun previous() { startPlay { queue.previous() } }
+    /**
+     * Previous, as players have long done it: five seconds or more into a song goes back to its start, sooner than
+     * that to the song before. With no song before it, back to the start whatever the time, rather than nothing.
+     */
+    fun previous() {
+        if (restartsRatherThanGoesBack()) {
+            scope.launch { player.seekTo(0) }
+            return
+        }
+        startPlay { queue.previous() }
+    }
+
+    /** Whether [previous] would go back to the start of the song playing rather than to the song before. */
+    private fun restartsRatherThanGoesBack(): Boolean {
+        val now = playback.value
+        val inSong = now.track != null && (now.status == PlaybackStatus.PLAYING || now.status == PlaybackStatus.PAUSED)
+        return inSong && (now.positionMs >= PREVIOUS_RESTARTS_AFTER_MS || !queue.state.value.hasPrevious)
+    }
+
+    /**
+     * Whether Previous does anything: there is a song before this one, or one playing to go back to the start of.
+     * For the system's controls -- a lock screen or a notification greys the button out when this is false.
+     */
+    val canGoPrevious: Boolean get() = queue.state.value.hasPrevious || playback.value.track != null
     fun jumpToQueueItem(index: Int) { startPlay { queue.jumpTo(index) } }
     fun moveQueueItem(from: Int, to: Int) = queue.move(from, to)
     fun removeQueueItem(index: Int) = queue.removeAt(index)
@@ -5009,6 +5034,13 @@ private const val PREFETCH_AFTER_MS = 4_000L
 
 /** How long after launch the last-played track is looked up, once the screens have had the network first. */
 private const val WARM_UP_AFTER_MS = 2_500L
+
+/**
+ * How far into a song Previous goes back to its start instead of to the song before. Five seconds: long enough
+ * that pressing it twice quickly still steps back through the queue, short enough that a song you meant to hear
+ * again does not need the seek bar.
+ */
+const val PREVIOUS_RESTARTS_AFTER_MS = 5_000L
 
 /** The exception and its cause, since the outer message is often the less useful of the two. */
 /** How long a link that is playing is watched for the details the player reads. A slow page is seconds. */
