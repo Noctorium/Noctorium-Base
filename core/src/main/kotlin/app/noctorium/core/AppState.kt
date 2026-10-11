@@ -3688,12 +3688,21 @@ class AppState(
      * With autoplay switched off there is no radio to start, and a song that played and stopped would read as
      * Home being broken, so the rest of the shelf follows it instead, as it always did.
      */
-    fun playFromHome(track: Track, shelf: List<Track> = listOf(track)) {
+    fun playFromHome(track: Track, shelf: List<Track> = listOf(track)) = playStartingAutoplay(track, PlaybackOrigin.HOME, shelf)
+
+    /**
+     * A song picked from a search's results, played as a song picked on Home is: by default alone, with autoplay's
+     * songs after it, rather than with every other result queued behind it -- results are a list of guesses at one
+     * song, not an album. The same choice, [NoctoriumPreferences.homePlay], brings the rest of the [results] back.
+     */
+    fun playFromSearch(track: Track, results: List<Track> = listOf(track)) = playStartingAutoplay(track, PlaybackOrigin.SEARCH, results)
+
+    private fun playStartingAutoplay(track: Track, origin: PlaybackOrigin, around: List<Track>) {
         val preferences = mutableSettings.value.preferences
         if (preferences.homePlay == HomePlay.SHELF || !preferences.autoplay) {
-            play(track, PlaybackOrigin.HOME, shelf)
+            play(track, origin, around)
         } else {
-            play(track, PlaybackOrigin.HOME, listOf(track))
+            play(track, origin, listOf(track))
         }
     }
 

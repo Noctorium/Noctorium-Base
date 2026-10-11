@@ -654,8 +654,9 @@ data class NoctoriumPreferences(
     /** The queue is kept when Noctorium closes, and picked up where it was left. */
     val keepQueue: Boolean = true,
     /**
-     * What playing a song from Home does: start a radio from it -- autoplay's songs after it -- or play on through
-     * the rest of its shelf, which is what it always did before. See [app.noctorium.core.AppState.playFromHome].
+     * What playing a song from Home or from a search does: start a radio from it -- autoplay's songs after it -- or
+     * play on through the rest of its shelf or results, which is what it always did before. Named for Home, where it
+     * began. See [app.noctorium.core.AppState.playFromHome] and [app.noctorium.core.AppState.playFromSearch].
      */
     val homePlay: HomePlay = HomePlay.AUTOPLAY,
     /** The services that answer a Hybrid search. Each still has to be signed in where it needs that. */
@@ -1170,11 +1171,14 @@ enum class AutoplaySource(val displayName: String, val description: String) {
     YOUTUBE_MUSIC("YouTube Music radio", "YouTube Music's radio after every song, whatever service it came from."),
 }
 
-/** What playing a song from Home plays after it. */
+/**
+ * What playing a song picked on Home or from a search plays after it. The names are kept from when this was only
+ * about Home, so a settings file from then still reads: SHELF is the rest of the shelf, or of the results.
+ */
 @Serializable
 enum class HomePlay(val displayName: String, val description: String) {
     AUTOPLAY("Autoplay after it", "The song, then songs like it, as a radio started from it."),
-    SHELF("The rest of its shelf", "The song, then the ones after it on the same shelf of Home."),
+    SHELF("The songs around it", "The song, then the rest of the shelf on Home, or of the results it was picked from."),
 }
 
 /** When the phone plays lower-quality audio to use less data. */

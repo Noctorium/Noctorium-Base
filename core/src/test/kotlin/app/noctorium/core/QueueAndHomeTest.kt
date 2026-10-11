@@ -104,6 +104,39 @@ class QueueAndHomeTest {
     }
 
     @Test
+    fun `a song from a search plays alone too, for autoplay to carry on from`() {
+        val engine = AppStateHarness.Engine()
+        AppStateHarness.state(engine, NoctoriumPreferences(autoplay = true)).use { state ->
+            state.playFromSearch(songs[1], results = songs)
+            waitFor("the song") { engine.state.value.track?.id == "b" }
+            assertEquals(listOf("b"), state.queue.state.value.tracks.map { it.id })
+            assertEquals(PlaybackOrigin.SEARCH, state.queue.state.value.context?.originType)
+        }
+    }
+
+    /** The one choice covers both: the old way brings the rest of the results, as it brings the rest of a shelf. */
+    @Test
+    fun `the old way plays on through the rest of the results`() {
+        val engine = AppStateHarness.Engine()
+        AppStateHarness.state(engine, NoctoriumPreferences(autoplay = true, homePlay = HomePlay.SHELF)).use { state ->
+            state.playFromSearch(songs[1], results = songs)
+            waitFor("the song") { engine.state.value.track?.id == "b" }
+            assertEquals(songs, state.queue.state.value.tracks)
+            assertEquals("b", state.queue.state.value.current?.id)
+        }
+    }
+
+    @Test
+    fun `with autoplay off, a song from a search brings the results`() {
+        val engine = AppStateHarness.Engine()
+        AppStateHarness.state(engine, NoctoriumPreferences(autoplay = false)).use { state ->
+            state.playFromSearch(songs[0], results = songs)
+            waitFor("the song") { engine.state.value.track?.id == "a" }
+            assertEquals(songs, state.queue.state.value.tracks)
+        }
+    }
+
+    @Test
     fun `the choice is kept, and a settings file from before it starts radios`() {
         val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
         assertEquals(HomePlay.AUTOPLAY, json.decodeFromString<NoctoriumPreferences>("""{"profileName":"Kept"}""").homePlay)
