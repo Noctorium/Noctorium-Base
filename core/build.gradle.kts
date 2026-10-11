@@ -55,3 +55,18 @@ tasks.test {
     // the folder lookup also migrates an older application folder, which no test run should be doing.
     systemProperty("noctorium.home", layout.buildDirectory.dir("test-home").get().asFile.absolutePath)
 }
+
+/**
+ * Connect's stand-in computer, for testing the phone over USB without the desktop application: see
+ * ConnectHarness in the tests. Signs in to a Noctorium service on this machine and nowhere else.
+ *
+ *     ./gradlew :core:connectHarness --args="--listen 127.0.0.1:47700 --commands build/harness/commands.txt"
+ */
+tasks.register<JavaExec>("connectHarness") {
+    description = "Runs a headless Connect device, driven by commands, for testing a phone through adb."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("app.noctorium.connect.ConnectHarnessKt")
+    standardInput = System.`in`
+    // Nothing of a real Noctorium's: its own folder, as the tests have.
+    systemProperty("noctorium.home", layout.buildDirectory.dir("harness-home").get().asFile.absolutePath)
+}
