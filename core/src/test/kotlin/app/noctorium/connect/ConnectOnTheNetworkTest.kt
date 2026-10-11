@@ -98,7 +98,7 @@ class ConnectOnTheNetworkTest {
         phonePlayer.play(songs, 1, 30_000)
         val deskPeer = phone.await("Desk")
 
-        phone.transferTo(deskPeer, songs, 1, 30_000)
+        phone.handTo(deskPeer, songs, 1, 30_000)
 
         eventually("the desktop to take the music") { deskPlayer.playing }
         assertEquals(songs, deskPlayer.tracks)
@@ -113,7 +113,7 @@ class ConnectOnTheNetworkTest {
         deskPlayer.play(songs, 2, 61_000)
         val phonePeer = desk.await("Phone")
 
-        desk.transferTo(phonePeer, songs, 2, 61_000)
+        desk.handTo(phonePeer, songs, 2, 61_000)
 
         eventually("the phone to take the music") { phonePlayer.playing }
         assertEquals("Song 3", phonePlayer.current?.title)
@@ -125,7 +125,7 @@ class ConnectOnTheNetworkTest {
     fun `the device that took the music is played, paused, skipped, sought and turned down from the other`() = runBlocking {
         phonePlayer.play(songs, 0, 5_000)
         val deskPeer = phone.await("Desk")
-        phone.transferTo(deskPeer, songs, 0, 5_000)
+        phone.handTo(deskPeer, songs, 0, 5_000)
         eventually("the desktop to take the music") { deskPlayer.playing }
 
         phone.control { Command(CommandType.PAUSE) }
@@ -150,7 +150,7 @@ class ConnectOnTheNetworkTest {
     fun `the remote control follows the other device's position while it plays`() = runBlocking {
         deskPlayer.play(songs, 0, 10_000)
         val phonePeer = desk.await("Phone")
-        desk.transferTo(phonePeer, songs, 0, 10_000)
+        desk.handTo(phonePeer, songs, 0, 10_000)
         eventually("the phone to take the music") { phonePlayer.playing }
 
         val first = desk.state.value.remote?.positionMs ?: 0
@@ -163,7 +163,7 @@ class ConnectOnTheNetworkTest {
     fun `bringing the music back brings the whole queue, from where the other device had got to`() = runBlocking {
         phonePlayer.play(songs, 0, 5_000)
         val deskPeer = phone.await("Desk")
-        phone.transferTo(deskPeer, songs, 0, 5_000)
+        phone.handTo(deskPeer, songs, 0, 5_000)
         eventually("the desktop to take the music") { deskPlayer.playing }
         // Moved on over there, by its own buttons, which the phone only hears about by asking.
         deskPlayer.next()
@@ -181,7 +181,7 @@ class ConnectOnTheNetworkTest {
     @Test
     fun `the device being driven says by whom, and stops saying so once the music is taken back`() = runBlocking {
         phonePlayer.play(songs, 0, 0)
-        phone.transferTo(phone.await("Desk"), songs, 0, 0)
+        phone.handTo(phone.await("Desk"), songs, 0, 0)
         eventually("the desktop to say the phone is driving it") { desk.state.value.controlledBy == "Phone" }
 
         phone.bringItBack()
@@ -191,7 +191,7 @@ class ConnectOnTheNetworkTest {
     @Test
     fun `music started on the remote control stops the device it was driving`() = runBlocking {
         phonePlayer.play(songs, 0, 0)
-        phone.transferTo(phone.await("Desk"), songs, 0, 0)
+        phone.handTo(phone.await("Desk"), songs, 0, 0)
         eventually("the desktop to take the music") { deskPlayer.playing }
 
         phone.playingHereInstead()
@@ -243,7 +243,7 @@ class ConnectOnTheNetworkTest {
         assertEquals(address, found.address)
 
         phonePlayer.play(songs, 3, 1_000)
-        phone.transferTo(found, songs, 3, 1_000)
+        phone.handTo(found, songs, 3, 1_000)
         eventually("the hidden device to take the music") { hiddenPlayer.playing }
         assertEquals("Song 4", hiddenPlayer.current?.title)
     }
@@ -269,7 +269,7 @@ class ConnectOnTheNetworkTest {
         // Looked for at its address, which means it is asked every few seconds whether it is still there.
         phone.addAddress(phone.await("Desk").address, eventuallyPort(shelf))
         phonePlayer.play(songs, 0, 0)
-        phone.transferTo(phone.await("Shelf"), songs, 0, 0)
+        phone.handTo(phone.await("Shelf"), songs, 0, 0)
         eventually("the shelf to say the phone is driving it") { shelf.state.value.controlledBy == "Phone" }
 
         // Forty seconds with no commands, the remote control on screen all the while.
@@ -282,6 +282,18 @@ class ConnectOnTheNetworkTest {
     }
 
     // -- helpers ---------------------------------------------------------------------------------
+
+    /**
+     * Hands the music over and waits until this device knows it is driving the other, as its screen would show.
+     *
+     * The handover is sent in the background and the device being driven is noted only once its reply is back; the
+     * other device can already be playing before then. A remote control used in that moment has nothing to send
+     * to -- a person cannot press that fast, but a test on a slow machine can.
+     */
+    private suspend fun ConnectManager.handTo(peer: ConnectPeer, tracks: List<Track>, index: Int, positionMs: Long) {
+        transferTo(peer, tracks, index, positionMs)
+        eventually("${peer.name} to be the device being driven") { state.value.target?.id == peer.id }
+    }
 
     /** The port a device is answering on, read from what it says about itself at its own address. */
     private suspend fun eventuallyPort(manager: ConnectManager): Int {
