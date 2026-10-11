@@ -132,6 +132,8 @@ internal object AppStateHarness {
         providers: List<MusicProvider> = ProviderType.entries.filter { it != ProviderType.LOCAL }.map(::Provider),
         settings: Path = settingsFile(preferences.copy(connect = ConnectPreferences(enabled = false))),
         credentials: app.noctorium.settings.SecretStore = InMemorySecretStore(),
+        // Nowhere at all unless a test says where: a harness must never reach the real service.
+        accountClient: app.noctorium.account.NoctoriumAccountClient = app.noctorium.account.NoctoriumAccountClient(baseUrl = "http://127.0.0.1:9"),
     ): AppState = AppState(
         ytDlp = Backend,
         credentials = credentials,
@@ -142,6 +144,7 @@ internal object AppStateHarness {
         queueStore = QueueStore(null),
         checkForUpdatesAtLaunch = false,
         refreshAtLaunch = false,
+        accountClient = accountClient,
     )
 
     /** Waits, five seconds at most, for [done]; AppState answers in its own time, on its own threads. */

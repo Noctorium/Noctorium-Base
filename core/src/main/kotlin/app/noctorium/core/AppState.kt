@@ -4262,6 +4262,19 @@ class AppState(
     fun logInToNoctorium(email: String, password: String) =
         authenticateNoctorium { accountClient.logIn(email.trim(), password) }
 
+    /**
+     * Signs in with a session somebody already has, rather than with a password.
+     *
+     * The phone's debug build is handed one through adb, so that a made-up account on a service running on
+     * the computer is used without its password ever being typed into the phone. Asked of the service before
+     * it is kept, exactly as a stored session is at launch.
+     */
+    fun useNoctoriumSession(token: String) = authenticateNoctorium {
+        val user = accountClient.whoAmI(token.trim())
+        if (user == null) AccountResult.Refused("The service did not recognise that session.")
+        else AccountResult.Success(user, token.trim())
+    }
+
     private fun authenticateNoctorium(attempt: suspend () -> AccountResult) {
         if (mutableAccount.value.busy) return
         scope.launch {
