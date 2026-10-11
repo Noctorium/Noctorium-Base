@@ -9,12 +9,14 @@ import kotlinx.coroutines.launch
 import java.io.BufferedInputStream
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
 /** What a device can be asked to do, once it has been established that the asker is entitled to ask. */
 interface ConnectCommands {
-    suspend fun state(): RemoteState
+    /** [from] is the asking device's id, as it says itself; it is not signed, and is only ever shown. */
+    suspend fun state(from: String? = null): RemoteState
     suspend fun handle(command: Command): CommandReply
 }
 
@@ -27,14 +29,22 @@ interface ConnectCommands {
  * save when this project first reached a phone. Two hundred lines of a well-understood protocol, shared,
  * beats two implementations that only look the same.
  *
- * Only what Connect needs is implemented: one request per connection, no chunking, no keep-alive, a hard
- * cap on the body. A request that does not fit that description is refused rather than guessed at.
+ * Only what Connect needs is implemented: one request per connection, no keep-alive, a body with a stated
+ * length and a hard cap on it. A request that does not fit that description is refused rather than guessed
+ * at -- a chunked body in particular, which read as no body at all would only ever fail its signature and
+ * be answered "not authorised", the one answer that sends somebody looking in entirely the wrong place.
  */
 class ConnectServer(
     private val commands: ConnectCommands,
     private val key: () -> String?,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /**
+     * Every interface and a port the system picks, which is what a device on a network needs. A harness on
+     * this machine passes 127.0.0.1 and a port of its own, so it can be reached through adb and from
+     * nowhere else.
+     */
+    private val listenOn: InetSocketAddress = InetSocketAddress(0),
 ) {
     private var server: ServerSocket? = null
     private var scope: CoroutineScope? = null
@@ -46,7 +56,7 @@ class ConnectServer(
 
     fun start(): Int {
         if (server != null) return port
-        val bound = runCatching { ServerSocket(0) }.getOrElse {
+        val bound = runCatching { ServerSocket().apply { bind(listenOn) } }.getOrElse {
             log("Connect server could not bind: ${it.message}")
             return 0
         }
@@ -77,9 +87,17 @@ class ConnectServer(
             val input = BufferedInputStream(socket.getInputStream())
             val output = socket.getOutputStream()
 
-            val request = runCatching { readRequest(input) }.getOrNull()
+            val request = runCatching { readRequest(input, output) }.getOrNull()
             if (request == null) {
                 respond(output, 400, """{"ok":false,"message":"Bad request."}""")
+                return
+            }
+            if (request.unsupported != null) {
+                log("Refused ${request.method} ${request.path}: ${request.unsupported}")
+                respond(output, 411, """{"ok":false,"message":"Send the body with a Content-Length."}""")
+                // The body is still on its way. Closing on top of it resets the connection, and a reset can
+                // overtake the answer, leaving the other end with an error instead of the reason.
+                discardTheRest(socket, input)
                 return
             }
 
@@ -100,7 +118,10 @@ class ConnectServer(
             val reply = runCatching {
                 when {
                     request.method == "GET" && request.path == "/state" ->
-                        ConnectProtocol.json.encodeToString(RemoteState.serializer(), commands.state())
+                        ConnectProtocol.json.encodeToString(
+                            RemoteState.serializer(),
+                            commands.state(request.headers[HEADER_DEVICE]),
+                        )
 
                     request.method == "POST" && request.path == "/command" -> {
                         val command = ConnectProtocol.json.decodeFromString(Command.serializer(), request.body)
@@ -157,21 +178,37 @@ class ConnectServer(
         val path: String,
         val headers: Map<String, String>,
         val body: String,
+        /** Why a request that was read cannot be served as it was sent, when it cannot. */
+        val unsupported: String? = null,
     )
 
-    private fun readRequest(input: InputStream): Request? {
+    private fun readRequest(input: InputStream, output: OutputStream): Request? {
         val head = readUntilBlankLine(input) ?: return null
         val lines = head.split("\r\n").filter(String::isNotEmpty)
         val requestLine = lines.firstOrNull()?.split(' ') ?: return null
         if (requestLine.size < 2) return null
+        val method = requestLine[0].uppercase()
+        // Only the path, never the query: the signature covers what is signed, and anything smuggled in a
+        // query string would not be.
+        val path = requestLine[1].substringBefore('?')
 
+        // Header names in any case: HTTP says they are case-insensitive, and clients disagree on what to send.
         val headers = lines.drop(1).mapNotNull { line ->
             val colon = line.indexOf(':')
             if (colon <= 0) null else line.take(colon).trim().lowercase() to line.drop(colon + 1).trim()
         }.toMap()
 
-        val length = headers["content-length"]?.toIntOrNull() ?: 0
-        if (length > MAX_BODY_BYTES) return null
+        if (headers["transfer-encoding"] != null) {
+            return Request(method, path, headers, "", unsupported = "a ${headers["transfer-encoding"]} body")
+        }
+        val length = headers["content-length"]?.let { it.toIntOrNull() ?: return null } ?: 0
+        if (length !in 0..MAX_BODY_BYTES) return null
+        // A client that waits to be told to go ahead before sending its body would otherwise wait out its
+        // own timeout here, with this end waiting for the body.
+        if (length > 0 && headers["expect"].equals("100-continue", ignoreCase = true)) {
+            output.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray(Charsets.ISO_8859_1))
+            output.flush()
+        }
         val body = if (length <= 0) "" else {
             val bytes = ByteArray(length)
             var read = 0
@@ -182,9 +219,7 @@ class ConnectServer(
             }
             String(bytes, Charsets.UTF_8)
         }
-        // Only the path, never the query: the signature covers what is signed, and anything smuggled in a
-        // query string would not be.
-        return Request(requestLine[0].uppercase(), requestLine[1].substringBefore('?'), headers, body)
+        return Request(method, path, headers, body)
     }
 
     private fun readUntilBlankLine(input: InputStream): String? {
@@ -198,6 +233,21 @@ class ConnectServer(
             if (last4 and 0xffffffff.toInt() == CRLFCRLF) return buffer.toString()
         }
         return null
+    }
+
+    /** Says nothing more, and reads what is still coming -- briefly, and only so much -- before closing. */
+    private fun discardTheRest(socket: Socket, input: InputStream) {
+        runCatching {
+            socket.shutdownOutput()
+            socket.soTimeout = DISCARD_FOR_MS
+            val sink = ByteArray(4 * 1024)
+            var total = 0
+            while (total < MAX_BODY_BYTES) {
+                val got = input.read(sink)
+                if (got < 0) break
+                total += got
+            }
+        }
     }
 
     private fun respond(output: OutputStream, status: Int, body: String) {
@@ -218,6 +268,7 @@ class ConnectServer(
     private fun reason(status: Int): String = when (status) {
         200 -> "OK"
         400 -> "Bad Request"
+        411 -> "Length Required"
         401 -> "Unauthorized"
         404 -> "Not Found"
         503 -> "Service Unavailable"
@@ -238,5 +289,6 @@ class ConnectServer(
         private const val MAX_BODY_BYTES = 512 * 1024
         private const val MAX_REMEMBERED_NONCES = 2048
         private const val READ_TIMEOUT_MS = 10_000
+        private const val DISCARD_FOR_MS = 500
     }
 }

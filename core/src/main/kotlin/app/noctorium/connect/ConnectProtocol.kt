@@ -42,6 +42,9 @@ object ConnectProtocol {
      */
     val DISCOVERY_PORTS = listOf(45633, 45634, 45635)
 
+    /** How often a device says it is here, and how often one added by its address is asked whether it still is. */
+    const val ANNOUNCE_EVERY_MS = 3_000L
+
     /** The wire format version, so a future change can be recognised rather than misread. */
     const val VERSION = 1
 
@@ -138,8 +141,24 @@ data class Command(
     val fromDeviceName: String? = null,
 )
 
+/**
+ * A queue going back the way it came: what a device was playing, where in it, and how far into that song.
+ *
+ * The answer to HAND_BACK. Without it the device taking the music back knew only the one song the other was
+ * on, from the last state it had read, so "bring it back" brought back that song alone and the rest of the
+ * queue -- including whatever had been skipped to over there -- was lost.
+ */
 @Serializable
-data class CommandReply(val ok: Boolean, val message: String? = null, val state: RemoteState? = null)
+data class Handover(val tracks: List<WireTrack>, val index: Int, val positionMs: Long)
+
+@Serializable
+data class CommandReply(
+    val ok: Boolean,
+    val message: String? = null,
+    val state: RemoteState? = null,
+    /** Only in answer to HAND_BACK, from a device new enough to send it. An older one leaves it out. */
+    val handover: Handover? = null,
+)
 
 // -- conversions ---------------------------------------------------------------------------------
 

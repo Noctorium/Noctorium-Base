@@ -60,6 +60,8 @@ class ConnectDiscovery(
     private val presence: NetworkPresence = NetworkPresence.None,
     private val clock: () -> Long = System::currentTimeMillis,
     private val log: (String) -> Unit = {},
+    /** [ConnectProtocol.DISCOVERY_PORTS], except in tests, which keep off the ports a real Noctorium uses. */
+    private val ports: List<Int> = ConnectProtocol.DISCOVERY_PORTS,
 ) {
     private val mutablePeers = MutableStateFlow<List<ConnectPeer>>(emptyList())
     val peers: StateFlow<List<ConnectPeer>> = mutablePeers.asStateFlow()
@@ -78,10 +80,10 @@ class ConnectDiscovery(
      * would be listed and then refuse every connection.
      */
     fun start(announcement: () -> DeviceAnnouncement?, key: () -> String?) {
-        if (running) return
+        if (running || ports.isEmpty()) return
         val bound = bindSomething()
         if (bound == null) {
-            log("Discovery could not bind any of ${ConnectProtocol.DISCOVERY_PORTS}.")
+            log("Discovery could not bind any of $ports.")
             return
         }
 
@@ -93,7 +95,7 @@ class ConnectDiscovery(
             started.launch { announce(bound, announcement) },
             started.launch { listen(bound, announcement, key) },
         )
-        log("Discovery listening on ${bound.localPort}, announcing to ${ConnectProtocol.DISCOVERY_PORTS}")
+        log("Discovery listening on ${bound.localPort}, announcing to $ports")
     }
 
     fun stop() {
@@ -110,13 +112,45 @@ class ConnectDiscovery(
     }
 
     /**
+     * A device that has just been heard from: by its announcement, or by answering at an address it was
+     * added by. Either way it stays listed until it has been quiet as long as one that stopped announcing.
+     */
+    fun heard(peer: ConnectPeer) {
+        // Logged when it is new, and when it moves. "Found" on every beat would be three lines a second, and
+        // the one thing anybody debugging Connect wants to know is whether the other device was ever seen at
+        // all, and where.
+        val before = mutablePeers.value.firstOrNull { it.id == peer.id }
+        if (before == null || before.address != peer.address || before.port != peer.port) {
+            log("Found ${peer.name} (${peer.kind}) at ${hostAndPort(peer.address, peer.port)}")
+        }
+        // Atomically, because this runs in the listening loop while prune() runs in the announcing one.
+        // Read-modify-write from two coroutines loses whichever update lands second: a device found at the
+        // wrong moment vanishes, or one that left comes back.
+        mutablePeers.update { peers -> peers.filterNot { it.id == peer.id } + peer }
+    }
+
+    /**
+     * Devices that have stopped announcing are gone, whether they said goodbye or had their wifi turned off.
+     *
+     * Run on every beat while discovery is running, and by the manager otherwise, so that a device added by
+     * its address goes when it stops answering even where nothing is being broadcast.
+     */
+    fun prune() {
+        val cutoff = clock() - PEER_FORGOTTEN_AFTER_MS
+        // The swap is atomic and the logging happens after it. update{} re-runs its lambda when another
+        // coroutine got there first, so a log inside it would print the same departure twice.
+        val before = mutablePeers.getAndUpdate { peers -> peers.filter { it.lastSeenAtMs >= cutoff } }
+        before.filter { it.lastSeenAtMs < cutoff }.forEach { log("Lost ${it.name}") }
+    }
+
+    /**
      * The first candidate port this machine will actually hand over.
      *
      * Reuse is asked for on every attempt: without it, a second Noctorium on the same machine cannot bind
      * at all, and neither can this one after a crash until the kernel lets the port go.
      */
     private fun bindSomething(): DatagramSocket? {
-        for (port in ConnectProtocol.DISCOVERY_PORTS) {
+        for (port in ports) {
             val attempt = runCatching {
                 DatagramSocket(null).apply {
                     reuseAddress = true
@@ -139,13 +173,13 @@ class ConnectDiscovery(
                 // Every candidate port, on every interface: a device that lost the first port is still
                 // reached, and nobody has to know which one anybody else settled on.
                 for (target in broadcastAddresses()) {
-                    for (port in ConnectProtocol.DISCOVERY_PORTS) {
+                    for (port in ports) {
                         runCatching { socket.send(DatagramPacket(bytes, bytes.size, target, port)) }
                     }
                 }
             }
             prune()
-            delay(ANNOUNCE_EVERY_MS)
+            delay(ConnectProtocol.ANNOUNCE_EVERY_MS)
         }
     }
 
@@ -172,25 +206,17 @@ class ConnectDiscovery(
             if (heard.id == announcement()?.id) continue
             if (!believable(heard, secret)) continue
 
-            val peer = ConnectPeer(
-                id = heard.id,
-                name = heard.name,
-                kind = heard.kind,
-                // From the envelope, not the letter. See the class comment.
-                address = packet.address.hostAddress ?: continue,
-                port = heard.port,
-                lastSeenAtMs = clock(),
+            heard(
+                ConnectPeer(
+                    id = heard.id,
+                    name = heard.name,
+                    kind = heard.kind,
+                    // From the envelope, not the letter. See the class comment.
+                    address = packet.address.hostAddress ?: continue,
+                    port = heard.port,
+                    lastSeenAtMs = clock(),
+                ),
             )
-            // Logged the first time only. "Found" on every beat would be three lines a second, and the
-            // one thing anybody debugging Connect wants to know is whether the other device was ever
-            // seen at all.
-            if (mutablePeers.value.none { it.id == peer.id }) {
-                log("Found ${peer.name} (${peer.kind}) at ${peer.address}:${peer.port}")
-            }
-            // Atomically, because this runs in the listening loop while prune() below runs in the
-            // announcing one. Read-modify-write from two coroutines loses whichever update lands
-            // second: a device found at the wrong moment vanishes, or one that left comes back.
-            mutablePeers.update { peers -> peers.filterNot { it.id == peer.id } + peer }
         }
     }
 
@@ -201,15 +227,6 @@ class ConnectDiscovery(
         val minutesOut = kotlin.math.abs(clock() / 60_000 - heard.stamp)
         if (minutesOut > STAMP_TOLERANCE_MINUTES) return false
         return ConnectSignature.matches(key, heard.signable(), heard.tag)
-    }
-
-    /** Devices that have stopped announcing are gone, whether they said goodbye or had their wifi turned off. */
-    private fun prune() {
-        val cutoff = clock() - PEER_FORGOTTEN_AFTER_MS
-        // The swap is atomic and the logging happens after it. update{} re-runs its lambda when another
-        // coroutine got there first, so a log inside it would print the same departure twice.
-        val before = mutablePeers.getAndUpdate { peers -> peers.filter { it.lastSeenAtMs >= cutoff } }
-        before.filter { it.lastSeenAtMs < cutoff }.forEach { log("Lost ${it.name}") }
     }
 
     private fun currentlyActive(): Boolean = scope?.isActive == true && socket?.isClosed == false
@@ -235,8 +252,6 @@ class ConnectDiscovery(
     }.getOrDefault(listOf(InetAddress.getByName("255.255.255.255")))
 
     private companion object {
-        const val ANNOUNCE_EVERY_MS = 3_000L
-
         /** Four missed announcements. Long enough to ride out a busy network, short enough to notice. */
         const val PEER_FORGOTTEN_AFTER_MS = 12_000L
 
@@ -246,3 +261,7 @@ class ConnectDiscovery(
         const val MAX_PACKET_BYTES = 2048
     }
 }
+
+/** An address and port as they are written, with an IPv6 address in brackets so the port is not read as part of it. */
+internal fun hostAndPort(address: String, port: Int): String =
+    if (':' in address) "[$address]:$port" else "$address:$port"

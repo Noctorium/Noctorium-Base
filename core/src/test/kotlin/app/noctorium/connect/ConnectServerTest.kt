@@ -135,6 +135,83 @@ class ConnectServerTest {
         assertTrue(ConnectClient(clock = { now }).command(peer, key, from, Command(CommandType.PAUSE)).ok)
     }
 
+    @Test
+    fun `headers are read whatever case they are sent in`() {
+        start()
+        val body = ConnectProtocol.json.encodeToString(Command.serializer(), Command(CommandType.PAUSE))
+        val response = raw(signedHead("POST", "/command", "upper-case-nonce", body) { it.uppercase() } +
+            "CONTENT-LENGTH: ${body.toByteArray().size}\r\n\r\n" + body)
+
+        assertTrue(response.startsWith("HTTP/1.1 200"), response.lineSequence().first())
+        assertEquals(listOf("pause"), host.calls)
+    }
+
+    @Test
+    fun `a client that waits to be told to send its body is told, rather than left waiting`() {
+        start()
+        val body = ConnectProtocol.json.encodeToString(Command.serializer(), Command(CommandType.NEXT))
+        java.net.Socket("127.0.0.1", peer.port).use { socket ->
+            socket.soTimeout = 5_000
+            val output = socket.getOutputStream()
+            output.write(
+                (signedHead("POST", "/command", "an-expecting-nonce", body) +
+                    "Expect: 100-continue\r\nContent-Length: ${body.toByteArray().size}\r\n\r\n").toByteArray(),
+            )
+            output.flush()
+            val input = socket.getInputStream().bufferedReader()
+            assertEquals("HTTP/1.1 100 Continue", input.readLine())
+            output.write(body.toByteArray())
+            output.flush()
+            assertTrue(input.readText().contains("HTTP/1.1 200"))
+        }
+        assertEquals(listOf("next"), host.calls)
+    }
+
+    @Test
+    fun `a chunked body is refused for what it is, not as a bad signature`() {
+        start()
+        // Read as no body at all, this used to fail its signature and come back "not authorised" -- which
+        // sends whoever is looking at it off to check keys and clocks that are fine.
+        val body = ConnectProtocol.json.encodeToString(Command.serializer(), Command(CommandType.PAUSE))
+        val response = raw(
+            signedHead("POST", "/command", "a-chunked-nonce", body) + "Transfer-Encoding: chunked\r\n\r\n" +
+                "${body.toByteArray().size.toString(16)}\r\n$body\r\n0\r\n\r\n",
+        )
+        assertTrue(response.startsWith("HTTP/1.1 411"), response.lineSequence().first())
+        assertEquals(emptyList(), host.calls)
+    }
+
+    @Test
+    fun `a device is reached at an IPv6 address`() = runBlocking {
+        val v6 = ConnectServer(commands = Commands(host), key = { key }, clock = { now }, listenOn = java.net.InetSocketAddress("::1", 0))
+        val port = v6.start()
+        try {
+            assertTrue(port > 0)
+            val state = ConnectClient(clock = { now }).state(peer("::1", port), key, from)
+            assertEquals("Phone", state?.deviceName, "an IPv6 address was put somewhere it could not be read")
+        } finally {
+            v6.stop()
+        }
+    }
+
+    private fun peer(address: String, port: Int) = ConnectPeer("target", "Phone", DeviceKind.PHONE, address, port, now)
+
+    /** The request line and Connect's three headers, signed over [body]. */
+    private fun signedHead(method: String, path: String, nonce: String, body: String, name: (String) -> String = { it }): String {
+        val signature = ConnectSignature.sign(key, ConnectSignature.requestMessage(method, path, now, nonce, body))
+        return "$method $path HTTP/1.1\r\nHost: 127.0.0.1\r\n" +
+            "${name(ConnectServer.HEADER_NONCE)}: $nonce\r\n" +
+            "${name(ConnectServer.HEADER_TIMESTAMP)}: $now\r\n" +
+            "${name(ConnectServer.HEADER_AUTH)}: $signature\r\n"
+    }
+
+    private fun raw(request: String): String = java.net.Socket("127.0.0.1", peer.port).use { socket ->
+        socket.soTimeout = 5_000
+        socket.getOutputStream().write(request.toByteArray())
+        socket.getOutputStream().flush()
+        socket.getInputStream().readBytes().toString(Charsets.UTF_8)
+    }
+
     /** One raw request, so the same nonce can deliberately be sent twice. */
     private fun replay(nonce: String, body: String): CommandReply {
         val signature = ConnectSignature.sign(
@@ -171,7 +248,7 @@ class ConnectServerTest {
 
     /** Wraps a host as the server sees it, with the identity the manager would normally supply. */
     private class Commands(private val host: RecordingHost) : ConnectCommands {
-        override suspend fun state(): RemoteState {
+        override suspend fun state(from: String?): RemoteState {
             val snapshot = host.snapshot()
             return RemoteState(
                 deviceId = "target",

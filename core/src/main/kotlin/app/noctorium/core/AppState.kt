@@ -112,6 +112,7 @@ import app.noctorium.connect.ConnectState
 import app.noctorium.connect.DeviceKind
 import app.noctorium.connect.NetworkPresence
 import app.noctorium.connect.PlaybackSnapshot
+import app.noctorium.connect.QueueSnapshot
 import app.noctorium.connect.toWire
 import app.noctorium.net.ShortLinks
 import app.noctorium.net.networkFailureMessage
@@ -673,6 +674,9 @@ class AppState(
                 repeat = queued.repeatMode.name,
             )
         }
+
+        override fun queue(): QueueSnapshot =
+            this@AppState.queue.state.value.let { QueueSnapshot(it.tracks, it.currentIndex) }
 
         override suspend fun takeOver(tracks: List<Track>, index: Int, positionMs: Long) {
             if (tracks.isEmpty()) return
@@ -4491,13 +4495,26 @@ class AppState(
     /** Stops driving the other device, and leaves it playing. */
     fun stopControlling() = connectManager.release()
 
-    /** Takes the music back off the other device and carries on here. */
+    /**
+     * Takes the music back off the other device and carries on here: its whole queue, from the song it had
+     * got to, at the second it had reached.
+     */
     fun bringPlaybackBack() {
-        val resumed = connectManager.bringItBack() ?: return
-        scope.launch { connectHost.takeOver(resumed.first, 0, resumed.second) }
+        scope.launch {
+            val back = connectManager.bringItBack() ?: return@launch
+            connectHost.takeOver(back.tracks, back.index, back.positionMs)
+        }
     }
 
     fun dismissConnectMessage() = connectManager.dismissMessage()
+
+    /**
+     * Looks for one of the listener's devices at an address, as well as by its announcements.
+     *
+     * For a network that keeps broadcasts from getting from one device to the other, and for testing a phone
+     * through adb, which carries nothing but TCP. Only a device on the same account answers.
+     */
+    fun addConnectAddress(address: String, port: Int) = connectManager.addAddress(address, port)
 
     fun setConnectEnabled(enabled: Boolean) {
         updatePreferences { copy(connect = this.connect.copy(enabled = enabled)) }
