@@ -416,7 +416,7 @@ class ConnectManager(
                 val from = announcement() ?: break
                 // Wherever it was last heard from, which can change while it is being driven.
                 val current = mutableState.value.devices.firstOrNull { it.id == peer.id } ?: peer
-                val reply = client.stateAt(current.address, current.port, secret, from)
+                val reply = client.stateAt(current.address, current.port, secret, from, driving = true)
                 val seen = reply.state
                 if (seen != null) {
                     if (failing != null) log("${peer.name} is answering again")
@@ -434,10 +434,10 @@ class ConnectManager(
 
     // -- being driven ----------------------------------------------------------------------------
 
-    override suspend fun state(from: String?): RemoteState {
+    override suspend fun state(drivenBy: String?): RemoteState {
         // Being watched is being driven: a remote control that only reads, every second, is still on screen
         // somewhere, and this device should go on saying so for as long as it is.
-        driver?.let { current -> if (from != null && current.id == from) driver = current.copy(at = clock()) }
+        driver?.let { current -> if (drivenBy != null && current.id == drivenBy) driver = current.copy(at = clock()) }
         return snapshotAsRemote()
     }
 

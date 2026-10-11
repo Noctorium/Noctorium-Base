@@ -248,7 +248,7 @@ class ConnectServerTest {
 
     /** Wraps a host as the server sees it, with the identity the manager would normally supply. */
     private class Commands(private val host: RecordingHost) : ConnectCommands {
-        override suspend fun state(from: String?): RemoteState {
+        override suspend fun state(drivenBy: String?): RemoteState {
             val snapshot = host.snapshot()
             return RemoteState(
                 deviceId = "target",

@@ -37,9 +37,12 @@ class ConnectClient internal constructor(
      * Asked of an address nobody announced, this is how a device is added by its address: only a device signed
      * in to the same account can answer it at all. Not logged here, because it is asked every second while a
      * device is being driven; the caller says so once when it starts failing.
+     *
+     * [driving] says this is the remote control asking, rather than a device checking the other is still
+     * there: only the first keeps the other device saying who is controlling it.
      */
-    suspend fun stateAt(address: String, port: Int, key: String, from: DeviceAnnouncement): StateReply {
-        val reply = send(address, port, key, from, "GET", "/state", "")
+    suspend fun stateAt(address: String, port: Int, key: String, from: DeviceAnnouncement, driving: Boolean = false): StateReply {
+        val reply = send(address, port, key, from, "GET", "/state", "", driving)
         if (!reply.ok) return StateReply(null, describe(reply))
         return runCatching {
             StateReply(ConnectProtocol.json.decodeFromString(RemoteState.serializer(), reply.body))
@@ -89,6 +92,7 @@ class ConnectClient internal constructor(
         method: String,
         path: String,
         body: String,
+        driving: Boolean = false,
     ): LanHttp.Reply {
         val timestamp = clock()
         val nonce = nonce()
@@ -101,12 +105,13 @@ class ConnectClient internal constructor(
             port = port,
             method = method,
             path = path,
-            headers = mapOf(
-                ConnectServer.HEADER_DEVICE to from.id,
-                ConnectServer.HEADER_NONCE to nonce,
-                ConnectServer.HEADER_TIMESTAMP to timestamp.toString(),
-                ConnectServer.HEADER_AUTH to signature,
-            ),
+            headers = buildMap {
+                put(ConnectServer.HEADER_DEVICE, from.id)
+                put(ConnectServer.HEADER_NONCE, nonce)
+                put(ConnectServer.HEADER_TIMESTAMP, timestamp.toString())
+                put(ConnectServer.HEADER_AUTH, signature)
+                if (driving) put(ConnectServer.HEADER_DRIVING, from.id)
+            },
             body = body,
         )
     }

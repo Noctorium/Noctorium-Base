@@ -15,8 +15,11 @@ import java.net.Socket
 
 /** What a device can be asked to do, once it has been established that the asker is entitled to ask. */
 interface ConnectCommands {
-    /** [from] is the asking device's id, as it says itself; it is not signed, and is only ever shown. */
-    suspend fun state(from: String? = null): RemoteState
+    /**
+     * [drivenBy] is the asking device's id when it is asking because it is driving this one, as it says itself:
+     * not signed, and only ever shown.
+     */
+    suspend fun state(drivenBy: String? = null): RemoteState
     suspend fun handle(command: Command): CommandReply
 }
 
@@ -120,7 +123,7 @@ class ConnectServer(
                     request.method == "GET" && request.path == "/state" ->
                         ConnectProtocol.json.encodeToString(
                             RemoteState.serializer(),
-                            commands.state(request.headers[HEADER_DEVICE]),
+                            commands.state(request.headers[HEADER_DRIVING]),
                         )
 
                     request.method == "POST" && request.path == "/command" -> {
@@ -280,6 +283,12 @@ class ConnectServer(
         const val HEADER_TIMESTAMP = "x-noctorium-timestamp"
         const val HEADER_AUTH = "x-noctorium-auth"
         const val HEADER_DEVICE = "x-noctorium-device"
+
+        /**
+         * Sent by a device reading state because it is driving this one, as a remote control on screen does
+         * every second; not by one only asking whether this one is still there. Only the first is being driven.
+         */
+        const val HEADER_DRIVING = "x-noctorium-driving"
 
         /** How far apart two devices' clocks may be before their requests stop being believed. */
         const val CLOCK_TOLERANCE_MS = 5 * 60 * 1000L

@@ -248,6 +248,39 @@ class ConnectOnTheNetworkTest {
         assertEquals("Song 4", hiddenPlayer.current?.title)
     }
 
+    @Test
+    fun `a device goes on saying who is driving it while it is driven, and stops once it is let go`() = runBlocking {
+        // The shelf's own clock runs five times as fast as this one, so half a minute passes in six seconds while
+        // everything else -- the polling every second, the asking every three -- goes at its real pace.
+        val started = System.currentTimeMillis()
+        val shelfPlayer = SimulatedPlayer()
+        val shelf = ConnectManager(
+            host = shelfPlayer,
+            secrets = InMemorySecretStore().apply { put(ConnectManager.CONNECT_KEY, key) },
+            accountClient = NoctoriumAccountClient(),
+            token = { null },
+            kind = DeviceKind.DESKTOP,
+            defaultDeviceName = { "Shelf" },
+            clock = { started + (System.currentTimeMillis() - started) * 5 },
+            log = { println("[Shelf] $it") },
+            discoveryPorts = emptyList(),
+        ).also(others::add)
+        shelf.start(UUID.randomUUID().toString(), "Shelf")
+        // Looked for at its address, which means it is asked every few seconds whether it is still there.
+        phone.addAddress(phone.await("Desk").address, eventuallyPort(shelf))
+        phonePlayer.play(songs, 0, 0)
+        phone.transferTo(phone.await("Shelf"), songs, 0, 0)
+        eventually("the shelf to say the phone is driving it") { shelf.state.value.controlledBy == "Phone" }
+
+        // Forty seconds with no commands, the remote control on screen all the while.
+        delay(8_000)
+        assertEquals("Phone", shelf.state.value.controlledBy, "a remote control still on screen was forgotten")
+
+        // Let go of, though still asked every few seconds whether it is there: that is not being driven.
+        phone.release()
+        eventually("the shelf to stop saying it is driven", timeoutMs = 12_000) { shelf.state.value.controlledBy == null }
+    }
+
     // -- helpers ---------------------------------------------------------------------------------
 
     /** The port a device is answering on, read from what it says about itself at its own address. */
