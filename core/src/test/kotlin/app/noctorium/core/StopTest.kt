@@ -34,6 +34,11 @@ class StopTest {
             assertEquals(songs, state.queue.state.value.tracks)
             assertEquals("b", state.queue.state.value.current?.id, "stopping is not moving")
 
+            // Play is decided from AppState's own view of the player, which follows the player a moment behind; a
+            // press before it has caught up would read "playing" and pause. A person cannot press that fast.
+            waitFor("AppState to see it stopped") {
+                state.playback.value.status == PlaybackStatus.PAUSED && state.playback.value.positionMs == 0L
+            }
             state.togglePlayback()
             waitFor("it to play again") { engine.state.value.status == PlaybackStatus.PLAYING }
             assertEquals(0L, engine.state.value.positionMs, "from the top")
