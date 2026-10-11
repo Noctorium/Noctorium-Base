@@ -131,9 +131,10 @@ internal object AppStateHarness {
         preferences: NoctoriumPreferences = NoctoriumPreferences(autoplay = false),
         providers: List<MusicProvider> = ProviderType.entries.filter { it != ProviderType.LOCAL }.map(::Provider),
         settings: Path = settingsFile(preferences.copy(connect = ConnectPreferences(enabled = false))),
+        credentials: app.noctorium.settings.SecretStore = InMemorySecretStore(),
     ): AppState = AppState(
         ytDlp = Backend,
-        credentials = InMemorySecretStore(),
+        credentials = credentials,
         system = Bridge,
         playbackEngine = engine,
         injectedProviders = providers,

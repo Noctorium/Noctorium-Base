@@ -793,6 +793,7 @@ class AppState(
         observeNonMusicSegments()
         if (refreshAtLaunch) warmUpForTheLikeliestPlay()
         observeDiscordPresence()
+        observePlayingHereWhileDriving()
         observeYouTubeSignIn()
         observeYouTubeHistory()
         observeArtistFollow()
@@ -858,6 +859,9 @@ class AppState(
     }
 
     fun togglePlayback() {
+        // The music is on another device, so this is its play button: a media key, a headset or the lock
+        // screen pressing play here would otherwise start the same queue a second time, in a second room.
+        if (drivingAnotherDevice()) return connectPlayPause()
         when (playback.value.status) {
             PlaybackStatus.PLAYING -> scope.launch { player.pause() }
             PlaybackStatus.PAUSED -> scope.launch { player.resume() }
@@ -966,6 +970,7 @@ class AppState(
     fun seekTo(positionMs: Long) { scope.launch { player.seekTo(positionMs) } }
 
     fun next() {
+        if (drivingAnotherDevice()) return connectNext()
         // At the end of a queue that carries on in Spotify's own autoplay, next is Spotify's to choose.
         if (spotifyContinues()) {
             scope.launch { spotifyPlayer.skipToSpotifysNext() }
@@ -981,6 +986,7 @@ class AppState(
      * that to the song before. With no song before it, back to the start whatever the time, rather than nothing.
      */
     fun previous() {
+        if (drivingAnotherDevice()) return connectPrevious()
         if (restartsRatherThanGoesBack()) {
             scope.launch { player.seekTo(0) }
             return
@@ -4515,6 +4521,25 @@ class AppState(
      * through adb, which carries nothing but TCP. Only a device on the same account answers.
      */
     fun addConnectAddress(address: String, port: Int) = connectManager.addAddress(address, port)
+
+    /** Whether the music is on another of the listener's devices, with this one as its remote control. */
+    private fun drivingAnotherDevice(): Boolean = connect.value.target != null
+
+    /**
+     * Music starting here while another device is being driven means it is wanted here now: that device is
+     * stopped and let go of, so the same listener is never hearing two things from two rooms.
+     *
+     * Whatever started it -- a song picked from a list, a radio, a link -- so this watches the player rather
+     * than every way of starting it. Taking the music back and being handed it both let go of the other device
+     * first, so neither reaches here.
+     */
+    private fun observePlayingHereWhileDriving() {
+        scope.launch {
+            playback.map { it.status == PlaybackStatus.PLAYING || it.status == PlaybackStatus.RESOLVING }
+                .distinctUntilChanged()
+                .collect { started -> if (started && drivingAnotherDevice()) connectManager.playingHereInstead() }
+        }
+    }
 
     fun setConnectEnabled(enabled: Boolean) {
         updatePreferences { copy(connect = this.connect.copy(enabled = enabled)) }
