@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -139,7 +140,12 @@ class RoutingPlaybackEngine(
                     if (update.track?.queueKey != expecting?.queueKey) return@collect
                     caughtUp = true
                 }
-                mutableState.value = update
+                // Only the engine playing speaks here. Cancelling the old mirror is not enough on its own: it may
+                // be part-way through passing something on when [play] switches, and its last word would then land
+                // on top of the new engine's first -- the booster offered on Spotify's app, for one. [active] is set
+                // before [play] writes, and the compare-and-set retries with it, so a word from an engine left
+                // behind is dropped even when the two cross.
+                mutableState.update { current -> if (active === engine) update else current }
             }
         }
     }
