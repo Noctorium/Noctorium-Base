@@ -39,7 +39,8 @@ internal object AppStateHarness {
     class Engine : PlaybackEngine {
         val mutable = MutableStateFlow(PlaybackState())
         override val state: StateFlow<PlaybackState> = mutable
-        val calls = mutableListOf<String>()
+        // Written by AppState's coroutines and read by the test while they run: a list that can be read as it grows.
+        val calls = java.util.concurrent.CopyOnWriteArrayList<String>()
         @Volatile var looping = false
 
         override suspend fun play(track: Track) {

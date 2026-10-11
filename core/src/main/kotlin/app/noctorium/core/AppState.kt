@@ -3739,11 +3739,16 @@ class AppState(
                     // Both asked: a sleep timer set for the end of the track and stop-after-this-song are
                     // each used up here, whichever of them there is.
                     val sleepEnded = sleeper.trackEnded()
-                    val stopHere = mutableStopAfterCurrent.compareAndSet(true, false)
+                    val stopHere = mutableStopAfterCurrent.value
                     when {
                         // Stopped here, with the queue on what would have played next, so play goes on from
                         // there. The same song on repeat-one; the end of a queue with nothing after it stays put.
-                        stopHere -> queue.next(respectRepeatOne = true)
+                        // The queue moves before the flag clears, so nothing watching ever sees the flag gone and
+                        // the song that ended still the current one.
+                        stopHere -> {
+                            queue.next(respectRepeatOne = true)
+                            mutableStopAfterCurrent.value = false
+                        }
                         // A sleep timer set to the end of the track ends here. The listen is still counted;
                         // the queue is left where it is rather than moved on for nobody.
                         sleepEnded -> Unit
