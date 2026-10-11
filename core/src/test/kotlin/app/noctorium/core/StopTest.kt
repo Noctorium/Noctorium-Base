@@ -16,9 +16,16 @@ import kotlin.test.assertTrue
 class StopTest {
     private val songs = listOf(song("a"), song("b"), song("c"))
 
+    /**
+     * Plays a song, and waits until AppState itself has seen it playing. AppState follows the player a moment
+     * behind; a song ended before AppState saw it play would go, to AppState, from loading straight to stopped --
+     * which is not a song that played to its end, and nothing waiting for the end of the song would ever hear of it.
+     * A real song plays for minutes; a test has to wait.
+     */
     private fun AppState.playing(engine: AppStateHarness.Engine, index: Int = 0) {
         play(songs[index], PlaybackOrigin.PLAYLIST, songs)
         waitFor("the song to start") { engine.state.value.track?.id == songs[index].id }
+        waitFor("AppState to see it playing") { playback.value.status == PlaybackStatus.PLAYING && playback.value.track?.id == songs[index].id }
     }
 
     @Test
@@ -164,6 +171,7 @@ class StopTest {
         AppStateHarness.state(engine, NoctoriumPreferences(autoplay = true)).use { state ->
             state.play(songs[2], PlaybackOrigin.PLAYLIST, songs)
             waitFor("the last song") { engine.state.value.track?.id == "c" }
+            waitFor("AppState to see it playing") { state.playback.value.status == PlaybackStatus.PLAYING && state.playback.value.track?.id == "c" }
             state.queue.setSuggestions("${songs[2].queueKey}|${AutoplaySource.SAME_SERVICE}", listOf(song("x"), song("y")), "Related on SoundCloud")
             state.setStopAfterCurrent(true)
             engine.finish()
