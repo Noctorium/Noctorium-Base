@@ -39,6 +39,7 @@ import kotlin.system.exitProcess
  *     play | pause | next | previous | seek <ms> | volume <0..1> | shuffle on|off
  *                               drive the device the music was handed to
  *     back                      take the music back here
+ *     move <from> <to>          move the music from one device to another; "here" is this one
  *     release                   stop driving, and leave it playing
  *     local play|pause          this player's own buttons
  *     state                     say what is happening, here and there
@@ -113,6 +114,21 @@ private suspend fun run(words: List<String>, manager: ConnectManager, player: Si
                 ?: return true.also { say("No device called \"$wanted\"") }
             val queue = player.queue()
             manager.transferTo(peer, queue.tracks, queue.index, player.positionMs)
+        }
+        "move" -> {
+            // move <from> <to>: either a device's name, or "here".
+            fun named(word: String?): Pair<Boolean, ConnectPeer?> = when {
+                word == null -> false to null
+                word.equals("here", ignoreCase = true) -> true to null
+                else -> (state.devices.firstOrNull { it.name.startsWith(word, ignoreCase = true) }?.let { true to it }) ?: (false to null)
+            }
+            val (fromKnown, from) = named(words.getOrNull(1))
+            val (toKnown, to) = named(words.getOrNull(2))
+            if (!fromKnown || !toKnown) return true.also { say("move <from> <to>, each a device's name or 'here'") }
+            manager.move(from, to) { back ->
+                say("Came here: ${back.tracks.size} track(s), at #${back.index}, ${back.positionMs}ms")
+                player.takeOver(back.tracks, back.index, back.positionMs)
+            }
         }
         "play" -> control(Command(CommandType.PLAY))
         "pause" -> control(Command(CommandType.PAUSE))
