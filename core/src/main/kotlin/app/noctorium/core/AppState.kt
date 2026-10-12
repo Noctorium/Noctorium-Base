@@ -3269,8 +3269,11 @@ class AppState(
     }
 
     private fun updatePreferences(transform: NoctoriumPreferences.() -> NoctoriumPreferences) {
-        val updated = mutableSettings.value.preferences.transform()
-        mutableSettings.update { it.copy(preferences = updated) }
+        // Read and written in one step. Some of these come from the background -- a sign-in finishing, a library
+        // count -- and reading first and writing after let one of them put back the settings as they were a moment
+        // before, undoing a change made in between: the booster's level, for one, and the player then told the
+        // old level again.
+        val updated = mutableSettings.updateAndGet { it.copy(preferences = it.preferences.transform()) }.preferences
         applyAccountPreferences(updated)
         scope.launch(Dispatchers.IO) {
             val saved = settingsSaving.withLock {
