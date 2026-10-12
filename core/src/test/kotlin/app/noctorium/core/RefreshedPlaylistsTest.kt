@@ -2,10 +2,15 @@ package app.noctorium.core
 
 import app.noctorium.domain.Artist
 import app.noctorium.domain.Playlist
+import app.noctorium.domain.PlaylistVisibility
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
+import app.noctorium.domain.editableOnService
+import app.noctorium.domain.shownVisibility
+import app.noctorium.social.YouTubePlaylistDetails
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 /**
@@ -72,5 +77,50 @@ class RefreshedPlaylistsTest {
 
         assertNull(after.openPlaylist)
         assertEquals(true, after.playlists.single().isPublic)
+    }
+
+    // YouTube's listing names a playlist and nothing else; whose it is and who can see it come from its page.
+    private val listedOnYouTube = Playlist("PLnightBus", "Night Bus Home", ProviderType.YOUTUBE_MUSIC)
+    private val readFromItsPage = listedOnYouTube.withPageDetails(
+        YouTubePlaylistDetails(owned = true, visibility = PlaylistVisibility.UNLISTED, description = "Window seat."),
+    )
+
+    @Test
+    fun `what a YouTube playlist's page said outlasts a listing that cannot say it`() {
+        val state = LibraryState(playlists = listOf(readFromItsPage), openPlaylist = readFromItsPage.copy(tracks = listOf(track)))
+
+        val after = state.withRefreshedPlaylists(listOf(listedOnYouTube.copy(title = "Night Bus")))
+
+        listOf(after.openPlaylist, after.playlists.single()).forEach { playlist ->
+            assertEquals("Night Bus", playlist?.title)
+            assertEquals(PlaylistVisibility.UNLISTED, playlist?.shownVisibility)
+            assertNull(playlist?.isPublic)
+            assertEquals(true, playlist?.ownedByListener)
+            assertEquals("Window seat.", playlist?.description)
+        }
+        assertEquals(1, after.openPlaylist?.tracks?.size)
+    }
+
+    @Test
+    fun `a listing that does say who can see a playlist is believed over what was said before`() {
+        val state = LibraryState(playlists = listOf(readFromItsPage), openPlaylist = readFromItsPage)
+
+        val after = state.withRefreshedPlaylists(listOf(listedOnYouTube.copy(isPublic = true)))
+
+        assertEquals(PlaylistVisibility.PUBLIC, after.openPlaylist?.shownVisibility)
+        assertEquals(PlaylistVisibility.PUBLIC, after.playlists.single().shownVisibility)
+    }
+
+    @Test
+    fun `a page that says the playlist is somebody else's reaches the list as well as the screen`() {
+        val state = LibraryState(playlists = listOf(listedOnYouTube, privateVersion), openPlaylist = listedOnYouTube)
+
+        val after = state.withPlaylistDetails(listedOnYouTube.playlistKey, YouTubePlaylistDetails(owned = false))
+
+        assertEquals(false, after.openPlaylist?.ownedByListener)
+        assertEquals(false, after.playlists.first().ownedByListener)
+        assertFalse(after.playlists.first().editableOnService())
+        // The other service's playlist is left alone.
+        assertEquals(privateVersion, after.playlists.last())
     }
 }

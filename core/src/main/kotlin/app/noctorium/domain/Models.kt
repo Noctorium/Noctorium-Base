@@ -79,10 +79,89 @@ data class Playlist(
     /** Page the playlist's tracks are loaded from; null for playlists Noctorium assembled itself. */
     val sourceUrl: String? = null,
     val trackCount: Int? = null,
-    /** Whether the service shows this playlist publicly. Null when the service does not say. */
+    /**
+     * Whether the service shows this playlist publicly. Null when the service does not say, and for a YouTube
+     * playlist that is unlisted, which is neither; [visibility] has that one.
+     */
     val isPublic: Boolean? = null,
+    /**
+     * Who can see it, where the service has three answers rather than two. See [PlaylistVisibility]; read
+     * [shownVisibility] rather than this, which also covers the services that only fill in [isPublic].
+     */
+    val visibility: PlaylistVisibility? = null,
+    /** Its description on the service, once the playlist's own page has been read. Null until then. */
+    val description: String? = null,
+    /**
+     * Whether it is the listener's own, rather than somebody else's they saved to their library. Null when
+     * the service has not said, which for YouTube is until the playlist's own page has been read.
+     */
+    val ownedByListener: Boolean? = null,
 ) {
     val playlistKey: String get() = "${provider.name}:$id"
+}
+
+/**
+ * Who can see a playlist, in the three ways YouTube has it: public, to anyone who searches; unlisted, to
+ * anyone with the link and nobody else; private, to the account alone.
+ *
+ * Kept beside [Playlist.isPublic] rather than in place of it. That one is the two-way answer SoundCloud and
+ * Spotify give, and the phone and the terminal player already read it, so an unlisted playlist leaves it
+ * null rather than calling itself public or private to a reader that knows only those two.
+ */
+@Serializable
+enum class PlaylistVisibility(val displayName: String) {
+    PUBLIC("Public"),
+    UNLISTED("Unlisted"),
+    PRIVATE("Private"),
+    ;
+
+    /** The same answer in [Playlist.isPublic]'s two words: null for unlisted, which is neither. */
+    val isPublic: Boolean? get() = when (this) {
+        PUBLIC -> true
+        PRIVATE -> false
+        UNLISTED -> null
+    }
+}
+
+/** Who can see it, from whichever of the two the service filled in. Null when it said neither. */
+val Playlist.shownVisibility: PlaylistVisibility?
+    get() = visibility ?: isPublic?.let { if (it) PlaylistVisibility.PUBLIC else PlaylistVisibility.PRIVATE }
+
+/** The playlist with [visibility] set, and [Playlist.isPublic] saying the same thing in its own two words. */
+fun Playlist.withVisibility(visibility: PlaylistVisibility): Playlist =
+    copy(visibility = visibility, isPublic = visibility.isPublic)
+
+/**
+ * One edit of a playlist on its service: a new name, description or privacy, each null when it is staying as
+ * it is. Only what is not null is sent, so a field the listener did not touch is never written back.
+ */
+data class PlaylistEdit(
+    val title: String? = null,
+    val description: String? = null,
+    val visibility: PlaylistVisibility? = null,
+) {
+    val isEmpty: Boolean get() = title == null && description == null && visibility == null
+
+    companion object {
+        /**
+         * The edit that turns [playlist] into what a form now says: only the fields that differ from what the
+         * playlist has. A privacy nobody has chosen -- the service never said what it was -- stays out.
+         */
+        fun between(playlist: Playlist, title: String, description: String, visibility: PlaylistVisibility?) = PlaylistEdit(
+            title = title.trim().takeIf { it != playlist.title.trim() },
+            description = description.trim().takeIf { it != playlist.description.orEmpty().trim() },
+            visibility = visibility?.takeIf { it != playlist.shownVisibility },
+        )
+    }
+}
+
+/** The playlist as it is once the service has taken [edit]. */
+fun Playlist.afterEdit(edit: PlaylistEdit): Playlist {
+    val named = copy(
+        title = edit.title?.trim()?.takeIf(String::isNotBlank) ?: title,
+        description = edit.description?.trim() ?: description,
+    )
+    return edit.visibility?.let(named::withVisibility) ?: named
 }
 
 /**
@@ -91,10 +170,16 @@ data class Playlist(
  * SoundCloud numbers its playlists, while YouTube ids start with PL or VL; the likes listing on either service
  * is a view rather than a playlist, so it is excluded. Shared by both players, so the same playlists can be
  * edited from the phone as from the desktop.
+ *
+ * YouTube's library lists the playlists the listener saved from somebody else beside their own, with ids of
+ * the same shape, and only the playlist's own page says which is which. One that page has called somebody
+ * else's is left alone; one it has not been asked about yet is offered as before, since the library listing
+ * cannot say and the controls would otherwise vanish from the listener's own along with the rest.
  */
 fun Playlist.editableOnService(): Boolean = when (provider) {
     ProviderType.SOUNDCLOUD -> id.isNotEmpty() && id.all(Char::isDigit)
-    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id.startsWith("PL") || id.startsWith("VL")
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO ->
+        (id.startsWith("PL") || id.startsWith("VL")) && ownedByListener != false
     ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
 }
 

@@ -1,0 +1,60 @@
+{
+  "responseContext": {
+    "serviceTrackingParams": [
+      {"service": "GFEEDBACK", "params": [{"key": "logged_in", "value": "1"}]}
+    ]
+  },
+  "contents": {
+    "singleColumnBrowseResultsRenderer": {
+      "tabs": [
+        {
+          "tabRenderer": {
+            "content": {
+              "sectionListRenderer": {
+                "contents": [
+                  {
+                    "musicPlaylistShelfRenderer": {
+                      "playlistId": "PLdemoTapes000000000000000000000aa",
+                      "contents": [
+                        {
+                          "musicResponsiveListItemRenderer": {
+                            "flexColumns": [
+                              {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Lamplight", "navigationEndpoint": {"watchEndpoint": {"videoId": "nTlamplight", "playlistId": "PLdemoTapes000000000000000000000aa"}}}]}}},
+                              {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Night Tram", "navigationEndpoint": {"browseEndpoint": {"browseId": "UCnightTram0000000000000a", "browseEndpointContextSupportedConfigs": {"browseEndpointContextMusicConfig": {"pageType": "MUSIC_PAGE_TYPE_ARTIST"}}}}}]}}}
+                            ],
+                            "fixedColumns": [{"musicResponsiveListItemFixedColumnRenderer": {"text": {"runs": [{"text": "3:34"}]}}}],
+                            "playlistItemData": {"playlistSetVideoId": "5F3A1C9E7B2D4E60", "videoId": "nTlamplight"}
+                          }
+                        }
+                      ],
+                      "collapsedItemCount": 0
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "header": {
+    "musicEditablePlaylistDetailHeaderRenderer": {
+      "header": {
+        "musicDetailHeaderRenderer": {
+          "title": {"runs": [{"text": "Demo Tapes"}]},
+          "subtitle": {"runs": [{"text": "Playlist"}, {"text": " • "}, {"text": "Sample Listener"}, {"text": " • "}, {"text": "2023"}]},
+          "description": {"runs": [{"text": "For the band, not for the world."}]},
+          "secondSubtitle": {"runs": [{"text": "1 song"}, {"text": " • "}, {"text": "3 minutes"}]}
+        }
+      },
+      "editHeader": {
+        "musicPlaylistEditHeaderRenderer": {
+          "title": {"runs": [{"text": "Demo Tapes"}]},
+          "privacy": "UNLISTED",
+          "playlistId": "PLdemoTapes000000000000000000000aa"
+        }
+      }
+    }
+  }
+}
