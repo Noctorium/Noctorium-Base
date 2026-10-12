@@ -3,6 +3,8 @@ package app.noctorium.social
 import app.noctorium.domain.Album
 import app.noctorium.domain.Artist
 import app.noctorium.domain.Playlist
+import app.noctorium.domain.PlaylistEdit
+import app.noctorium.domain.PlaylistVisibility
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
 import kotlinx.coroutines.CancellationException
@@ -185,6 +187,19 @@ class YouTubeMusicClient internal constructor(
         videoIds: List<String>,
         isPublic: Boolean,
         session: YouTubeSession,
+    ): PlaylistWriteResult = createPlaylist(
+        title,
+        videoIds,
+        if (isPublic) PlaylistVisibility.PUBLIC else PlaylistVisibility.PRIVATE,
+        session,
+    )
+
+    /** Makes a playlist that is public, unlisted or private from the start; the create request takes all three. */
+    suspend fun createPlaylist(
+        title: String,
+        videoIds: List<String>,
+        visibility: PlaylistVisibility,
+        session: YouTubeSession,
     ): PlaylistWriteResult {
         val cleanTitle = title.trim()
         if (cleanTitle.isBlank()) return PlaylistWriteResult(false, "Give the playlist a name first.")
@@ -192,8 +207,8 @@ class YouTubeMusicClient internal constructor(
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
             put("context", context(session))
-            put("title", cleanTitle.take(150))
-            put("privacyStatus", if (isPublic) "PUBLIC" else "PRIVATE")
+            put("title", cleanTitle.take(MAX_TITLE))
+            put("privacyStatus", visibility.name)
             if (videoIds.isNotEmpty()) {
                 put("videoIds", buildJsonArray { videoIds.distinct().forEach { add(it) } })
             }
@@ -418,7 +433,17 @@ class YouTubeMusicClient internal constructor(
      * playlists at all, so running it on a list that is merely empty would turn "nothing in here" into an
      * error message. An empty playlist is a fact, not a failure.
      */
-    suspend fun playlistTracks(playlistId: String, limit: Int, session: YouTubeSession): List<Track>? {
+    suspend fun playlistTracks(playlistId: String, limit: Int, session: YouTubeSession): List<Track>? =
+        playlistPage(playlistId, limit, session)?.tracks
+
+    /**
+     * The tracks of one playlist, as [playlistTracks], with what the first page says about the playlist itself.
+     *
+     * The page that lists the songs is the only place YouTube says whose a playlist is and who can see it --
+     * the library listing names the playlist and nothing more -- so it is read from the same reply rather
+     * than asked for again. See [parsePlaylistDetails].
+     */
+    suspend fun playlistPage(playlistId: String, limit: Int, session: YouTubeSession): YouTubePlaylistPage? {
         if (playlistId.isBlank() || limit <= 0) return null
         // A playlist is browsed as VL + its id. An album is browsed by its own id, which already says
         // what it is -- putting VL in front of one asks for a playlist that does not exist.
@@ -428,7 +453,9 @@ class YouTubeMusicClient internal constructor(
             else -> "VL$playlistId"
         }
         val found = mutableListOf<Track>()
+        var details: YouTubePlaylistDetails? = null
         var continuation: String? = null
+        fun answer(tracks: List<Track>) = YouTubePlaylistPage(tracks, details)
 
         repeat(MAX_LIKED_PAGES) {
             val token = continuation
@@ -439,18 +466,63 @@ class YouTubeMusicClient internal constructor(
             // A failure on the first page is "could not answer"; on a later one, what arrived already is
             // a better answer than nothing.
             val response = post("browse", body.toString(), session)
-                ?: return found.take(limit).ifEmpty { null }
-            if (response.status !in 200..299) return found.take(limit).ifEmpty { null }
+                ?: return found.take(limit).ifEmpty { null }?.let(::answer)
+            if (response.status !in 200..299) return found.take(limit).ifEmpty { null }?.let(::answer)
+            // Only the first page has the header; the rest are songs and a token.
+            if (token == null) details = parsePlaylistDetails(response.body)
 
             val page = parseSongs(response.body)
             // A page with no songs on it is the end of the list, and on the first page it is an empty
             // playlist -- which is an answer.
-            if (page.isEmpty()) return found.take(limit)
+            if (page.isEmpty()) return answer(found.take(limit))
             found += page
-            if (found.size >= limit) return found.take(limit)
-            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return found.take(limit)
+            if (found.size >= limit) return answer(found.take(limit))
+            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return answer(found.take(limit))
         }
-        return found.take(limit)
+        return answer(found.take(limit))
+    }
+
+    /**
+     * What a playlist's own page says about it besides its songs: whether it is the listener's, and for one
+     * that is, who can see it and how it is described.
+     *
+     * The page says whose a playlist is by which header it carries. The listener's own has the editable one,
+     * `musicEditablePlaylistDetailHeaderRenderer`, wrapped around the ordinary header and holding the form
+     * YouTube Music's own "Edit playlist" opens, whose `privacy` is PUBLIC, UNLISTED or PRIVATE. Anybody
+     * else's playlist has only the ordinary header, and nothing on it can be changed by this account. Both
+     * have moved before -- the header used to sit at the top of the reply, under `header`, and now sits
+     * first in the page's own section list -- so each is looked for by name, as [findPlaylistId] does,
+     * rather than at either address.
+     *
+     * Null when the page has neither header, which is a reply this cannot read rather than a playlist that
+     * belongs to nobody: what the playlist offers is then left as it was.
+     */
+    internal fun parsePlaylistDetails(body: String): YouTubePlaylistDetails? = runCatching {
+        val root = json.parseToJsonElement(body)
+        val editable = findRenderer(root, EDITABLE_PLAYLIST_HEADER)
+            ?: return@runCatching YouTubePlaylistDetails(owned = false)
+                .takeIf { PLAYLIST_HEADERS.any { findRenderer(root, it) != null } }
+        val form = findRenderer(editable, "musicPlaylistEditHeaderRenderer")
+        val shown = PLAYLIST_HEADERS.firstNotNullOfOrNull { findRenderer(editable, it) }
+        YouTubePlaylistDetails(
+            owned = true,
+            visibility = form?.get("privacy")?.jsonPrimitive?.contentOrNull
+                ?.let { privacy -> PlaylistVisibility.entries.firstOrNull { it.name == privacy.uppercase() } },
+            title = labelOf(form?.get("title")) ?: labelOf(shown?.get("title")),
+            // The page shows a description in a shelf of its own now, and used to show it as a plain label;
+            // the form has one as well. An own playlist with none of them has no description.
+            description = findRenderer(editable, "musicDescriptionShelfRenderer")?.let { labelOf(it["description"]) }
+                ?: labelOf(form?.get("description"))
+                ?: labelOf(shown?.get("description"))
+                ?: "",
+        )
+    }.getOrNull()
+
+    /** The first renderer of that name anywhere under [element], depth first. */
+    private fun findRenderer(element: JsonElement, name: String): JsonObject? = when (element) {
+        is JsonObject -> element[name] as? JsonObject ?: element.values.firstNotNullOfOrNull { findRenderer(it, name) }
+        is JsonArray -> element.firstNotNullOfOrNull { findRenderer(it, name) }
+        else -> null
     }
 
     /**
@@ -839,30 +911,67 @@ class YouTubeMusicClient internal constructor(
         }
     }
 
-    suspend fun renamePlaylist(playlistId: String, title: String, session: YouTubeSession): PlaylistWriteResult {
-        val clean = title.trim()
-        if (clean.isBlank()) return PlaylistWriteResult(false, "Give the playlist a name first.")
-        return editPlaylist(
-            playlistId,
-            session,
-            buildJsonObject { put("action", "ACTION_SET_PLAYLIST_NAME"); put("playlistName", clean.take(150)) },
-            "Renamed to \"$clean\" on YouTube Music.",
-        )
-    }
+    suspend fun renamePlaylist(playlistId: String, title: String, session: YouTubeSession): PlaylistWriteResult =
+        editPlaylist(playlistId, PlaylistEdit(title = title), session)
 
     suspend fun setPlaylistVisibility(
         playlistId: String,
         isPublic: Boolean,
         session: YouTubeSession,
-    ): PlaylistWriteResult = editPlaylist(
+    ): PlaylistWriteResult = setPlaylistVisibility(
         playlistId,
+        if (isPublic) PlaylistVisibility.PUBLIC else PlaylistVisibility.PRIVATE,
         session,
-        buildJsonObject {
-            put("action", "ACTION_SET_PLAYLIST_PRIVACY")
-            put("playlistPrivacy", if (isPublic) "PUBLIC" else "PRIVATE")
-        },
-        if (isPublic) "Playlist is now public on YouTube Music." else "Playlist is now private on YouTube Music.",
     )
+
+    suspend fun setPlaylistVisibility(
+        playlistId: String,
+        visibility: PlaylistVisibility,
+        session: YouTubeSession,
+    ): PlaylistWriteResult = editPlaylist(playlistId, PlaylistEdit(visibility = visibility), session)
+
+    /**
+     * Changes a playlist's name, description and privacy at once, the way YouTube Music's own "Edit playlist"
+     * saves: one request, carrying an action for each thing that changed and none for the rest, so a
+     * description nobody touched is never written back over whatever YouTube has.
+     */
+    suspend fun editPlaylist(playlistId: String, edit: PlaylistEdit, session: YouTubeSession): PlaylistWriteResult {
+        val title = edit.title?.trim()
+        if (title != null && title.isBlank()) return PlaylistWriteResult(false, "Give the playlist a name first.")
+        val description = edit.description?.trim()
+        if (edit.isEmpty) return PlaylistWriteResult(true, "Nothing to change.", playlistId)
+        val actions = buildList {
+            title?.let { name ->
+                add(buildJsonObject { put("action", "ACTION_SET_PLAYLIST_NAME"); put("playlistName", name.take(MAX_TITLE)) })
+            }
+            description?.let { text ->
+                add(
+                    buildJsonObject {
+                        put("action", "ACTION_SET_PLAYLIST_DESCRIPTION")
+                        put("playlistDescription", text.take(MAX_DESCRIPTION))
+                    },
+                )
+            }
+            edit.visibility?.let { visibility ->
+                add(buildJsonObject { put("action", "ACTION_SET_PLAYLIST_PRIVACY"); put("playlistPrivacy", visibility.name) })
+            }
+        }
+        return editPlaylist(playlistId, session, actions, editedMessage(title, description, edit.visibility))
+    }
+
+    /** What the listener is told once an edit has gone through, worded as the single changes always were. */
+    private fun editedMessage(title: String?, description: String?, visibility: PlaylistVisibility?): String {
+        val privacy = visibility?.let { "now ${it.displayName.lowercase()}" }
+        val described = description?.let { if (it.isEmpty()) "description removed" else "description saved" }
+        return when {
+            title != null && described == null && privacy == null -> "Renamed to \"$title\" on YouTube Music."
+            title == null && described == null && privacy != null -> "Playlist is $privacy on YouTube Music."
+            title == null && described != null && privacy == null ->
+                "${described.replaceFirstChar(Char::uppercase)} on YouTube Music."
+            else -> "Saved on YouTube Music: " +
+                listOfNotNull(title?.let { "renamed to \"$it\"" }, described, privacy).joinToString(", ") + "."
+        }
+    }
 
     suspend fun removeFromPlaylist(
         playlistId: String,
@@ -871,10 +980,12 @@ class YouTubeMusicClient internal constructor(
     ): PlaylistWriteResult = editPlaylist(
         playlistId,
         session,
-        buildJsonObject {
-            put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID")
-            put("removedVideoId", videoId)
-        },
+        listOf(
+            buildJsonObject {
+                put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID")
+                put("removedVideoId", videoId)
+            },
+        ),
         "Removed from your YouTube Music playlist.",
     )
 
@@ -890,31 +1001,56 @@ class YouTubeMusicClient internal constructor(
         return if (response.status in 200..299) {
             PlaylistWriteResult(true, "Playlist deleted from YouTube Music.")
         } else {
-            PlaylistWriteResult(false, "YouTube answered HTTP ${response.status}.")
+            PlaylistWriteResult(false, refusal(response) ?: "YouTube answered HTTP ${response.status}.")
         }
     }
 
-    /** Every playlist change but creation and deletion is one action against the same endpoint. */
+    /**
+     * Every playlist change but creation and deletion is a list of actions against the same endpoint, sent
+     * together in one request. The playlist is named by its bare id: "VL" is only how a playlist is browsed.
+     */
     private suspend fun editPlaylist(
         playlistId: String,
         session: YouTubeSession,
-        action: JsonObject,
+        actions: List<JsonObject>,
         success: String,
     ): PlaylistWriteResult {
         val sapisid = session.sapisid
             ?: return PlaylistWriteResult(false, "Sign in to YouTube Music in Settings first.")
         val body = buildJsonObject {
             put("context", context(session))
-            put("playlistId", playlistId)
-            put("actions", buildJsonArray { add(action) })
+            put("playlistId", playlistId.removePrefix("VL"))
+            put("actions", JsonArray(actions))
         }
         val response = post("browse/edit_playlist", body.toString(), session)
             ?: return PlaylistWriteResult(false, "Could not reach YouTube Music.")
-        return if (response.status in 200..299) {
-            PlaylistWriteResult(true, success, playlistId)
-        } else {
-            PlaylistWriteResult(false, "YouTube answered HTTP ${response.status}.")
+        return refusal(response)?.let { PlaylistWriteResult(false, it) } ?: PlaylistWriteResult(true, success, playlistId)
+    }
+
+    /**
+     * Why YouTube did not make a playlist change, in plain words, or null when it did.
+     *
+     * A refusal need not come as an error status. The edit endpoint answers with a `status` of its own,
+     * STATUS_SUCCEEDED when it did what it was asked, so a 200 that says anything else is not taken for
+     * success. And a playlist the account does not own is turned down as forbidden, which is worth naming as
+     * a possibility rather than leaving the listener with a bare number.
+     */
+    private fun refusal(response: LikeHttpResponse): String? {
+        val reply = runCatching { json.parseToJsonElement(response.body) as? JsonObject }.getOrNull()
+        val said = ((reply?.get("error") as? JsonObject)?.get("message") as? JsonPrimitive)?.contentOrNull
+            ?.trim()?.takeIf(String::isNotBlank)
+        fun withWhatItSaid(reason: String) = if (said == null) reason else "$reason YouTube said: $said"
+        if (response.status in 200..299) {
+            val status = (reply?.get("status") as? JsonPrimitive)?.contentOrNull ?: return null
+            return if ("SUCCEEDED" in status) null else withWhatItSaid("YouTube Music did not make the change ($status).")
         }
+        return withWhatItSaid(
+            when (response.status) {
+                401, 403 -> "YouTube Music turned the change down (HTTP ${response.status}): the playlist may not be " +
+                    "yours, or the sign-in has run out. Sign in again under Settings › YouTube Music if it keeps happening."
+                else -> "YouTube answered HTTP ${response.status}."
+            },
+        )
     }
 
     /** Adds one track. Unlike SoundCloud, YouTube takes an action rather than a replacement list. */
@@ -1112,11 +1248,13 @@ class YouTubeMusicClient internal constructor(
         return editPlaylist(
             playlistId.removePrefix("VL"),
             session,
-            buildJsonObject {
-                put("action", "ACTION_MOVE_VIDEO_BEFORE")
-                put("setVideoId", moved.setVideoId)
-                successor?.let { put("movedSetVideoIdSuccessor", it.setVideoId) }
-            },
+            listOf(
+                buildJsonObject {
+                    put("action", "ACTION_MOVE_VIDEO_BEFORE")
+                    put("setVideoId", moved.setVideoId)
+                    successor?.let { put("movedSetVideoIdSuccessor", it.setVideoId) }
+                },
+            ),
             "Moved.",
         )
     }
@@ -1222,6 +1360,18 @@ class YouTubeMusicClient internal constructor(
         /** The cards worth showing: ones that open a list of songs. An artist page is not one. */
         val CARD_PAGE_TYPES = setOf("MUSIC_PAGE_TYPE_PLAYLIST", "MUSIC_PAGE_TYPE_ALBUM")
 
+        /** The header only the owner's view of a playlist has: the page's own header with the edit form beside it. */
+        const val EDITABLE_PLAYLIST_HEADER = "musicEditablePlaylistDetailHeaderRenderer"
+
+        /** The header every playlist page has, as the page is laid out now and as it was before. */
+        val PLAYLIST_HEADERS = listOf("musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer")
+
+        /** The longest name YouTube takes for a playlist; a longer one is cut to it before it is sent. */
+        const val MAX_TITLE = 150
+
+        /** The same for a description. */
+        const val MAX_DESCRIPTION = 5_000
+
         /**
          * Where each kind of row keeps its heading, ending at the object holding the `runs`.
          *
@@ -1270,6 +1420,27 @@ data class HomeShelf(
 ) {
     val isEmpty: Boolean get() = tracks.isEmpty() && playlists.isEmpty()
 }
+
+/**
+ * What a playlist's own page says about it besides its songs. See [YouTubeMusicClient.parsePlaylistDetails].
+ *
+ * Everything but [owned] is only said for the listener's own playlists: the page does not show anybody else
+ * the edit form the privacy is read from.
+ */
+data class YouTubePlaylistDetails(
+    val owned: Boolean,
+    /** Null when the form did not say, which leaves the privacy unknown rather than guessing one. */
+    val visibility: PlaylistVisibility? = null,
+    val title: String? = null,
+    /** Empty for an own playlist with no description; null for somebody else's, whose is not read. */
+    val description: String? = null,
+)
+
+/** A playlist's songs, with what its first page said about the playlist, when it said anything. */
+data class YouTubePlaylistPage(
+    val tracks: List<Track>,
+    val details: YouTubePlaylistDetails? = null,
+)
 
 data class YouTubeChannel(
     val pageId: String,

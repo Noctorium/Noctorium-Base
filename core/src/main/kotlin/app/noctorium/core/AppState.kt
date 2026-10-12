@@ -70,6 +70,7 @@ import app.noctorium.social.SoundCloudPlaylistClient
 import app.noctorium.social.secretOf
 import app.noctorium.social.InnertubeKeyProvider
 import app.noctorium.social.YouTubeArtist
+import app.noctorium.social.YouTubePlaylistDetails
 import app.noctorium.social.YouTubeSignIn
 import app.noctorium.social.cookieHeaderFor
 import app.noctorium.auth.HarvestedCookie
@@ -219,6 +220,11 @@ data class LibraryState(
     val openLocalPlaylist: LocalPlaylist? = null,
     /** Short confirmation shown after a copy, import or edit. */
     val notice: String? = null,
+    /**
+     * Whether [notice] says that something did not happen -- a service turning an edit down -- rather than
+     * that it did, so it is not shown with a tick beside it.
+     */
+    val noticeIsProblem: Boolean = false,
     val playlists: List<Playlist> = emptyList(),
     val loading: Boolean = false,
     val errorMessage: String? = null,
@@ -261,16 +267,64 @@ internal fun LibraryState.withoutProvider(slot: ProviderType): LibraryState {
  *
  * The open playlist is a separate copy, so replacing only the list left the detail view showing whatever it
  * was opened with — a playlist made public still read as private until it was closed and opened again. Tracks
- * already loaded are kept, since the listing does not carry them.
+ * already loaded are kept, since the listing does not carry them, and so is what only a playlist's own page
+ * says; see [keepingPageDetails].
  */
-internal fun LibraryState.withRefreshedPlaylists(fresh: List<Playlist>): LibraryState = copy(
-    playlists = fresh,
-    openPlaylist = openPlaylist?.let { open ->
-        fresh.firstOrNull { it.playlistKey == open.playlistKey }
-            ?.copy(tracks = open.tracks)
-            ?: open
-    },
-)
+internal fun LibraryState.withRefreshedPlaylists(fresh: List<Playlist>): LibraryState {
+    // The open playlist is the latest word on itself, and may have been opened from Home rather than the list.
+    val earlier = playlists.associateBy { it.playlistKey } + listOfNotNull(openPlaylist).associateBy { it.playlistKey }
+    return copy(
+        playlists = fresh.map { it.keepingPageDetails(earlier[it.playlistKey]) },
+        openPlaylist = openPlaylist?.let { open ->
+            fresh.firstOrNull { it.playlistKey == open.playlistKey }
+                ?.keepingPageDetails(open)
+                ?.copy(tracks = open.tracks)
+                ?: open
+        },
+    )
+}
+
+/**
+ * This listing's copy of a playlist, with what the playlist's own page said about it where the listing says
+ * nothing.
+ *
+ * YouTube's library listing names a playlist and no more; whose it is, who can see it and its description are
+ * only on the page that lists its songs. Every change made from here reloads the listing afterwards, so
+ * without this a playlist just made unlisted lost its badge and its edit controls a second later, when the
+ * listing that cannot say either arrived. Where the listing does say -- SoundCloud's always says whether a
+ * playlist is public -- the listing wins.
+ */
+internal fun Playlist.keepingPageDetails(earlier: Playlist?): Playlist {
+    if (earlier == null) return this
+    val kept = copy(
+        description = description ?: earlier.description,
+        ownedByListener = ownedByListener ?: earlier.ownedByListener,
+    )
+    // Who can see it is one answer in two fields, so it is kept whole, and only where the listing gave neither.
+    return if (visibility == null && isPublic == null && earlier.visibility != null) {
+        kept.copy(visibility = earlier.visibility, isPublic = earlier.isPublic)
+    } else {
+        kept
+    }
+}
+
+/**
+ * What a YouTube playlist's page said about it, on the open playlist and on its entry in the list alike, so
+ * the library and the page agree and "Add to playlist" stops offering one that is somebody else's.
+ */
+internal fun LibraryState.withPlaylistDetails(key: String, details: YouTubePlaylistDetails): LibraryState {
+    fun told(playlist: Playlist) = if (playlist.playlistKey == key) playlist.withPageDetails(details) else playlist
+    return copy(playlists = playlists.map(::told), openPlaylist = openPlaylist?.let(::told))
+}
+
+internal fun Playlist.withPageDetails(details: YouTubePlaylistDetails): Playlist {
+    val told = copy(
+        ownedByListener = details.owned,
+        title = details.title?.takeIf(String::isNotBlank) ?: title,
+        description = details.description ?: description,
+    )
+    return details.visibility?.let(told::withVisibility) ?: told
+}
 
 /** Replaces listed tracks with their resolved counterparts, matched on the page each one came from. */
 internal fun mergeResolvedTracks(current: List<Track>, resolved: List<Track>): List<Track> {
@@ -2074,7 +2128,13 @@ class AppState(
             ?.takeIf(String::isNotBlank)
             ?: playlist.id.takeIf(String::isNotBlank)
             ?: return null
-        return youTubeMusic.playlistTracks(id, limit, session)
+        val page = youTubeMusic.playlistPage(id, limit, session) ?: return null
+        // Whose it is and who can see it, which the page that lists the songs is the only place to say.
+        // On the screen before the songs are, so the controls arrive with them rather than after.
+        page.details?.let { details ->
+            mutableLibrary.update { it.withPlaylistDetails(playlist.playlistKey, details) }
+        }
+        return page.tracks
     }
 
     /**
@@ -2800,9 +2860,24 @@ class AppState(
         withYouTubeWrite({ reflectPlaylistChange(playlistId) { null } }) { session -> youTubeMusic.deletePlaylist(playlistId, session) }
     }
 
-    fun setYouTubePlaylistVisibility(playlistId: String, isPublic: Boolean) {
-        withYouTubeWrite({ reflectPlaylistChange(playlistId) { it.copy(isPublic = isPublic) } }) { session ->
-            youTubeMusic.setPlaylistVisibility(playlistId, isPublic, session)
+    fun setYouTubePlaylistVisibility(playlistId: String, isPublic: Boolean) = setYouTubePlaylistVisibility(
+        playlistId,
+        if (isPublic) PlaylistVisibility.PUBLIC else PlaylistVisibility.PRIVATE,
+    )
+
+    /** Public, unlisted or private: YouTube has all three, where SoundCloud has the first and the last. */
+    fun setYouTubePlaylistVisibility(playlistId: String, visibility: PlaylistVisibility) =
+        editYouTubePlaylist(playlistId, PlaylistEdit(visibility = visibility))
+
+    /**
+     * Renames, redescribes and sets the privacy of one of the account's YouTube playlists, in a single
+     * request carrying only what [edit] changes. The playlist on screen shows the change as soon as YouTube
+     * has taken it, and is left exactly as it was when YouTube turns it down.
+     */
+    fun editYouTubePlaylist(playlistId: String, edit: PlaylistEdit) {
+        if (edit.isEmpty) return libraryNotice("Nothing was changed.")
+        withYouTubeWrite({ reflectPlaylistChange(playlistId) { it.afterEdit(edit) } }) { session ->
+            youTubeMusic.editPlaylist(playlistId, edit, session)
         }
     }
 
@@ -2844,12 +2919,16 @@ class AppState(
         track.provider == ProviderType.YOUTUBE_MUSIC || track.provider == ProviderType.YOUTUBE_VIDEO
 
     /** Makes a playlist on the YouTube Music account. Private by default, as on SoundCloud. */
-    fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) {
+    fun createYouTubePlaylist(title: String, tracks: List<Track> = emptyList(), isPublic: Boolean = false) =
+        createYouTubePlaylist(title, tracks, if (isPublic) PlaylistVisibility.PUBLIC else PlaylistVisibility.PRIVATE)
+
+    /** The same, unlisted included, which only YouTube has. */
+    fun createYouTubePlaylist(title: String, tracks: List<Track>, visibility: PlaylistVisibility) {
         withYouTubeWrite { session ->
             youTubeMusic.createPlaylist(
                 title = title,
                 videoIds = tracks.filter(::livesOnYouTube).map { it.id },
-                isPublic = isPublic,
+                visibility = visibility,
                 session = session,
             )
         }
@@ -2869,10 +2948,10 @@ class AppState(
         scope.launch {
             val session = youTubeSession()
             if (session?.sapisid == null) {
-                return@launch libraryNotice("Sign in to YouTube Music under Settings first.")
+                return@launch libraryNotice("Sign in to YouTube Music under Settings first.", problem = true)
             }
             val result = write(session)
-            libraryNotice(result.detail)
+            libraryNotice(result.detail, problem = !result.ok)
             ScrobbleLog.event(
                 if (result.ok) "youtube_playlist_written" else "youtube_playlist_failed",
                 mapOf("detail" to result.detail),
@@ -3002,10 +3081,10 @@ class AppState(
         scope.launch {
             val token = soundCloudToken()
             if (token.isNullOrBlank()) {
-                return@launch libraryNotice("Sign in to SoundCloud under Settings before editing its playlists.")
+                return@launch libraryNotice("Sign in to SoundCloud under Settings before editing its playlists.", problem = true)
             }
             val result = write(token, soundCloudClientIds.clientId(), withContext(Dispatchers.IO) { soundCloudCookies() })
-            libraryNotice(result.detail)
+            libraryNotice(result.detail, problem = !result.ok)
             ScrobbleLog.event(
                 if (result.ok) "soundcloud_playlist_written" else "soundcloud_playlist_failed",
                 mapOf("detail" to result.detail),
@@ -3018,7 +3097,8 @@ class AppState(
         }
     }
 
-    private fun libraryNotice(message: String) = mutableLibrary.update { it.copy(notice = message) }
+    private fun libraryNotice(message: String, problem: Boolean = false) =
+        mutableLibrary.update { it.copy(notice = message, noticeIsProblem = problem) }
 
     // --- Playlists the listener builds inside Noctorium ---
 
@@ -3140,7 +3220,7 @@ class AppState(
         libraryNotice("Imported \"${shared.title}\" with ${pluralTracks(shared.tracks.size)}.")
     }
 
-    fun clearLibraryNotice() = mutableLibrary.update { it.copy(notice = null) }
+    fun clearLibraryNotice() = mutableLibrary.update { it.copy(notice = null, noticeIsProblem = false) }
 
 
     private fun editPlaylist(id: String, transform: (LocalPlaylist) -> LocalPlaylist) {

@@ -20,6 +20,10 @@ import app.noctorium.settings.CookieSource
 import app.noctorium.settings.InMemorySecretStore
 import app.noctorium.settings.NoctoriumPreferences
 import app.noctorium.settings.SettingsRepository
+import app.noctorium.social.InnertubeKeyProvider
+import app.noctorium.social.LikeHttpClient
+import app.noctorium.social.LikeHttpResponse
+import app.noctorium.social.YouTubeMusicClient
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
@@ -129,11 +133,15 @@ internal object AppStateHarness {
     fun state(
         engine: PlaybackEngine = Engine(),
         preferences: NoctoriumPreferences = NoctoriumPreferences(autoplay = false),
-        providers: List<MusicProvider> = ProviderType.entries.filter { it != ProviderType.LOCAL }.map(::Provider),
+        /** Null for the application's own set, which then reads through [Backend] and [youTubeMusic] alone. */
+        providers: List<MusicProvider>? = ProviderType.entries.filter { it != ProviderType.LOCAL }.map(::Provider),
         settings: Path = settingsFile(preferences.copy(connect = ConnectPreferences(enabled = false))),
         credentials: app.noctorium.settings.SecretStore = InMemorySecretStore(),
         // Nowhere at all unless a test says where: a harness must never reach the real service.
         accountClient: app.noctorium.account.NoctoriumAccountClient = app.noctorium.account.NoctoriumAccountClient(baseUrl = "http://127.0.0.1:9"),
+        // The same for YouTube Music: a client with nothing to answer with, and no page to read identifiers from.
+        youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(Unanswered),
+        innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider { null },
     ): AppState = AppState(
         ytDlp = Backend,
         credentials = credentials,
@@ -145,7 +153,21 @@ internal object AppStateHarness {
         checkForUpdatesAtLaunch = false,
         refreshAtLaunch = false,
         accountClient = accountClient,
+        youTubeMusic = youTubeMusic,
+        innertubeKeys = innertubeKeys,
     )
+
+    /** A YouTube that is never there, so a harness not given one of its own can never reach the real one. */
+    private object Unanswered : LikeHttpClient {
+        override suspend fun send(
+            method: String,
+            url: String,
+            token: String,
+            cookies: String?,
+            body: String?,
+            headers: Map<String, String>,
+        ): LikeHttpResponse = error("This harness has no YouTube to ask: $method $url")
+    }
 
     /** Waits, five seconds at most, for [done]; AppState answers in its own time, on its own threads. */
     fun waitFor(what: String = "it", done: () -> Boolean) {
