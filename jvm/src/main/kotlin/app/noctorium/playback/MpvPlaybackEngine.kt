@@ -45,6 +45,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.math.log10
 
 internal const val NORMAL_MAX_VOLUME = 1f
 
@@ -104,6 +105,16 @@ private const val METER_DEVICE_ALLOWANCE_MS = 20.0
 
 /** How long the visualiser waits before asking a meter that did not answer again. */
 private const val METER_RETRY_MS = 250L
+
+/** The quietest volume the meter's readings are made up for (-60 dB, its floor): below it there is nothing to see. */
+private const val METER_QUIETEST = .001f
+
+/**
+ * mpv's volume, 0 to 1 as the slider has it, as the amplitude mpv plays it at: its volume is a cube, so the
+ * 72% Noctorium opens at is 0.37, 8.6 dB down. Measured, not assumed: rendered at volume 50, a sample came out
+ * at exactly an eighth of what went in.
+ */
+internal fun mpvAmplitude(volume: Float): Float = volume.coerceIn(0f, 1f).let { it * it * it }
 
 /** The meter in a running mpv: the IPC address to ask, and what its channels are. */
 internal data class MeterTarget(val endpoint: String, val layout: MeterLayout)
@@ -239,19 +250,33 @@ class MpvPlaybackEngine(
     private var equalizer = EqualizerSettings()
 
     /**
-     * The `af` list the running mpv was last given, exactly, and the boost level written into it.
+     * The `af` list the running mpv was last given, exactly, and the booster's numbers written into it.
      *
      * Kept because mpv keeps every filter whose settings are unchanged when the list is set again, and that is
      * worth arranging for: a limiter left alone loses nothing, one rebuilt mid-song drops its look-ahead. A level
-     * changed while a song plays is sent to the gain inside the booster's filter ([BOOST_GAIN]) rather than
-     * written into a new list, so the list goes on saying the level it was built with -- [writtenBoost] -- and
-     * any later list is built with that same number, for mpv to recognise the filter and keep it.
+     * changed while a song plays is sent to the stages inside the booster's filter ([boostCommands]) rather than
+     * written into a new list, so the list goes on saying the numbers it was built with -- [writtenStage] -- and
+     * any later list is built with those same numbers, for mpv to recognise the filter and keep it.
      */
     private var appliedChain = ""
-    private var writtenBoost = VolumeBoost.OFF_PERCENT
+    private var writtenStage = BoostStage.UNITY
 
-    /** The level the booster's gain actually has in the running mpv, which `af-command` moves without a new list. */
-    private var liveBoost = VolumeBoost.OFF_PERCENT
+    /** The numbers the booster's filter actually has in the running mpv, which `af-command` moves without a new list. */
+    private var liveStage = BoostStage.UNITY
+
+    /**
+     * What mpv's own volume was last set to, as mpv takes it (0 to 100), or null with no mpv running.
+     *
+     * While the booster is on, mpv plays at 100 and the listener's volume is in the booster's gain instead, in
+     * front of the limiter ([VolumeBoost.gain]); while it is off, the volume is mpv's again.
+     */
+    private var mpvVolume: Double? = null
+
+    /** The volume on its way over to or from the booster's filter, waiting for the filter to be heard. See [applyFilters]. */
+    private var volumeHandOver: Job? = null
+
+    /** Whether the running mpv has answered on its control channel yet; nothing is sent to it before that. */
+    @Volatile private var controllable = false
 
     /** One change to the filters at a time, so two of them cannot each work from what the other is replacing. */
     private val filtersMutex = Mutex()
@@ -342,7 +367,7 @@ class MpvPlaybackEngine(
                 val leadNanos = ((bufferedMs + METER_DEVICE_ALLOWANCE_MS) * 1_000_000).toLong()
                 val waiting = ArrayDeque<Pair<Long, AudioAnalysis?>>()
                 while (true) {
-                    val frame = analysisFrom(connection.property("af-metadata/$METER_LABEL"), meter.layout)
+                    val frame = analysisFrom(connection.property("af-metadata/$METER_LABEL"), meter.layout, meterOffsetDb())
                     val now = System.nanoTime()
                     waiting.addLast(now + leadNanos to frame)
                     while (waiting.isNotEmpty() && waiting.first().first <= now) mutableAnalysis.value = waiting.removeFirst().second
@@ -383,6 +408,21 @@ class MpvPlaybackEngine(
         }
         return levelsMeter() to MeterLayout(null, 0)
     }
+
+    /**
+     * What to add to the meter's readings so that they read the same with the booster on as off: the meter sits
+     * after the booster and before mpv's volume, and while the booster is on the volume is inside the booster
+     * ([VolumeBoost.gain]), so without this the bars would drop by the volume the moment the booster went on.
+     */
+    private fun meterOffsetDb(): Float =
+        if (VolumeBoost.isOn(boostPercent)) -20f * log10(mpvAmplitude(mutableState.value.volume).coerceAtLeast(METER_QUIETEST)) else 0f
+
+    /** The booster's numbers wanted now: the level on top of the listener's volume, or unity with the booster off. */
+    private fun wantedStage(): BoostStage = BoostStage.of(boostPercent, mpvAmplitude(mutableState.value.volume))
+
+    /** What mpv's own volume should be now: 100 while the booster is on and carries the volume, the volume otherwise. */
+    private fun wantedMpvVolume(): Double =
+        if (VolumeBoost.isOn(boostPercent)) 100.0 else (mutableState.value.volume * 100.0).coerceIn(0.0, 100.0)
 
     /**
      * What mpv is pointed at: a file on the disk if the track has been downloaded, otherwise a stream.
@@ -471,6 +511,11 @@ class MpvPlaybackEngine(
                 throw BackendException("mpv stopped before any audio started. " + (mpvComplaint() ?: "It gave no reason."))
             }
             waitForIpc()
+            controllable = true
+            // The filters and the volume were written into the command line a moment ago, and a level or a volume
+            // chosen since -- while mpv was starting, with nothing yet to send it to -- would otherwise wait for
+            // the next change to be heard. Nothing is sent when nothing changed.
+            runCatching { applyFilters() }
             mutableState.update { it.copy(status = PlaybackStatus.PLAYING) }
             PlaybackLog.event("playback_started", mapOf("track" to track.queueKey, "processId" to process?.pid()))
             startProgressTicker()
@@ -538,16 +583,19 @@ class MpvPlaybackEngine(
         val log = newLogFile()
         processLog = log
         // A new process for every track, so the boost and the equaliser have to be asked for again each time
-        // or they would quietly lapse at the end of every song. Written as they are now, for mpv to start with.
+        // or they would quietly lapse at the end of every song. Written as they are now, for mpv to start with,
+        // and the volume with them: mpv's own while the booster is off, in the booster's gain while it is on.
         val endpoint = ipcEndpoint!!
-        val filters = filtersMutex.withLock {
+        val (filters, volume) = filtersMutex.withLock {
             val meter = meterNow()
-            audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first).also { chain ->
-                installedMeter.value = meter?.let { MeterTarget(endpoint, it.second) }
-                appliedChain = chain
-                writtenBoost = boostPercent
-                liveBoost = boostPercent
-            }
+            val stage = wantedStage()
+            val chain = audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first, stage)
+            installedMeter.value = meter?.let { MeterTarget(endpoint, it.second) }
+            appliedChain = chain
+            writtenStage = stage
+            liveStage = stage
+            mpvVolume = wantedMpvVolume()
+            chain to mpvVolume!!
         }
         process = withContext(Dispatchers.IO) {
             ProcessBuilder(
@@ -565,7 +613,7 @@ class MpvPlaybackEngine(
                     log?.let { add("--log-file=$it") }
                     add("--input-ipc-server=${ipcEndpoint!!}")
                     audioOutput?.let { add("--ao=$it") }
-                    add("--volume=${(mutableState.value.volume * 100).toInt()}")
+                    add("--volume=${"%.2f".format(Locale.ROOT, volume)}")
                     if (filters.isNotEmpty()) add("--af=$filters")
                     add("--mute=${if (mutableState.value.isMuted) "yes" else "no"}")
                     // Repeat-one, done by the player: it seeks back to the start out of its own
@@ -598,17 +646,26 @@ class MpvPlaybackEngine(
     }
 
     override suspend fun setVolume(value: Float) {
-        // Unity, boosted or not. The boost is a filter now rather than a number above a hundred, so the
-        // slider means the same thing either way and cannot be dragged into distortion.
+        // Unity, boosted or not. The boost is a filter rather than a number above a hundred, so the slider means
+        // the same thing either way and cannot be dragged into distortion.
         val maximum = NORMAL_MAX_VOLUME
         val requested = value.coerceIn(0f, maximum)
         try {
-            if (process?.isAlive == true) {
-                sendCommand("set_property", JsonPrimitive("volume"), JsonPrimitive(requested * 100.0))
+            if (VolumeBoost.isOn(boostPercent)) {
+                // While the booster is on the volume is part of its gain, in front of the limiter where it is room
+                // to be used, and mpv stays at 100. A fifth of a second later than mpv's own volume would be: the
+                // filters work on what mpv has yet to queue.
+                mutableState.update { it.copy(volume = requested, errorMessage = null) }
+                applyFilters()
+                PlaybackLog.event("volume_changed", mapOf("requestedPercent" to requested * 100, "inBooster" to true))
+            } else if (process?.isAlive == true && controllable) {
+                filtersMutex.withLock { setMpvVolume(requested * 100.0) }
                 val confirmed = getNumberProperty("volume")?.div(100.0)?.toFloat()?.coerceIn(0f, maximum) ?: requested
                 mutableState.update { it.copy(volume = confirmed, errorMessage = null) }
                 PlaybackLog.event("volume_changed", mapOf("requestedPercent" to requested * 100, "confirmedPercent" to confirmed * 100))
             } else {
+                // Starting, or nothing playing: the next mpv is started with it, or the one starting is told
+                // as soon as it answers.
                 mutableState.update { it.copy(volume = requested) }
                 PlaybackLog.event("volume_staged", mapOf("requestedPercent" to requested * 100))
             }
@@ -623,17 +680,18 @@ class MpvPlaybackEngine(
         setVolumeBoostPercent(if (enabled) lastBoostOn else VolumeBoost.OFF_PERCENT)
 
     /**
-     * Sets the booster's level, leaving the volume alone.
+     * Sets the booster's level, leaving the volume where the listener put it.
      *
-     * The boost is gain inside mpv's filters, in floating point, followed by a limiter -- not mpv's own volume
-     * pushed past a hundred, which is what it was first. mpv's volume is a cubic curve and clips at the
+     * The boost is gain inside mpv's filters, in floating point, followed by a limiter and a clipper -- not mpv's
+     * own volume pushed past a hundred, which is what it was first. mpv's volume is a cubic curve and clips at the
      * output: rendered and measured, a tone at volume 200 came out at exactly full scale and at 400 still
      * exactly full scale, louder by nothing, just squarer. Gain in the filters never clips on the way through,
-     * and the limiter holds what it lifts under the ceiling. See [VolumeBoost].
+     * and the limiter and clipper hold what it lifts under the ceiling. See [VolumeBoost] for how, and for why
+     * the listener's volume moves into the booster's gain while it is on.
      *
-     * Applied to the song playing without a gap: a new level goes straight to the gain in the booster's
-     * filter, and switching the booster on or off adds or takes away only that filter. Either way the slider
-     * means the same thing it always did and cannot be dragged into distortion.
+     * Applied to the song playing without a gap: a new level goes straight to the stages in the booster's
+     * filter, and switching the booster on or off adds or takes away only that filter, with mpv's volume
+     * handed over to it or back once the change is heard.
      */
     override suspend fun setVolumeBoostPercent(percent: Int) {
         val wanted = VolumeBoost.clamp(percent)
@@ -650,54 +708,96 @@ class MpvPlaybackEngine(
     }
 
     /**
-     * Brings the running mpv's filters into line with the equaliser, the boost and everything else they are
-     * made from, changing as little as it can.
+     * Brings the running mpv's filters into line with the equaliser, the boost, the volume and everything else
+     * they are made from, changing as little as it can, and then mpv's own volume.
      *
-     * Nothing when no mpv is running: the next one is started with them. Otherwise a new list only when the
-     * filters themselves change -- the equaliser moved, the booster switched on or off -- written with the
-     * boost level mpv's booster filter was built with, so that mpv recognises that filter and keeps it; then
-     * the level itself, sent to the gain inside that filter. An mpv too old to be sent a command for one
-     * filter inside a graph gets the list again with the new level written in, which costs the limiter its
-     * look-ahead and nothing worse.
+     * Nothing when no mpv is running, or none answering yet: the next one is started with them, and one that is
+     * starting is brought up to date as soon as it answers. Otherwise a new list only when the filters themselves
+     * change -- the equaliser moved, the booster switched on or off -- written with the numbers mpv's booster
+     * filter was built with, so that mpv recognises that filter and keeps it; then the new numbers, sent to the
+     * stages inside that filter. An mpv too old to be sent a command for one filter inside a graph gets the list
+     * again with the new numbers written in, which costs the limiter its look-ahead and nothing worse.
      */
     private suspend fun applyFilters() = filtersMutex.withLock {
-        if (process?.isAlive != true) return@withLock
+        if (process?.isAlive != true || !controllable) return@withLock
         val endpoint = ipcEndpoint ?: return@withLock
         val booster = needsLimiter(equalizer, boostPercent)
         val boosterRunning = appliedChain.contains("@$BOOST_LABEL:")
-        // The booster's filter keeps the level it was written with while it stays; a new one starts at the level wanted.
-        val written = if (booster && boosterRunning) writtenBoost else boostPercent
+        val wanted = wantedStage()
+        // The booster's filter keeps the numbers it was written with while it stays; a new one starts with the ones wanted.
+        val written = if (booster && boosterRunning) writtenStage else wanted
         val meter = meterNow()
-        val chain = audioFilterChain(equalizer, written, filterSupport, meter?.first)
+        val chain = audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first, written)
+        var changed = false
         if (chain != appliedChain) {
             sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(chain))
-            if (!boosterRunning) liveBoost = written
+            if (!boosterRunning) liveStage = written
             appliedChain = chain
-            writtenBoost = written
+            writtenStage = written
             installedMeter.value = meter?.let { MeterTarget(endpoint, it.second) }
+            changed = true
             PlaybackLog.event("filters_changed", mapOf("filters" to chain))
         }
-        if (booster && liveBoost != boostPercent) {
+        if (booster && liveStage != wanted) {
             val sent = runCatching {
-                sendCommand(
-                    "af-command",
-                    JsonPrimitive(BOOST_LABEL),
-                    JsonPrimitive("volume"),
-                    JsonPrimitive(boostFactor(boostPercent)),
-                    JsonPrimitive(BOOST_GAIN),
-                )
+                boostCommands(liveStage, wanted, filterSupport).forEach { (target, command, argument) ->
+                    sendCommand("af-command", JsonPrimitive(BOOST_LABEL), JsonPrimitive(command), JsonPrimitive(argument), JsonPrimitive(target))
+                }
             }
             if (sent.isSuccess) {
-                liveBoost = boostPercent
+                liveStage = wanted
             } else {
-                val rewritten = audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first)
+                val rewritten = audioFilterChain(equalizer, boostPercent, filterSupport, meter?.first, wanted)
                 sendCommand("set_property", JsonPrimitive("af"), JsonPrimitive(rewritten))
                 appliedChain = rewritten
-                writtenBoost = boostPercent
-                liveBoost = boostPercent
+                writtenStage = wanted
+                liveStage = wanted
                 PlaybackLog.event("filters_rewritten", mapOf("filters" to rewritten))
             }
+            changed = true
         }
+        handOverVolume(afterFilters = changed)
+    }
+
+    /**
+     * Puts mpv's own volume where it should be: 100 while the booster carries the volume, the volume otherwise.
+     *
+     * Moved straight away when only the volume changed. When the filters changed too -- the booster switched on
+     * or off -- it waits until they are heard: mpv has a fifth of a second queued that went through the old ones,
+     * and its volume acts on that at once, so moving it at once would play that fifth of a second at the new
+     * volume without the new filters -- at 72%, a burst nearly three times too loud as the booster went on.
+     * Called with [filtersMutex] held.
+     */
+    private suspend fun handOverVolume(afterFilters: Boolean) {
+        val target = wantedMpvVolume()
+        volumeHandOver?.cancel()
+        volumeHandOver = null
+        if (target == mpvVolume) return
+        if (!afterFilters) {
+            setMpvVolume(target)
+            return
+        }
+        val waitMs = heardAfterMs()
+        volumeHandOver = scope.launch {
+            delay(waitMs)
+            filtersMutex.withLock {
+                if (process?.isAlive == true && controllable && wantedMpvVolume() == target) runCatching { setMpvVolume(target) }
+            }
+        }
+    }
+
+    /** Sets mpv's own volume, 0 to 100, and remembers it. Called with [filtersMutex] held. */
+    private suspend fun setMpvVolume(percent: Double) {
+        volumeHandOver?.cancel()
+        volumeHandOver = null
+        sendCommand("set_property", JsonPrimitive("volume"), JsonPrimitive(percent))
+        mpvVolume = percent
+    }
+
+    /** How long after a change to the filters it is heard: mpv's queue, and a little for the device's. */
+    private suspend fun heardAfterMs(): Long {
+        val queued = (propertyOrNull("audio-buffer") as? JsonPrimitive)?.doubleOrNull ?: DEFAULT_AUDIO_BUFFER_S
+        return (queued * 1_000 + METER_DEVICE_ALLOWANCE_MS).toLong()
     }
 
     override suspend fun setSpeed(speed: Float) {
@@ -801,6 +901,10 @@ class MpvPlaybackEngine(
         progressJob?.cancel()
         progressJob = null
         installedMeter.value = null
+        controllable = false
+        volumeHandOver?.cancel()
+        volumeHandOver = null
+        mpvVolume = null
         process?.takeIf { it.isAlive }?.let { player ->
             // Forcibly, and waited for. Asking politely and moving on leaves the audio playing for as
             // long as it takes the player to notice, which on the way out is until after we have gone.
@@ -838,7 +942,7 @@ class MpvPlaybackEngine(
         val rebuilt = streamParams != null
         streamParams = params
         streamChannels = format.channels
-        if (rebuilt) filtersMutex.withLock { liveBoost = writtenBoost }
+        if (rebuilt) filtersMutex.withLock { liveStage = writtenStage }
         runCatching { applyFilters() }
     }
 
