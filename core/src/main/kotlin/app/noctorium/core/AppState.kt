@@ -1259,6 +1259,7 @@ class AppState(
     fun setQueueColumns(columns: List<QueueColumn>) = updatePreferences { copy(queueColumns = QueueColumn.normalised(columns)) }
     fun setStatusBar(shown: Boolean) = updatePreferences { copy(statusBar = shown) }
     fun setIconSet(icons: IconSet) = updatePreferences { copy(iconSet = icons) }
+    fun setServiceBadgeStyle(style: ServiceBadgeStyle) = updatePreferences { copy(serviceBadgeStyle = style) }
 
     /**
      * The phone-only settings, changed one field at a time through the block they live in.

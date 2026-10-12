@@ -64,6 +64,20 @@ enum class IconSet(val displayName: String, val description: String) {
 }
 
 /**
+ * How the small badge that says which service a song comes from is drawn: with the service's own mark, or with the
+ * letters the badges always had.
+ *
+ * [MARKS] is the default, since a mark is known at a glance where "SC" has to be read; [LETTERS] is the badges as
+ * they were, for anybody who liked them so. Either way the badge keeps its colour and its size. The terminal has only
+ * letters to draw with and keeps them whichever is chosen. The shapes are in [app.noctorium.domain.ServiceMarks].
+ */
+@Serializable
+enum class ServiceBadgeStyle(val displayName: String, val description: String) {
+    MARKS("Marks", "Each service's own mark: YouTube Music's ring, SoundCloud's cloud, Spotify's three waves."),
+    LETTERS("Letters", "The service's short name, YTM, SC or SP, as the badges always had it."),
+}
+
+/**
  * A setting's choices, written as their names, that leaves out a name this build has never heard of instead of
  * failing over it.
  *

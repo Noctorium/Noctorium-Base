@@ -1,9 +1,13 @@
 package app.noctorium.settings
 
 import app.noctorium.playback.AudioAnalysisKind
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import java.nio.file.Files
+import kotlin.io.path.readText
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -27,6 +31,7 @@ class LooksTest {
         assertEquals(QueueColumn.DEFAULT, older.queueColumns)
         assertTrue(older.statusBar)
         assertEquals(IconSet.STANDARD, older.iconSet, "nobody's icons change until they choose")
+        assertEquals(ServiceBadgeStyle.MARKS, older.serviceBadgeStyle, "the badges have marks, unless the listener goes back to the letters")
     }
 
     @Test
@@ -49,6 +54,7 @@ class LooksTest {
             queueColumns = listOf(QueueColumn.SERVICE, QueueColumn.TITLE, QueueColumn.DURATION),
             statusBar = false,
             iconSet = IconSet.LINE,
+            serviceBadgeStyle = ServiceBadgeStyle.LETTERS,
             desktop = DesktopPreferences(nowPlaying = NowPlayingPreferences(layout = NowPlayingLayout.PLAYLIST)),
             phone = PhonePreferences(playerBarStyle = PhonePlayerBarStyle.TOOLBAR, nowPlayingLayout = PhoneNowPlayingLayout.PLAYLIST),
         )
@@ -60,15 +66,48 @@ class LooksTest {
     fun `a choice from a later version costs that choice and nothing else`() {
         val newer = json.decodeFromString<NoctoriumPreferences>(
             """{"profileName":"Kept","queueColumns":["TITLE","PLAY_COUNT","ARTIST"],"iconSet":"NEON","visualiser":"OSCILLOSCOPE",""" +
-                """"desktop":{"hiddenPlayerButtons":["LIKE","TELEPORT"],"shownPlayerButtons":["STOP","WARP"]}}""",
+                """"serviceBadgeStyle":"HOLOGRAMS","desktop":{"hiddenPlayerButtons":["LIKE","TELEPORT"],"shownPlayerButtons":["STOP","WARP"]}}""",
         )
         assertEquals("Kept", newer.profileName)
         assertEquals(listOf(QueueColumn.TITLE, QueueColumn.ARTIST), newer.queueColumns)
         assertEquals(IconSet.STANDARD, newer.iconSet)
         assertEquals(VisualiserStyle.BARS, newer.visualiser)
+        assertEquals(ServiceBadgeStyle.MARKS, newer.serviceBadgeStyle)
         assertEquals(setOf(PlayerButton.LIKE), newer.desktop.hiddenPlayerButtons)
         assertEquals(setOf(PlayerButton.STOP), newer.desktop.shownPlayerButtons)
     }
+
+    /**
+     * The badges' style through the settings file itself, both ways. Marks are the default and so not written at all:
+     * a file from this version with marks is one any earlier version reads as it always did. The letters are written,
+     * read back, and passed over by an earlier version as any key it has never heard of is, with nothing else lost.
+     */
+    @Test
+    fun `the badges' style is kept in the settings file, and an older version reading it loses nothing`() {
+        val directory = Files.createTempDirectory("noctorium-badges")
+        try {
+            val file = directory.resolve("settings.json")
+            val repository = SettingsRepository(file)
+            repository.save(NoctoriumPreferences(profileName = "Kept", iconSet = IconSet.LINE))
+            assertFalse("serviceBadgeStyle" in file.readText(), "the default is not written")
+            assertEquals(ServiceBadgeStyle.MARKS, repository.load().serviceBadgeStyle)
+
+            repository.save(repository.load().copy(serviceBadgeStyle = ServiceBadgeStyle.LETTERS))
+            val reread = repository.load()
+            assertEquals(ServiceBadgeStyle.LETTERS, reread.serviceBadgeStyle)
+            assertEquals("Kept", reread.profileName)
+            assertEquals(IconSet.LINE, reread.iconSet)
+
+            val older = json.decodeFromString<BeforeBadgeStyles>(file.readText())
+            assertEquals(BeforeBadgeStyles(profileName = "Kept", iconSet = IconSet.LINE), older)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+    }
+
+    /** The settings as a version from before the badges' style knew them, as far as this test needs them. */
+    @Serializable
+    private data class BeforeBadgeStyles(val profileName: String = "", val iconSet: IconSet = IconSet.STANDARD)
 
     @Test
     fun `the queue's table always has its titles, each column once`() {
@@ -88,6 +127,7 @@ class LooksTest {
             PhoneNowPlayingLayout.PLAYLIST.displayName to PhoneNowPlayingLayout.PLAYLIST.description,
         ).plus(IconSet.entries.map { it.displayName to it.description })
             .plus(VisualiserStyle.entries.map { it.displayName to it.description })
+            .plus(ServiceBadgeStyle.entries.map { it.displayName to it.description })
             .forEach { (name, description) -> assertTrue(name.isNotBlank() && description.isNotBlank(), name) }
         assertEquals(
             listOf("Standard", "Rounded", "Outlined", "Sharp", "Filled", "Two-tone", "Line"),

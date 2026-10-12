@@ -645,6 +645,11 @@ data class NoctoriumPreferences(
     val statusBar: Boolean = true,
     /** The icons the player's buttons are drawn with. Standard is each player's own, as they have always been. */
     val iconSet: IconSet = IconSet.STANDARD,
+    /**
+     * How a service badge is drawn: the service's own mark, or the letters, YTM or SC, it had before there were
+     * marks. Marks unless the listener goes back to the letters; a file from before this opens with marks.
+     */
+    val serviceBadgeStyle: ServiceBadgeStyle = ServiceBadgeStyle.MARKS,
     /** When the queue runs out, carry on with songs like the last one rather than stopping. */
     val autoplay: Boolean = true,
     /** Where autoplay's songs come from: the service of the song that ended the queue, or always YouTube Music. */
