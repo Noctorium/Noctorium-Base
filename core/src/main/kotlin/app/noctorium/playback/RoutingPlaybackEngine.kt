@@ -112,8 +112,32 @@ class RoutingPlaybackEngine(
     }
 
     /** Only this device's player has a booster; it is kept there, and in force again when that player next plays. */
-    override suspend fun setVolumeBoost(enabled: Boolean) = local.setVolumeBoost(enabled)
-    override suspend fun setVolumeBoostPercent(percent: Int) = local.setVolumeBoostPercent(percent)
+    override suspend fun setVolumeBoost(enabled: Boolean) {
+        local.setVolumeBoost(enabled)
+        mutableState.update(::withBoostWhenIdle)
+    }
+
+    override suspend fun setVolumeBoostPercent(percent: Int) {
+        local.setVolumeBoostPercent(percent)
+        mutableState.update(::withBoostWhenIdle)
+    }
+
+    /**
+     * [state] with this device's booster in it while the other player has nothing to play. Its booster is only
+     * missing while it is making the sound: once a song there is over, stopped or cleared, the next is as likely
+     * to play here, and a booster greyed out until then -- "can only be boosted where Noctorium makes the sound"
+     * under it, and its slider gone -- was a booster that looked broken.
+     */
+    private fun withBoostWhenIdle(state: PlaybackState): PlaybackState {
+        if (active !== elsewhere || state.track != null) return state
+        val here = local.state.value
+        return state.copy(
+            volumeBoostEnabled = here.volumeBoostEnabled,
+            volumeBoostPercent = here.volumeBoostPercent,
+            volumeBoostAvailable = here.volumeBoostAvailable,
+        )
+    }
+
     override suspend fun setLooping(enabled: Boolean) {
         local.setLooping(enabled)
         elsewhere.setLooping(enabled)
@@ -145,7 +169,7 @@ class RoutingPlaybackEngine(
                 // on top of the new engine's first -- the booster offered on Spotify's app, for one. [active] is set
                 // before [play] writes, and the compare-and-set retries with it, so a word from an engine left
                 // behind is dropped even when the two cross.
-                mutableState.update { current -> if (active === engine) update else current }
+                mutableState.update { current -> if (active === engine) withBoostWhenIdle(update) else current }
             }
         }
     }

@@ -35,11 +35,14 @@ internal fun streamFormatFrom(codec: JsonElement?, params: JsonElement?, bitrate
  * `"lavfi.astats.1.RMS_level": "-26.793646"`, and `"-inf"` for silence. The first channels are the sound's own,
  * for the level meter; after them, when the meter measures a spectrum, one channel per band, low to high, of
  * which the RMS is the band's level. Which is which is the [layout] the engine built the meter with.
+ *
+ * [offsetDb] is added to every level: what the engine makes up for when the meter hears the sound after a gain
+ * that is not the music's own -- the listener's volume, while the booster carries it.
  */
-internal fun analysisFrom(metadata: JsonElement?, layout: MeterLayout): AudioAnalysis? {
+internal fun analysisFrom(metadata: JsonElement?, layout: MeterLayout, offsetDb: Float = 0f): AudioAnalysis? {
     val values = metadata as? JsonObject ?: return null
     fun decibels(channel: Int, measure: String): Float? =
-        (values["lavfi.astats.$channel.$measure"] as? JsonPrimitive)?.content?.let(::decibelsIn)
+        (values["lavfi.astats.$channel.$measure"] as? JsonPrimitive)?.content?.let(::decibelsIn)?.plus(offsetDb)
     val channels = generateSequence(1) { it + 1 }.takeWhile { decibels(it, "RMS_level") != null }.count()
     if (channels == 0) return null
     val own = (layout.channels ?: (channels - layout.bands)).coerceIn(0, channels)

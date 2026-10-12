@@ -26,7 +26,7 @@ class EqualizerFilterTest {
 
     @Test
     fun `the boost on its own is the booster's filter alone`() {
-        assertEquals("@noctorium-boost:lavfi=[volume@boost=2.00,alimiter=limit=0.95]", audioFilterChain(EqualizerSettings(), boostPercent = 200))
+        assertEquals("@noctorium-boost:lavfi=[volume@boost=2.00000,alimiter=limit=0.95]", audioFilterChain(EqualizerSettings(), boostPercent = 200))
     }
 
     @Test
@@ -35,7 +35,7 @@ class EqualizerFilterTest {
         assertEquals(
             "@noctorium-eq:lavfi=[volume=-3.0dB,equalizer=f=31:t=o:w=1:g=6.0,equalizer=f=62:t=o:w=1:g=5.0," +
                 "equalizer=f=125:t=o:w=1:g=4.0,equalizer=f=250:t=o:w=1:g=2.0]," +
-                "@noctorium-boost:lavfi=[volume@boost=1.00,alimiter=limit=0.95]",
+                "@noctorium-boost:lavfi=[volume@boost=1.00000,alimiter=limit=0.95]",
             chain,
         )
     }
@@ -53,7 +53,7 @@ class EqualizerFilterTest {
         val chain = audioFilterChain(EqualizerSettings(enabled = true, preset = EqualizerPreset.TREBLE_BOOST, preampDb = -1f), boostPercent = 500)
         assertEquals(1, Regex("alimiter").findAll(chain).count(), chain)
         assertTrue(chain.indexOf("equalizer") < chain.indexOf("volume@boost"), "the curve comes before the boost")
-        assertTrue(chain.indexOf("volume@boost=5.00") < chain.indexOf("alimiter"), "the limiter comes after the gain")
+        assertTrue(chain.indexOf("volume@boost=5.00000") < chain.indexOf("alimiter"), "the limiter comes after the gain")
         assertTrue("volume=-4.0dB" in chain, chain)
         assertTrue(chain.startsWith("@noctorium-eq:lavfi=[") && chain.endsWith("]"))
     }

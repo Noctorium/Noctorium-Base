@@ -32,6 +32,27 @@ class VolumeBoostStateTest {
         }
     }
 
+    /**
+     * A level is not undone by another setting changing at the same moment. Settings were read, changed and written
+     * back in two steps, so a change from the background that read before the level was set wrote the old level
+     * back -- and the player was then told it again.
+     */
+    @Test
+    fun `a level survives other settings changing at the same moment`() {
+        AppStateHarness.state(AppStateHarness.Engine()).use { state ->
+            repeat(20) { round ->
+                val others = Thread {
+                    repeat(200) { state.setTaskbarClock(it % 2 == 0) }
+                }
+                others.start()
+                (110..1_000 step 10).forEach { state.setVolumeBoostPercent(it) }
+                state.setVolumeBoostPercent(500 + round)
+                others.join()
+                assertEquals(500 + round, state.settings.value.preferences.volumeBoostPercent, "round $round")
+            }
+        }
+    }
+
     @Test
     fun `the button goes to 200 the first time, then back to the last level`() {
         val engine = AppStateHarness.Engine()
@@ -100,6 +121,40 @@ class VolumeBoostStateTest {
         waitFor("this device's state") { routing.state.value.track?.id == "2" }
         assertTrue(routing.state.value.volumeBoostAvailable)
         assertEquals(400, routing.state.value.volumeBoostPercent)
+        scope.cancel()
+    }
+
+    /**
+     * Once Spotify's app has nothing to play -- the song stopped, the queue cleared -- the booster is this device's
+     * again. It stayed greyed out, saying it could only boost where Noctorium makes the sound, until a song had
+     * played here, which looked like a booster that did not work.
+     */
+    @Test
+    fun `the booster comes back as soon as Spotify's app has nothing to play`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val local = AppStateHarness.Engine()
+        val spotifyState = MutableStateFlow(PlaybackState(volumeBoostAvailable = false))
+        val spotify = object : app.noctorium.playback.PlaybackEngine by AppStateHarness.Engine() {
+            override val state = spotifyState
+            override suspend fun play(track: app.noctorium.domain.Track) {
+                spotifyState.value = PlaybackState(status = app.noctorium.playback.PlaybackStatus.PLAYING, track = track, volumeBoostAvailable = false)
+            }
+            override suspend fun stop() {
+                spotifyState.value = PlaybackState(volumeBoostAvailable = false)
+            }
+        }
+        val routing = RoutingPlaybackEngine(local, spotify, { it.id.startsWith("spotify") }, scope)
+        routing.setVolumeBoostPercent(400)
+        routing.play(AppStateHarness.song("spotify-1"))
+        // Playing, which only Spotify's player says: the routing has caught up with it, not just been told of it.
+        waitFor("Spotify's state") { routing.state.value.status == app.noctorium.playback.PlaybackStatus.PLAYING }
+        assertFalse(routing.state.value.volumeBoostAvailable, "no booster while Spotify's app makes the sound")
+
+        routing.stop()
+        waitFor("the booster back") { routing.state.value.volumeBoostAvailable }
+        assertEquals(400, routing.state.value.volumeBoostPercent)
+        routing.setVolumeBoostPercent(600)
+        assertEquals(600, routing.state.value.volumeBoostPercent, "and a level chosen now shows at once")
         scope.cancel()
     }
 

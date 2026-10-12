@@ -24,7 +24,10 @@ import java.util.concurrent.TimeUnit
 /** The equaliser's filter: the bands, and the headroom made for them. */
 internal const val EQUALIZER_LABEL = "noctorium-eq"
 
-/** The booster's filter: its gain, and the one limiter after it that also catches whatever the equaliser lifted. */
+/**
+ * The booster's filter: its gain, a limiter, and the clipper that rounds off what the limiter lets through --
+ * the three parts [VolumeBoost] describes. The limiter and clipper also catch whatever the equaliser lifted.
+ */
 internal const val BOOST_LABEL = "noctorium-boost"
 
 /**
@@ -33,11 +36,41 @@ internal const val BOOST_LABEL = "noctorium-boost"
  */
 internal const val BOOST_GAIN = "volume@boost"
 
+/** The limiter inside [BOOST_LABEL]'s graph, by its instance name: its input and output levels are the drive. */
+internal const val BOOST_LIMITER = "alimiter@boost"
+
+/** The clipper inside [BOOST_LABEL]'s graph, by its instance name. It has nothing to be told: its curve is fixed. */
+internal const val BOOST_CLIPPER = "aeval@boost"
+
 /**
- * The limiter after the gain. Its look-ahead is what lets it hold a peak at the ceiling instead of flattening it
- * after the fact, and a little below full scale leaves room for the conversion to whatever the device takes.
+ * The limiter, held to [VolumeBoost.CEILING] of whatever its input level makes of the sound, and no levelling of
+ * its own afterwards: FFmpeg's default lifts the output by 1/limit, which is what put the first booster's peaks
+ * at exactly full scale.
+ *
+ * Its attack is twice the phone's look-ahead. FFmpeg's limiter brings its gain down in a straight line and clips
+ * whatever peak that line is too late for -- 1,500 peaks in thirty seconds of loud music, the first booster --
+ * and a longer line is late for fewer: measured at 1000%, 394 samples rather than 1,011 at five milliseconds.
+ * Those few are clipped where the clipper after it is all but flat, so it rounds them off with the rest.
  */
-private const val LIMITER = "alimiter=limit=0.95"
+private val LIMITER_SETTINGS = String.format(
+    Locale.ROOT, "limit=%.3f:attack=%.0f:release=%.0f:level=0",
+    VolumeBoost.CEILING, 2 * VolumeBoost.LOOKAHEAD_MS, VolumeBoost.RELEASE_MS,
+)
+
+/**
+ * The clipper: [VolumeBoost.clip], the phone's own curve, as an FFmpeg expression worked out for each sample of
+ * each channel. Straight up to the knee, then x over the square root of one plus x squared up to the ceiling.
+ * About one percent of one core, measured; it holds nothing back, so it moves no song when it goes in or out.
+ */
+private val CLIPPER = run {
+    val knee = String.format(Locale.ROOT, "%.6f", VolumeBoost.CLIP_KNEE * VolumeBoost.CEILING)
+    val room = String.format(Locale.ROOT, "%.6f", VolumeBoost.CEILING - VolumeBoost.CLIP_KNEE * VolumeBoost.CEILING)
+    val over = "((abs(val(ch))-$knee)/$room)"
+    "$BOOST_CLIPPER=exprs='if(lte(abs(val(ch)),$knee),val(ch),sgn(val(ch))*($knee+$room*$over/sqrt(1+$over*$over)))':c=same"
+}
+
+/** The limiter for an mpv too old to have the clipper, as the booster first was: loud music gains little, but it plays. */
+private const val PLAIN_LIMITER = "alimiter=limit=0.95"
 
 /**
  * Asks the limiter to make up the delay its look-ahead puts in, and to hand back what it holds when it is
@@ -56,7 +89,35 @@ internal data class MpvFilterSupport(
     val levels: Boolean = false,
     /** The crossover and the merging the spectrum is made with. */
     val spectrum: Boolean = false,
+    /** The limiter can be told not to level its output, which only newer FFmpeg allows: the booster's limiter and clipper. */
+    val clipper: Boolean = false,
 )
+
+/**
+ * The numbers in the booster's filter, written as the filters take them: mpv keeps a filter only when its text
+ * is exactly what it was, so they are kept as text.
+ *
+ * [gain] is the gain in front of the limiter: the level on top of the listener's volume while the booster is on
+ * (see [VolumeBoost.gain]; the engine plays at mpv's full volume then), and unity while it is off and the filter
+ * is only there for the equaliser. [drive] is [VolumeBoost.drive]: the limiter's input is taken down by it
+ * ([limiterIn]) and its output brought back up by it, so the limiter's ceiling sits that far above the clipper's.
+ */
+internal data class BoostStage(val gain: String, val drive: String, val limiterIn: String) {
+    companion object {
+        /** The booster off: unity, there only to catch what the equaliser lifts. */
+        val UNITY = of(1f, 1f)
+
+        /** The booster at [percent], on top of a volume of [volume] as an amplitude, mpv's own curve already applied. */
+        fun of(percent: Int, volume: Float): BoostStage =
+            if (VolumeBoost.isOn(percent)) of(VolumeBoost.gain(percent, volume), VolumeBoost.drive(percent)) else UNITY
+
+        private fun of(gain: Float, drive: Float) = BoostStage(
+            gain = String.format(Locale.ROOT, "%.5f", gain),
+            drive = String.format(Locale.ROOT, "%.4f", drive),
+            limiterIn = String.format(Locale.ROOT, "%.4f", 1f / drive),
+        )
+    }
+}
 
 /**
  * The whole `af` list for [equalizer] and a boost of [boostPercent], empty when there is nothing to do, which
@@ -64,12 +125,12 @@ internal data class MpvFilterSupport(
  *
  * The equaliser first: ffmpeg's peaking filter an octave wide at each band's centre, after half of the curve's
  * highest lift taken off as headroom -- most of what is lifted is quieter than the loudest part of the record.
- * Then the booster's gain, then one limiter for whatever either of them pushed towards the ceiling. The
- * limiter is there whenever the boost is on or the curve lifts anything, so nothing Noctorium does can clip.
+ * Then the booster's gain, limiter and clipper, for whatever either of them pushed towards the ceiling. They are
+ * there whenever the boost is on or the curve lifts anything, so nothing Noctorium does can clip hard.
  *
- * [boostPercent] is the gain written into the booster's filter. The engine sometimes writes the level the
- * filter already has rather than the one wanted, so that mpv keeps that filter as it is; see
- * [MpvPlaybackEngine] and [BOOST_GAIN].
+ * [stage] is what is written into the booster's filter. The engine sometimes writes the numbers the filter
+ * already has rather than the ones wanted, so that mpv keeps that filter as it is; see [MpvPlaybackEngine] and
+ * [BOOST_GAIN].
  */
 internal fun audioFilterChain(
     equalizer: EqualizerSettings,
@@ -77,9 +138,10 @@ internal fun audioFilterChain(
     support: MpvFilterSupport = MpvFilterSupport(),
     /** The visualiser's meter, last of all so it measures what is heard: [levelsMeter] or [spectrumMeter]. */
     meter: String? = null,
+    stage: BoostStage = BoostStage.of(boostPercent, 1f),
 ): String = listOfNotNull(
     equalizerFilter(equalizer),
-    boostFilter(equalizer, boostPercent, support),
+    boostFilter(equalizer, boostPercent, support, stage),
     meter,
 ).joinToString(",")
 
@@ -97,19 +159,35 @@ internal fun equalizerFilter(equalizer: EqualizerSettings): String? {
     return if (stages.isEmpty()) null else "@$EQUALIZER_LABEL:lavfi=[${stages.joinToString(",")}]"
 }
 
-/** The booster's filter -- gain and limiter -- or null when neither the boost nor the curve needs it. */
-internal fun boostFilter(equalizer: EqualizerSettings, boostPercent: Int, support: MpvFilterSupport = MpvFilterSupport()): String? {
+/** The booster's filter -- gain, limiter and clipper -- or null when neither the boost nor the curve needs it. */
+internal fun boostFilter(
+    equalizer: EqualizerSettings,
+    boostPercent: Int,
+    support: MpvFilterSupport = MpvFilterSupport(),
+    stage: BoostStage = BoostStage.of(boostPercent, 1f),
+): String? {
     if (!needsLimiter(equalizer, boostPercent)) return null
-    val limiter = LIMITER + if (support.limiterLatency) LIMITER_LATENCY else ""
-    return "@$BOOST_LABEL:lavfi=[$BOOST_GAIN=${boostFactor(boostPercent)},$limiter]"
+    val latency = if (support.limiterLatency) LIMITER_LATENCY else ""
+    if (!support.clipper) return "@$BOOST_LABEL:lavfi=[$BOOST_GAIN=${stage.gain},$PLAIN_LIMITER$latency]"
+    return "@$BOOST_LABEL:lavfi=[$BOOST_GAIN=${stage.gain}," +
+        "$BOOST_LIMITER=level_in=${stage.limiterIn}:level_out=${stage.drive}:$LIMITER_SETTINGS$latency,$CLIPPER]"
+}
+
+/**
+ * The `af-command`s that take the booster's filter from [from] to [to] while it plays, as instance, command and
+ * argument: only what differs, and the drive only where there is a clipper for it to drive.
+ */
+internal fun boostCommands(from: BoostStage, to: BoostStage, support: MpvFilterSupport): List<Triple<String, String, String>> = buildList {
+    if (from.gain != to.gain) add(Triple(BOOST_GAIN, "volume", to.gain))
+    if (support.clipper && from.drive != to.drive) {
+        add(Triple(BOOST_LIMITER, "level_in", to.limiterIn))
+        add(Triple(BOOST_LIMITER, "level_out", to.drive))
+    }
 }
 
 /** Whether anything is pushed towards the ceiling: the boost, or an equaliser curve that lifts. */
 internal fun needsLimiter(equalizer: EqualizerSettings, boostPercent: Int): Boolean =
     VolumeBoost.isOn(boostPercent) || (equalizer.shapesSound && (equalizer.gains.any { it > 0f } || equalizer.preampDb > 0f))
-
-/** The booster's gain as the volume filter takes it: a multiplier, "4.00" for 400%. */
-internal fun boostFactor(boostPercent: Int): String = String.format(Locale.ROOT, "%.2f", VolumeBoost.factor(boostPercent))
 
 private fun decibels(value: Float): String = String.format(Locale.ROOT, "%.1f", value)
 
@@ -179,16 +257,18 @@ private val knownSupport = ConcurrentHashMap<Path, MpvFilterSupport>()
  * shown to work is left off, which plays exactly as before.
  */
 internal fun mpvFilterSupport(mpv: Path): MpvFilterSupport = knownSupport.getOrPut(mpv) {
-    val latency = "lavfi=[$LIMITER$LIMITER_LATENCY]"
+    val latency = "lavfi=[$PLAIN_LIMITER$LIMITER_LATENCY]"
     val spectrum = spectrumMeter(2)!!
+    val clipper = boostFilter(EqualizerSettings(), VolumeBoost.MAX_PERCENT, MpvFilterSupport(clipper = true))!!
     // Everything at once first, which on any recent mpv is the only probe made; one at a time otherwise.
-    if (filtersWork(mpv, "$latency,$spectrum")) {
-        MpvFilterSupport(limiterLatency = true, levels = true, spectrum = true)
+    if (filtersWork(mpv, "$latency,$spectrum,$clipper")) {
+        MpvFilterSupport(limiterLatency = true, levels = true, spectrum = true, clipper = true)
     } else {
         MpvFilterSupport(
             limiterLatency = filtersWork(mpv, latency),
             levels = filtersWork(mpv, levelsMeter()),
             spectrum = filtersWork(mpv, spectrum),
+            clipper = filtersWork(mpv, clipper),
         )
     }
 }
