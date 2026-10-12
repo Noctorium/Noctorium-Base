@@ -50,6 +50,11 @@ data class ConnectPeer(
     val drivenBy: DeviceRef? = null,
     /** The device it is driving, if any: then the music is there, and this one is its remote control. */
     val driving: DeviceRef? = null,
+    /**
+     * Whether it says whom it is driving at all. A device from before announcements carried that says nothing,
+     * and its [driving] being null means nothing; from one that does, null means it is driving nobody.
+     */
+    val tellsWhomItDrives: Boolean = false,
 ) {
     /** How far into its song it is at [nowMs] on this device's clock: moving on from what it last said while it plays. */
     fun positionAt(nowMs: Long): Long = nowPlaying?.positionAfter(nowMs - lastSeenAtMs) ?: 0
@@ -249,6 +254,7 @@ class ConnectDiscovery(
                     nowPlaying = extra?.nowPlaying,
                     drivenBy = extra?.drivenBy,
                     driving = extra?.driving,
+                    tellsWhomItDrives = extra != null,
                 ),
             )
         }

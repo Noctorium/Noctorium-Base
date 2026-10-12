@@ -110,6 +110,9 @@ class ConnectInSyncTest {
 
         phone.release()
         eventually("the laptop to see the phone let go") { laptop.peer("Phone")?.driving == null }
+        // And the desk itself stops saying it is controlled as soon as the phone says it has let go -- not half a
+        // minute later, when it would otherwise give up on hearing from it.
+        eventually("the desk to stop saying it is controlled", timeoutMs = 5_000) { desk.state.value.controlledBy == null }
     }
 
     @Test

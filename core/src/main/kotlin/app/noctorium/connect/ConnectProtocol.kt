@@ -196,6 +196,8 @@ data class RemoteState(
      * fetches the whole queue (`GET /queue`) once each time it changes rather than every second.
      */
     val queueKey: String? = null,
+    /** Set by every device that fills in [driving], so that its being null can be believed: see [ConnectPeer.tellsWhomItDrives]. */
+    val tellsWhomItDrives: Boolean = false,
 )
 
 /** The kind this device said it is. */

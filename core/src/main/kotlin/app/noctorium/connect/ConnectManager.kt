@@ -255,6 +255,21 @@ class ConnectManager(
             discovery.peers.collect { peers ->
                 val before = mutableState.value
                 mutableState.update { it.copy(devices = peers.sortedBy(ConnectPeer::name)) }
+                // The device driving this one says it has let go -- it is driving another, or nobody. Believed
+                // within moments, rather than "controlled from" lingering for the half minute it takes to give up on
+                // hearing from it; a device that says nothing about whom it drives is still given that half minute.
+                // Not while it is still in touch, though: its commands and its remote control's questions come several
+                // times a second, and an announcement sent just before it learned the handover had worked can arrive
+                // just after -- saying, a moment out of date, that it drives nobody.
+                driver?.let { current ->
+                    val said = peers.firstOrNull { it.id == current.id }
+                    val quiet = clock() - current.at > LET_GO_BELIEVED_AFTER_MS
+                    if (said != null && said.tellsWhomItDrives && said.driving?.id != deviceId && quiet) {
+                        driver = null
+                        mutableState.update { it.copy(controlledBy = null, controlledById = null) }
+                        discovery.announceNow()
+                    }
+                }
                 // A device we were driving that has stopped announcing is gone; drop the remote control
                 // rather than leaving a screen pointed at nothing.
                 val target = before.target ?: return@collect
@@ -838,6 +853,7 @@ class ConnectManager(
             driving = driving?.let { DeviceRef(it.id, it.name) },
             terminal = kind == DeviceKind.TERMINAL,
             queueKey = queue.tracks.takeIf { it.isNotEmpty() }?.let(::queueKeyOf),
+            tellsWhomItDrives = true,
         )
     }
 
@@ -900,6 +916,7 @@ class ConnectManager(
         nowPlaying = seen.nowPlaying,
         drivenBy = seen.controlledById?.let { DeviceRef(it, seen.controlledBy.orEmpty()) },
         driving = seen.driving,
+        tellsWhomItDrives = seen.tellsWhomItDrives,
     )
 
     // -- identity --------------------------------------------------------------------------------
@@ -972,6 +989,9 @@ class ConnectManager(
         private const val POLL_EVERY_MS = 1_000L
 
         private const val DRIVER_FORGOTTEN_AFTER_MS = 30_000L
+
+        /** How long a driving device must have been quiet before its saying it drives nobody is believed. */
+        private const val LET_GO_BELIEVED_AFTER_MS = 1_500L
 
         /**
          * The most an announcement may be: inside one Ethernet frame, so it is never sent in pieces, and far
