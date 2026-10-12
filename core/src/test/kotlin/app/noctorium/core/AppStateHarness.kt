@@ -7,6 +7,8 @@ import app.noctorium.domain.Playlist
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.SearchResults
 import app.noctorium.domain.Track
+import app.noctorium.history.PlayHistory
+import app.noctorium.history.PlayHistoryRepository
 import app.noctorium.platform.SystemBridge
 import app.noctorium.playback.MusicBackend
 import app.noctorium.playback.PlaybackEngine
@@ -142,6 +144,9 @@ internal object AppStateHarness {
         // The same for YouTube Music: a client with nothing to answer with, and no page to read identifiers from.
         youTubeMusic: YouTubeMusicClient = YouTubeMusicClient(Unanswered),
         innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider { null },
+        // Kept in memory unless a test says where: every state writing the one file under the test folder would
+        // have each test reading the listens of the others.
+        history: PlayHistory = PlayHistory(PlayHistoryRepository(null)),
     ): AppState = AppState(
         ytDlp = Backend,
         credentials = credentials,
@@ -150,6 +155,7 @@ internal object AppStateHarness {
         injectedProviders = providers,
         settingsRepository = SettingsRepository(settings),
         queueStore = QueueStore(null),
+        playHistory = history,
         checkForUpdatesAtLaunch = false,
         refreshAtLaunch = false,
         accountClient = accountClient,
