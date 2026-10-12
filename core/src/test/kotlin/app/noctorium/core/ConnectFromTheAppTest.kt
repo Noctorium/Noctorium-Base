@@ -175,6 +175,9 @@ class ConnectFromTheAppTest {
 
         app.toggleMute()
         waitFor("the speaker to go silent") { speakerPlayer.volume == 0f }
+        // Mute on another device decides from what this one last heard of it; a person would see the speaker
+        // shown silent before pressing again, and so does this.
+        waitFor("the player to show it silent") { app.shownPlayback.value.volume == 0f }
         app.toggleMute()
         waitFor("and back to where it was") { speakerPlayer.volume == 0.3f }
 

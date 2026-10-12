@@ -544,6 +544,21 @@ class ConnectManager(
     }
 
     /**
+     * Sends instructions that only mean what they should in the order given -- Stop's pause, then its return to the
+     * start -- one after the other. Sent separately they can cross on the way, and a song sent back to its start
+     * while still playing is paused a moment into it rather than at the beginning.
+     */
+    fun controlInOrder(vararg commands: Command) {
+        val peer = mutableState.value.target ?: return
+        val secret = key() ?: return
+        val asking = commands.map { command ->
+            expectHere(command)
+            command to asked.incrementAndGet()
+        }
+        scope.launch { asking.forEach { (command, question) -> send(peer, secret, command, question) } }
+    }
+
+    /**
      * Sends one instruction of a kind that comes as fast as a slider moves -- seeking, the volume -- and only
      * the latest of them: while one is on its way, those after it replace each other, and the last is sent
      * when it lands. Each is shown at once all the same.

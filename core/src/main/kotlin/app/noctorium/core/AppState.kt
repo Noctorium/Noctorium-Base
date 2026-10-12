@@ -957,8 +957,7 @@ class AppState(
     fun stop() {
         // The other device's Stop: paused, back at the start of its song.
         if (drivingAnotherDevice()) {
-            connectManager.control { Command(CommandType.PAUSE) }
-            connectManager.controlLatest(Command(CommandType.SEEK, positionMs = 0))
+            connectManager.controlInOrder(Command(CommandType.PAUSE), Command(CommandType.SEEK, positionMs = 0))
             return
         }
         pendingResume = null
