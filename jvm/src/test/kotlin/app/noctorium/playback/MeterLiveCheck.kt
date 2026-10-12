@@ -35,9 +35,9 @@ import kotlin.test.assertTrue
 class MeterLiveCheck {
     private val enabled = System.getProperty("noctorium.live") == "true"
 
-    /** Five seconds of quiet noise, -30 dBFS or so, as a WAV: below the limiter even boosted four times. */
-    private fun noise(channels: Int): Path {
-        val frames = 48_000 * 5
+    /** Five seconds of quiet noise, or [seconds], -30 dBFS or so, as a WAV: below the limiter even boosted four times. */
+    private fun noise(channels: Int, seconds: Int = 5): Path {
+        val frames = 48_000 * seconds
         val random = Random(7)
         val data = ByteBuffer.allocate(frames * channels * 2).order(ByteOrder.LITTLE_ENDIAN)
         repeat(frames * channels) { data.putShort((random.nextInt(-1_000, 1_000)).toShort()) }
@@ -291,6 +291,52 @@ class MeterLiveCheck {
                 assertEquals(7.96f, heard.getValue(1_000) - heard.getValue(400), absoluteTolerance = .5f)
                 assertEquals(.72f, engine.state.value.volume, "the volume is still the listener's")
                 watching.cancel()
+            }
+        } finally {
+            engine.close()
+            Files.deleteIfExists(file)
+        }
+    }
+
+    /**
+     * mpv's own volume, which comes after the booster and the meter and so is seen by neither: it goes to 100 when
+     * the booster is switched on mid-song, since the listener's volume is then inside the booster's gain, and back
+     * to the volume when the booster goes off. Left where it was, the volume is applied twice -- 200% at the volume
+     * Noctorium opens at came out quieter than no boost at all -- and left at 100 as the booster goes off, the song
+     * jumps to full volume.
+     */
+    @Test
+    fun `mpv's own volume goes over to the booster and back while the song plays`() {
+        if (!enabled) return
+        val file = noise(2, seconds = 30)
+        val track = Track(ProviderType.LOCAL, "noise", "Noise", listOf(Artist("n", "Nobody", ProviderType.LOCAL)), durationMs = 30_000, sourceUrl = file.toUri().toString())
+        val engine = MpvPlaybackEngine(YtDlpService(), downloadedFile = { file }, audioOutput = "null")
+        try {
+            runBlocking {
+                engine.play(track)
+                suspend fun mpvVolume(): Double? = (engine.property("volume") as? kotlinx.serialization.json.JsonPrimitive)?.content?.toDoubleOrNull()
+                suspend fun settlesAt(expected: Double, what: String) {
+                    val reached = kotlinx.coroutines.withTimeoutOrNull(3_000) {
+                        while (mpvVolume()?.let { abs(it - expected) < .5 } != true) kotlinx.coroutines.delay(50)
+                        true
+                    }
+                    assertTrue(reached == true, "$what: mpv's volume is ${mpvVolume()}, not $expected")
+                }
+                settlesAt(72.0, "no boost")
+                // Well into the song, as a listener reaches for the booster: past the first moments, when the engine
+                // learns the stream's format and brings everything up to date once more anyway.
+                withTimeout(5_000) { engine.state.first { it.format?.channels == 2 } }
+                kotlinx.coroutines.delay(1_500)
+                engine.setVolumeBoostPercent(400)
+                settlesAt(100.0, "the booster switched on")
+                engine.setVolumeBoostPercent(1_000)
+                kotlinx.coroutines.delay(500)
+                settlesAt(100.0, "the booster turned up")
+                engine.setVolume(.5f)
+                kotlinx.coroutines.delay(500)
+                settlesAt(100.0, "the volume moved with the booster on")
+                engine.setVolumeBoostPercent(VolumeBoost.OFF_PERCENT)
+                settlesAt(50.0, "the booster switched off")
             }
         } finally {
             engine.close()

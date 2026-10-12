@@ -781,15 +781,22 @@ class MpvPlaybackEngine(
         volumeHandOver = scope.launch {
             delay(waitMs)
             filtersMutex.withLock {
-                if (process?.isAlive == true && controllable && wantedMpvVolume() == target) runCatching { setMpvVolume(target) }
+                // Sent as it is rather than through [setMpvVolume], which cancels the hand-over waiting -- this one.
+                // It did, and so cancelled itself before a word reached mpv: the booster switched on mid-song left
+                // mpv's volume where it was, under a gain that already held it, and 200% played quieter than none.
+                if (process?.isAlive == true && controllable && wantedMpvVolume() == target) runCatching { sendMpvVolume(target) }
             }
         }
     }
 
-    /** Sets mpv's own volume, 0 to 100, and remembers it. Called with [filtersMutex] held. */
+    /** Sets mpv's own volume, 0 to 100, and remembers it, in place of any hand-over waiting. Called with [filtersMutex] held. */
     private suspend fun setMpvVolume(percent: Double) {
         volumeHandOver?.cancel()
         volumeHandOver = null
+        sendMpvVolume(percent)
+    }
+
+    private suspend fun sendMpvVolume(percent: Double) {
         sendCommand("set_property", JsonPrimitive("volume"), JsonPrimitive(percent))
         mpvVolume = percent
     }
@@ -1166,6 +1173,9 @@ class MpvPlaybackEngine(
     }
 
     /** A property's value, or null when mpv has none to give yet -- or cannot be asked. */
+    /** A property of the running mpv as it is now, for the live checks to see what mpv was actually told. */
+    internal suspend fun property(name: String): JsonElement? = propertyOrNull(name)
+
     private suspend fun propertyOrNull(name: String): JsonElement? =
         runCatching { sendCommand("get_property", JsonPrimitive(name))["data"] }.getOrNull()?.takeUnless { it is JsonNull }
 
