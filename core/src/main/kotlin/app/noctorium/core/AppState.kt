@@ -51,6 +51,8 @@ import app.noctorium.library.TrackEdit
 import app.noctorium.library.TrackEditsRepository
 import app.noctorium.library.edited
 import app.noctorium.library.withEdit
+import app.noctorium.history.HistoryEntry
+import app.noctorium.history.PlayHistory
 import app.noctorium.playback.SegmentSkipper
 import app.noctorium.playback.SponsorBlockClient
 import app.noctorium.playlists.shareableText
@@ -402,6 +404,8 @@ class AppState(
     private val playlistRepository: LocalPlaylistRepository = LocalPlaylistRepository(),
     private val recentRepository: RecentTracksRepository = RecentTracksRepository(),
     private val pinnedRepository: PinnedTracksRepository = PinnedTracksRepository(),
+    /** What has been played here, kept on this device and nowhere else. See [PlayHistory]. */
+    private val playHistory: PlayHistory = PlayHistory(),
     /** The queue between launches. See [QueueStore]. */
     private val queueStore: app.noctorium.playback.QueueStore = app.noctorium.playback.QueueStore(),
     private val soundCloudRelated: app.noctorium.social.SoundCloudRelatedClient = app.noctorium.social.SoundCloudRelatedClient(),
@@ -3882,6 +3886,41 @@ class AppState(
         scope.launch(Dispatchers.IO) { runCatching { recentRepository.save(updated) } }
     }
 
+    // --- The history: what was played here, kept on this device ---
+
+    /**
+     * Every listen on this device, newest first, with the listener's own titles and artists over them as everywhere
+     * else. It is kept in a file of its own here and goes nowhere: see [PlayHistory].
+     */
+    val history: StateFlow<List<HistoryEntry>> = combine(
+        playHistory.entries,
+        mutableUi.map { it.trackEdits }.distinctUntilChanged(),
+    ) { entries, edits ->
+        if (edits.isEmpty()) entries
+        else entries.map { entry -> if (entry.track.queueKey in edits) entry.copy(track = entry.track.edited(edits)) else entry }
+    }.stateIn(scope, SharingStarted.Eagerly, playHistory.entries.value)
+
+    init {
+        // This device's own player, never what it shows of another: the device that is playing keeps the history
+        // of it. A Spotify song played in Spotify's own app from here is in it, since the listener played it here.
+        playHistory.follow(
+            playback,
+            scope,
+            recording = { mutableSettings.value.preferences.keepHistory && !drivingAnotherDevice() },
+            // Kept as the service named it, as Played lately is, so an edit taken back is taken back here too.
+            named = { playing -> rawRecent.firstOrNull { it.queueKey == playing.queueKey } ?: playing },
+        )
+    }
+
+    /** Whether what is played here goes on being added to the history. Off keeps what is there. */
+    fun setKeepHistory(enabled: Boolean) = updatePreferences { copy(keepHistory = enabled) }
+
+    /** Takes one listen out of the history; any other listen of the same song stays. */
+    fun removeFromHistory(entry: HistoryEntry) = playHistory.remove(entry)
+
+    /** Forgets the whole history. */
+    fun clearHistory() = playHistory.clear()
+
     private fun Track.lyricsLookupKey(): String = "$queueKey|$title|$artistLine|${durationMs ?: 0}"
 
     private fun observeTrackCompletion() {
@@ -5142,6 +5181,8 @@ class AppState(
         }
         // A playlist changed a moment ago is written now, rather than dropped with the scope's pending writes.
         writePlaylists()
+        // And a listen filed a moment ago.
+        playHistory.close()
         sleeper.cancel()
         player.close()
         connectManager.close()

@@ -654,6 +654,12 @@ data class NoctoriumPreferences(
     /** The queue is kept when Noctorium closes, and picked up where it was left. */
     val keepQueue: Boolean = true,
     /**
+     * What is played here is added to the history on the profile page: see [app.noctorium.history.PlayHistory].
+     * Off adds nothing more and keeps what is there. Only the choice is in this file; the history has a file of its
+     * own and never leaves the device.
+     */
+    val keepHistory: Boolean = true,
+    /**
      * What playing a song from Home or from a search does: start a radio from it -- autoplay's songs after it -- or
      * play on through the rest of its shelf or results, which is what it always did before. Named for Home, where it
      * began. See [app.noctorium.core.AppState.playFromHome] and [app.noctorium.core.AppState.playFromSearch].
