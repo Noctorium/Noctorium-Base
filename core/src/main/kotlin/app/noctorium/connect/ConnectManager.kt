@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -15,9 +16,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.Serializable
 import java.net.InetSocketAddress
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /** Playback on this device, as another one would want to see it. */
 @Serializable
@@ -47,7 +50,7 @@ interface ConnectHost {
     fun snapshot(): PlaybackSnapshot
 
     /**
-     * The whole queue, for a device taking the music back from this one.
+     * The whole queue, for a device taking the music back from this one, or showing it in a queue panel.
      *
      * Nothing, by default: a device that took the music back from a host saying nothing gets the one song
      * this was on, which is what it always used to get.
@@ -66,8 +69,34 @@ interface ConnectHost {
     suspend fun setShuffle(enabled: Boolean)
     suspend fun setRepeat(mode: String)
 
+    /** Plays the song at [index] in the queue: a remote control's queue panel, tapped. */
+    suspend fun jumpTo(index: Int) {}
+
+    /** Puts [tracks] in the queue: after the song playing when [next], at the end otherwise. */
+    suspend fun addToQueue(tracks: List<Track>, next: Boolean) {}
+
+    suspend fun removeFromQueue(index: Int) {}
+    suspend fun moveInQueue(from: Int, to: Int) {}
+
     /** Stop playing here, because somebody else is taking it. */
     suspend fun standDown()
+}
+
+/**
+ * Where the music is, as one device sees it: what a Connect page puts first, and what the player shows.
+ */
+sealed interface MusicPlace {
+    /** On this device: playing, paused, or ready to. */
+    data object Here : MusicPlace
+
+    /** On [peer], with this device as its remote control: the player here shows and drives that one. */
+    data class Driving(val peer: ConnectPeer) : MusicPlace
+
+    /** On [peer], playing by itself: this device can take it, or send it on, but is not driving it. */
+    data class Elsewhere(val peer: ConnectPeer) : MusicPlace
+
+    /** Nothing anywhere. */
+    data object Nowhere : MusicPlace
 }
 
 /** Everything the UI shows about Connect. */
@@ -76,6 +105,7 @@ data class ConnectState(
     val available: Boolean = false,
     val listening: Boolean = false,
     val thisDevice: String = "",
+    /** The other devices, each with what it is playing and who is driving whom, as it last said. */
     val devices: List<ConnectPeer> = emptyList(),
     /** The device this one is currently driving, if any. */
     val target: ConnectPeer? = null,
@@ -85,7 +115,40 @@ data class ConnectState(
     val controlledBy: String? = null,
     val busy: Boolean = false,
     val message: String? = null,
-)
+    /** This device's own id, as the others know it. */
+    val thisDeviceId: String = "",
+    /** When [remote] was heard, by this device's clock: what its position is as of. */
+    val remoteAtMs: Long = 0,
+    /**
+     * The driven device's whole queue, once it has been asked for: null until then, and from a device too old
+     * to give it, when the one song in [remote] is all there is to show.
+     */
+    val remoteQueue: QueueSnapshot? = null,
+    /** The id of the device driving this one, beside [controlledBy], its name. */
+    val controlledById: String? = null,
+) {
+    /** How far into its song the driven device is at [nowMs], moving on from what it last said while it plays. */
+    fun remotePositionAt(nowMs: Long): Long {
+        val remote = remote ?: return 0
+        val moved = if (remote.playing) remote.positionMs + (nowMs - remoteAtMs).coerceAtLeast(0) else remote.positionMs
+        return if (remote.durationMs > 0) moved.coerceAtMost(remote.durationMs) else moved
+    }
+
+    /**
+     * Where the music is, from here.
+     *
+     * The device being driven, when one is. Otherwise this device when it is playing, then another device
+     * that is, then this one if it has a song at all, paused or ready, then another with one paused.
+     */
+    fun musicPlace(herePlaying: Boolean, hereHasSong: Boolean): MusicPlace {
+        target?.let { driven -> return MusicPlace.Driving(devices.firstOrNull { it.id == driven.id } ?: driven) }
+        if (herePlaying) return MusicPlace.Here
+        devices.firstOrNull { it.nowPlaying?.playing == true }?.let { return MusicPlace.Elsewhere(it) }
+        if (hereHasSong) return MusicPlace.Here
+        devices.firstOrNull { it.nowPlaying != null }?.let { return MusicPlace.Elsewhere(it) }
+        return MusicPlace.Nowhere
+    }
+}
 
 /** The music, come back from the device that had it: its queue, where in it, and how far into that song. */
 data class BroughtBack(val tracks: List<Track>, val index: Int, val positionMs: Long)
@@ -101,6 +164,9 @@ data class BroughtBack(val tracks: List<Track>, val index: Int, val positionMs: 
  * resolves and plays the tracks itself -- so the phone plays at the phone's quality, over the phone's own
  * connection, and keeps playing after the desktop is shut down. That is also why it is fast: a queue of
  * fifty tracks is a few kilobytes of JSON, not audio.
+ *
+ * Every device also says what it is playing, and who is driving whom, in its announcements -- and says it at
+ * once when that changes -- so each device's Connect page shows the same picture of all of them.
  */
 class ConnectManager(
     private val host: ConnectHost,
@@ -158,6 +224,24 @@ class ConnectManager(
     private var pollJob: Job? = null
     private var housekeeping: Job? = null
 
+    /** Wakes the remote control's polling before its second is up: something changed over there. */
+    private val pollNow = Channel<Unit>(Channel.CONFLATED)
+
+    /**
+     * Counts what the remote control has asked for, so an answer to an older question cannot undo a newer one.
+     *
+     * Pause is shown paused at once, before the other device has answered. A state read a moment before the
+     * pause was sent, and arriving a moment after, would otherwise show it playing again for a second.
+     */
+    private val asked = AtomicLong()
+
+    /** The key of the driven device's queue as last fetched, so it is fetched again only when it changes. */
+    @Volatile private var remoteQueueKey: String? = null
+
+    /** The latest of each kind of instruction sent as fast as a slider moves, and which are on their way. */
+    private val latest = ConcurrentHashMap<CommandType, Command>()
+    private val sending = ConcurrentHashMap.newKeySet<CommandType>()
+
     /** Addresses to look for a device at, as well as listening for announcements. See [addAddress]. */
     private val addresses = ConcurrentHashMap<Pair<String, Int>, String>()
 
@@ -169,11 +253,19 @@ class ConnectManager(
     init {
         scope.launch {
             discovery.peers.collect { peers ->
+                val before = mutableState.value
                 mutableState.update { it.copy(devices = peers.sortedBy(ConnectPeer::name)) }
                 // A device we were driving that has stopped announcing is gone; drop the remote control
                 // rather than leaving a screen pointed at nothing.
-                val target = mutableState.value.target
-                if (target != null && peers.none { it.id == target.id }) release("${target.name} left the network.")
+                val target = before.target ?: return@collect
+                val heard = peers.firstOrNull { it.id == target.id }
+                if (heard == null) {
+                    release("${target.name} left the network.")
+                    return@collect
+                }
+                // It said something changed -- its own buttons, or another remote's -- before the next poll
+                // would have found out. Asked now, so this device's player follows within the moment.
+                if (differs(heard.nowPlaying, before.remote)) pollNow.trySend(Unit)
             }
         }
     }
@@ -202,7 +294,7 @@ class ConnectManager(
                 // looking at an empty device list with nothing anywhere telling them why.
                 log("Not starting: no connect key stored yet. Sign in to Noctorium, or check the service.")
                 mutableState.update {
-                    it.copy(available = false, listening = false, thisDevice = this.deviceName)
+                    it.copy(available = false, listening = false, thisDevice = this.deviceName, thisDeviceId = deviceId)
                 }
                 return
             }
@@ -212,11 +304,18 @@ class ConnectManager(
                 mutableState.update { it.copy(available = false, message = "Could not open a port for Connect.") }
                 return
             }
-            discovery.start(::announcement, ::key)
+            discovery.start({ announcement() }, ::key)
             if (housekeeping?.isActive != true) housekeeping = scope.launch { keepHouse() }
             mutableState.update {
-                it.copy(available = true, listening = discovery.running, thisDevice = this.deviceName, message = null)
+                it.copy(
+                    available = true,
+                    listening = discovery.running,
+                    thisDevice = this.deviceName,
+                    thisDeviceId = deviceId,
+                    message = null,
+                )
             }
+            discovery.announceNow()
         }
     }
 
@@ -230,7 +329,14 @@ class ConnectManager(
             discovery.stop()
             server.stop()
             mutableState.update {
-                it.copy(available = false, listening = false, devices = emptyList(), target = null, remote = null)
+                it.copy(
+                    available = false,
+                    listening = false,
+                    devices = emptyList(),
+                    target = null,
+                    remote = null,
+                    remoteQueue = null,
+                )
             }
         }
     }
@@ -283,6 +389,14 @@ class ConnectManager(
         addresses.remove(address.trim() to port)
     }
 
+    /**
+     * Tells the other devices what this one is doing now, rather than at the next beat.
+     *
+     * The application calls this when its song changes, or starts or stops, so every Connect page on the
+     * network shows it within the moment.
+     */
+    fun announceNow() = discovery.announceNow()
+
     // -- driving another device ------------------------------------------------------------------
 
     /**
@@ -300,24 +414,13 @@ class ConnectManager(
         scope.launch {
             // Before the device list is disabled, not after: a handover that could not even be started
             // used to leave it greyed out for good.
-            val from = announcement() ?: return@launch say("Connect is not running on this device.")
+            val from = identity() ?: return@launch say("Connect is not running on this device.")
             mutableState.update { it.copy(busy = true, message = null) }
-            val reply = client.command(
-                peer, secret, from,
-                Command(
-                    type = CommandType.TAKE_OVER,
-                    tracks = tracks.map { it.toWire() },
-                    index = index.coerceIn(0, tracks.lastIndex),
-                    positionMs = positionMs,
-                ),
-            )
+            val reply = client.command(peer, secret, from, takeOver(tracks.map { it.toWire() }, index, positionMs))
             if (reply.ok) {
                 log("Handed ${tracks.size} track(s) to ${peer.name} at ${positionMs}ms")
                 host.standDown()
-                mutableState.update {
-                    it.copy(busy = false, target = peer, remote = reply.state, message = "Playing on ${peer.name}.")
-                }
-                watch(peer)
+                drive(peer, reply.state, "Playing on ${peer.name}.")
             } else {
                 log("${peer.name} did not take the handover: ${reply.message}")
                 mutableState.update { it.copy(busy = false, message = reply.message ?: "${peer.name} refused.") }
@@ -325,28 +428,172 @@ class ConnectManager(
         }
     }
 
-    /** Sends one instruction to the device being driven. */
+    /**
+     * Moves the music from [from] to [to], wherever each is: null for either is this device.
+     *
+     * From here it is [transferTo], with this device's own queue. To here, the music comes back as it does
+     * from a device being driven -- its whole queue, from where it had got to -- whether or not this device was
+     * driving it. From one other device to another, it comes back the same way and goes straight on, and this
+     * device is the new one's remote control, as it would be had it sent the music there itself. Should the
+     * new one refuse, the music goes back to where it was rather than being left nowhere.
+     *
+     * [here] is what this device should play when the music comes to it: the application starts it.
+     */
+    fun move(from: ConnectPeer?, to: ConnectPeer?, here: suspend (BroughtBack) -> Unit) {
+        if (from?.id == to?.id) return
+        if (from == null) {
+            val queue = host.queue()
+            transferTo(to ?: return, queue.tracks, queue.index, host.snapshot().positionMs)
+            return
+        }
+        val secret = key() ?: return say("Sign in to your Noctorium account to use Connect.")
+        scope.launch {
+            val identity = identity() ?: return@launch say("Connect is not running on this device.")
+            mutableState.update { it.copy(busy = true, message = null) }
+            val lastSeen = mutableState.value.remote?.takeIf { mutableState.value.target?.id == from.id }
+            if (mutableState.value.target?.id == from.id) release()
+            val back = client.command(from, secret, identity, Command(type = CommandType.HAND_BACK))
+            val music = musicIn(back, lastSeen)
+            if (music == null) {
+                return@launch say(if (back.ok) "Nothing is playing on ${from.name}." else back.message ?: "${from.name} did not answer.")
+            }
+            if (to == null) {
+                log("Brought ${music.tracks.size} track(s) here from ${from.name}")
+                say(if (back.ok) "Brought here from ${from.name}." else "Playing here. ${from.name} did not answer, so it may still be playing.")
+                here(music)
+                return@launch
+            }
+            val wire = music.tracks.map { it.toWire() }
+            val reply = client.command(to, secret, identity, takeOver(wire, music.index, music.positionMs))
+            if (reply.ok) {
+                log("Moved ${music.tracks.size} track(s) from ${from.name} to ${to.name}")
+                drive(to, reply.state, "Playing on ${to.name}.")
+            } else {
+                // Back where it was, rather than nowhere.
+                val restored = back.ok && client.command(from, secret, identity, takeOver(wire, music.index, music.positionMs)).ok
+                say(
+                    (reply.message ?: "${to.name} did not take it.") +
+                        if (restored) " It is still playing on ${from.name}." else "",
+                )
+            }
+        }
+    }
+
+    /** What came back from a device asked to hand its music over: its whole queue, or the one song it was on. */
+    private fun musicIn(back: CommandReply, lastSeen: RemoteState?): BroughtBack? {
+        back.handover?.takeIf { it.tracks.isNotEmpty() }?.let { handover ->
+            return BroughtBack(
+                handover.tracks.map(WireTrack::toTrack),
+                handover.index.coerceIn(0, handover.tracks.lastIndex),
+                handover.positionMs,
+            )
+        }
+        val said = back.state?.takeIf { it.track != null } ?: lastSeen
+        val track = said?.track ?: return null
+        return BroughtBack(listOf(track.toTrack()), 0, said.positionMs)
+    }
+
+    private fun takeOver(tracks: List<WireTrack>, index: Int, positionMs: Long) = Command(
+        type = CommandType.TAKE_OVER,
+        tracks = tracks,
+        index = index.coerceIn(0, tracks.lastIndex),
+        positionMs = positionMs,
+    )
+
+    /** From now on this device is [peer]'s remote control. */
+    private fun drive(peer: ConnectPeer, state: RemoteState?, message: String) {
+        asked.incrementAndGet()
+        remoteQueueKey = null
+        mutableState.update {
+            it.copy(
+                busy = false,
+                target = peer,
+                remote = state,
+                remoteAtMs = clock(),
+                remoteQueue = null,
+                message = message,
+            )
+        }
+        watch(peer)
+        discovery.announceNow()
+    }
+
+    /** Sends one instruction to the device being driven, and shows what it should do at once. */
     fun control(build: () -> Command) {
         val peer = mutableState.value.target ?: return
         val secret = key() ?: return
+        val command = build()
+        val question = asked.incrementAndGet()
+        expectHere(command)
+        scope.launch { send(peer, secret, command, question) }
+    }
+
+    /**
+     * Sends one instruction of a kind that comes as fast as a slider moves -- seeking, the volume -- and only
+     * the latest of them: while one is on its way, those after it replace each other, and the last is sent
+     * when it lands. Each is shown at once all the same.
+     */
+    fun controlLatest(command: Command) {
+        val peer = mutableState.value.target ?: return
+        val secret = key() ?: return
+        asked.incrementAndGet()
+        expectHere(command)
+        latest[command.type] = command
+        if (!sending.add(command.type)) return
         scope.launch {
-            val from = announcement() ?: return@launch
-            val command = build()
-            val reply = client.command(peer, secret, from, command)
-            if (reply.ok) {
-                mutableState.update { it.copy(remote = reply.state ?: it.remote) }
-            } else {
-                log("${command.type} on ${peer.name} failed: ${reply.message}")
-                mutableState.update { it.copy(message = reply.message) }
+            try {
+                while (true) {
+                    val next = latest.remove(command.type) ?: break
+                    send(peer, secret, next, asked.get())
+                }
+            } finally {
+                sending.remove(command.type)
             }
+            // One that arrived between the last look and letting go would otherwise wait for the next.
+            latest.remove(command.type)?.let(::controlLatest)
+        }
+    }
+
+    private suspend fun send(peer: ConnectPeer, secret: String, command: Command, question: Long) {
+        val from = identity() ?: return
+        val reply = client.command(peer, secret, from, command)
+        if (reply.ok) {
+            // Only if nothing newer has been asked since: that has already been shown, and this would undo it.
+            if (asked.get() == question && mutableState.value.target?.id == peer.id) {
+                reply.state?.let { seen -> mutableState.update { it.copy(remote = seen, remoteAtMs = clock()) } }
+            }
+        } else {
+            log("${command.type} on ${peer.name} failed: ${reply.message}")
+            mutableState.update { it.copy(message = reply.message) }
+        }
+    }
+
+    /** What the driven device will be doing once [command] lands, shown before it has: the player follows at once. */
+    private fun expectHere(command: Command) {
+        mutableState.update { state ->
+            val remote = state.remote ?: return@update state
+            val now = clock()
+            val expected = when (command.type) {
+                CommandType.PLAY -> remote.copy(playing = remote.track != null, positionMs = state.remotePositionAt(now))
+                CommandType.PAUSE -> remote.copy(playing = false, positionMs = state.remotePositionAt(now))
+                CommandType.SEEK -> remote.copy(positionMs = command.positionMs ?: 0)
+                CommandType.VOLUME -> remote.copy(volume = command.volume ?: remote.volume)
+                CommandType.SHUFFLE -> remote.copy(shuffle = command.enabled ?: remote.shuffle)
+                CommandType.REPEAT -> remote.copy(repeat = command.repeat ?: remote.repeat)
+                else -> return@update state
+            }
+            state.copy(remote = expected, remoteAtMs = now)
         }
     }
 
     /** Stops driving, and leaves the other device playing. */
     fun release(message: String? = null) {
+        val wasDriving = mutableState.value.target != null
         pollJob?.cancel()
         pollJob = null
-        mutableState.update { it.copy(target = null, remote = null, message = message) }
+        remoteQueueKey = null
+        mutableState.update { it.copy(target = null, remote = null, remoteQueue = null, message = message) }
+        if (wasDriving) discovery.announceNow()
     }
 
     /**
@@ -361,7 +608,7 @@ class ConnectManager(
         val lastSeen = mutableState.value.remote
         release()
         val secret = key()
-        val from = announcement()
+        val from = identity()
         val reply = if (secret != null && from != null) {
             client.command(peer, secret, from, Command(type = CommandType.HAND_BACK))
         } else {
@@ -374,16 +621,7 @@ class ConnectManager(
                 "Brought back here. ${peer.name} did not answer, so it may still be playing."
             },
         )
-        val handover = reply?.handover?.takeIf { it.tracks.isNotEmpty() }
-        if (handover != null) {
-            return BroughtBack(
-                handover.tracks.map(WireTrack::toTrack),
-                handover.index.coerceIn(0, handover.tracks.lastIndex),
-                handover.positionMs,
-            )
-        }
-        val track = (reply?.state ?: lastSeen)?.track ?: return null
-        return BroughtBack(listOf(track.toTrack()), 0, (reply?.state ?: lastSeen)?.positionMs ?: 0)
+        return musicIn(reply ?: CommandReply(ok = false), lastSeen)
     }
 
     /**
@@ -396,7 +634,7 @@ class ConnectManager(
         release("Stopped on ${peer.name}, to play here.")
         val secret = key() ?: return
         scope.launch {
-            val from = announcement() ?: return@launch
+            val from = identity() ?: return@launch
             val reply = client.command(peer, secret, from, Command(type = CommandType.HAND_BACK))
             if (!reply.ok) say("${peer.name} did not answer, so it may still be playing.")
         }
@@ -406,30 +644,57 @@ class ConnectManager(
 
     private fun say(message: String) = mutableState.update { it.copy(busy = false, message = message) }
 
-    /** Keeps the remote control honest while it is on screen. */
+    /**
+     * Keeps the remote control honest while it is on screen: what the other device is doing every second,
+     * sooner when it says something changed, and its whole queue each time the songs in it change.
+     */
     private fun watch(peer: ConnectPeer) {
         pollJob?.cancel()
         pollJob = scope.launch {
             val secret = key() ?: return@launch
             var failing: String? = null
             while (isActive && mutableState.value.target?.id == peer.id) {
-                val from = announcement() ?: break
+                val from = identity() ?: break
                 // Wherever it was last heard from, which can change while it is being driven.
                 val current = mutableState.value.devices.firstOrNull { it.id == peer.id } ?: peer
+                val question = asked.get()
                 val reply = client.stateAt(current.address, current.port, secret, from, driving = true)
                 val seen = reply.state
                 if (seen != null) {
                     if (failing != null) log("${peer.name} is answering again")
                     failing = null
-                    if (mutableState.value.target?.id == peer.id) mutableState.update { it.copy(remote = seen) }
+                    if (mutableState.value.target?.id == peer.id && asked.get() == question) {
+                        mutableState.update { it.copy(remote = seen, remoteAtMs = clock()) }
+                    }
+                    // Listed by its answers as well as its announcements: a device that can be driven is here.
+                    discovery.heard(peerFrom(seen, current.address, current.port))
+                    if (seen.queueKey != null && seen.queueKey != remoteQueueKey) fetchQueue(current, secret, from, seen.queueKey)
                 } else if (failing == null) {
                     // Once, not every second.
                     failing = reply.failure
                     log("Lost touch with ${peer.name}: $failing")
                 }
-                delay(POLL_EVERY_MS)
+                withTimeoutOrNull(POLL_EVERY_MS) { pollNow.receive() }
             }
         }
+    }
+
+    private suspend fun fetchQueue(peer: ConnectPeer, secret: String, from: DeviceAnnouncement, key: String) {
+        val queue = client.queue(peer, secret, from) ?: return
+        if (mutableState.value.target?.id != peer.id) return
+        remoteQueueKey = key
+        mutableState.update {
+            it.copy(remoteQueue = QueueSnapshot(queue.tracks.map(WireTrack::toTrack), queue.index))
+        }
+    }
+
+    /** Whether what a device announced differs from what its remote control last read of it. */
+    private fun differs(heard: NowPlaying?, remote: RemoteState?): Boolean {
+        if (remote == null) return false
+        val track = remote.track
+        if ((heard == null) != (track == null)) return true
+        if (heard == null || track == null) return false
+        return heard.playing != remote.playing || heard.title != track.title
     }
 
     // -- being driven ----------------------------------------------------------------------------
@@ -439,6 +704,12 @@ class ConnectManager(
         // somewhere, and this device should go on saying so for as long as it is.
         driver?.let { current -> if (drivenBy != null && current.id == drivenBy) driver = current.copy(at = clock()) }
         return snapshotAsRemote()
+    }
+
+    override suspend fun queue(): RemoteQueue? {
+        val queue = host.queue()
+        if (queue.tracks.isEmpty()) return null
+        return RemoteQueue(queue.tracks.map { it.toWire() }, queue.index, queueKeyOf(queue.tracks))
     }
 
     /**
@@ -486,12 +757,18 @@ class ConnectManager(
                     CommandType.VOLUME -> host.setVolume(command.volume ?: 1f)
                     CommandType.SHUFFLE -> host.setShuffle(command.enabled ?: false)
                     CommandType.REPEAT -> host.setRepeat(command.repeat ?: "OFF")
+                    CommandType.JUMP -> host.jumpTo(command.index)
+                    CommandType.ADD -> host.addToQueue(command.tracks.map(WireTrack::toTrack), next = command.enabled == true)
+                    CommandType.REMOVE -> host.removeFromQueue(command.index)
+                    CommandType.MOVE -> host.moveInQueue(command.index, command.toIndex ?: command.index)
                 }
             }.onFailure { log("Command ${command.type} failed: $it") }
+            // Every other device's Connect page shows what this one is doing; it has just changed.
+            discovery.announceNow()
         }
 
         log("${command.type} from ${command.fromDeviceName ?: "another device"}")
-        mutableState.update { it.copy(controlledBy = currentDriver()) }
+        mutableState.update { it.copy(controlledBy = currentDriver(), controlledById = driver?.id) }
         return CommandReply(ok = true, state = expected(command), handover = handover)
     }
 
@@ -508,31 +785,45 @@ class ConnectManager(
     /**
      * What this device is about to be doing, for the reply that goes back before it is doing it.
      *
-     * Only a handover needs anticipating: it is the one command that changes what is playing, and a
-     * remote control that drew the previous track for a second would look broken at the exact moment
-     * somebody was watching it.
+     * A handover changes what is playing, and a remote control that drew the previous track for a second would
+     * look broken at the exact moment somebody was watching it. The rest say what they will have done -- paused,
+     * moved to this second, at this volume -- so the remote control that sent them shows it at once and does not
+     * flick back while the work is still under way here.
      */
     private fun expected(command: Command): RemoteState {
         val now = snapshotAsRemote()
-        if (command.type == CommandType.HAND_BACK) return now.copy(playing = false)
-        if (command.type != CommandType.TAKE_OVER) return now
-        val track = command.tracks.getOrNull(command.index.coerceIn(0, command.tracks.lastIndex))
-        return now.copy(
-            playing = true,
-            track = track ?: now.track,
-            positionMs = command.positionMs ?: 0,
-            durationMs = track?.durationMs ?: now.durationMs,
-            queueSize = command.tracks.size,
-            queueIndex = command.index.coerceAtLeast(0),
-        )
+        return when (command.type) {
+            CommandType.HAND_BACK -> now.copy(playing = false)
+            CommandType.PLAY -> now.copy(playing = now.track != null)
+            CommandType.PAUSE -> now.copy(playing = false)
+            CommandType.SEEK -> now.copy(positionMs = command.positionMs ?: 0)
+            CommandType.VOLUME -> now.copy(volume = command.volume ?: now.volume)
+            CommandType.SHUFFLE -> now.copy(shuffle = command.enabled ?: now.shuffle)
+            CommandType.REPEAT -> now.copy(repeat = command.repeat ?: now.repeat)
+            CommandType.TAKE_OVER -> {
+                val track = command.tracks.getOrNull(command.index.coerceIn(0, command.tracks.lastIndex))
+                now.copy(
+                    playing = true,
+                    track = track ?: now.track,
+                    positionMs = command.positionMs ?: 0,
+                    durationMs = track?.durationMs ?: now.durationMs,
+                    queueSize = command.tracks.size,
+                    queueIndex = command.index.coerceAtLeast(0),
+                    queueKey = queueKeyOf(command.tracks.map(WireTrack::toTrack)),
+                )
+            }
+            else -> now
+        }
     }
 
     private fun snapshotAsRemote(): RemoteState {
         val snapshot = host.snapshot()
+        val queue = host.queue()
+        val driving = mutableState.value.target
         return RemoteState(
             deviceId = deviceId,
             deviceName = deviceName,
-            kind = kind,
+            kind = kind.onTheWire,
             playing = snapshot.playing,
             track = snapshot.track,
             positionMs = snapshot.positionMs,
@@ -543,6 +834,10 @@ class ConnectManager(
             shuffle = snapshot.shuffle,
             repeat = snapshot.repeat,
             controlledBy = currentDriver(),
+            controlledById = driver?.id,
+            driving = driving?.let { DeviceRef(it.id, it.name) },
+            terminal = kind == DeviceKind.TERMINAL,
+            queueKey = queue.tracks.takeIf { it.isNotEmpty() }?.let(::queueKeyOf),
         )
     }
 
@@ -568,7 +863,10 @@ class ConnectManager(
             addresses.keys.forEach { probe(it) }
             discovery.prune()
             val driving = currentDriver()
-            if (mutableState.value.controlledBy != driving) mutableState.update { it.copy(controlledBy = driving) }
+            if (mutableState.value.controlledBy != driving) {
+                mutableState.update { it.copy(controlledBy = driving, controlledById = driver?.id) }
+                discovery.announceNow()
+            }
             delay(ConnectProtocol.ANNOUNCE_EVERY_MS)
         }
     }
@@ -576,20 +874,33 @@ class ConnectManager(
     private suspend fun probe(entry: Pair<String, Int>) {
         val (address, port) = entry
         val secret = key() ?: return
-        val from = announcement() ?: return
+        val from = identity() ?: return
         val reply = client.stateAt(address, port, secret, from)
         val seen = reply.state
         val where = hostAndPort(address, port)
         val outcome = when {
             seen == null -> "Nothing answered at $where: ${reply.failure}"
             seen.deviceId == deviceId -> "$where answered, and is this device (${seen.deviceName})"
-            else -> "$where answered as ${seen.deviceName} (${seen.kind})"
+            else -> "$where answered as ${seen.deviceName} (${seen.deviceKind})"
         }
         // Said when it changes, not every few seconds.
         if (addresses.containsKey(entry) && addresses.put(entry, outcome) != outcome) log(outcome)
         if (seen == null || seen.deviceId == deviceId || !wanted || !addresses.containsKey(entry)) return
-        discovery.heard(ConnectPeer(seen.deviceId, seen.deviceName, seen.kind, address, port, clock()))
+        discovery.heard(peerFrom(seen, address, port))
     }
+
+    /** A device as its own answer describes it, reached at [address]. */
+    private fun peerFrom(seen: RemoteState, address: String, port: Int) = ConnectPeer(
+        id = seen.deviceId,
+        name = seen.deviceName,
+        kind = seen.deviceKind,
+        address = address,
+        port = port,
+        lastSeenAtMs = clock(),
+        nowPlaying = seen.nowPlaying,
+        drivenBy = seen.controlledById?.let { DeviceRef(it, seen.controlledBy.orEmpty()) },
+        driving = seen.driving,
+    )
 
     // -- identity --------------------------------------------------------------------------------
 
@@ -599,20 +910,59 @@ class ConnectManager(
         cachedKey = runCatching { secrets.get(CONNECT_KEY) }.getOrNull()?.takeIf(String::isNotBlank)
     }
 
-    private fun announcement(): DeviceAnnouncement? {
+    /** Who this device is, as every request says: an announcement with nothing else in it. */
+    private fun identity(): DeviceAnnouncement? {
         val secret = key() ?: return null
         if (deviceId.isBlank()) return null
         val port = server.port.takeIf { it > 0 } ?: return null
-        val stamp = clock() / 60_000
         val unsigned = DeviceAnnouncement(
             id = deviceId,
             name = deviceName,
-            kind = kind,
+            kind = kind.onTheWire,
             port = port,
-            stamp = stamp,
+            stamp = clock() / 60_000,
             tag = "",
         )
         return unsigned.copy(tag = ConnectSignature.sign(secret, unsigned.signable()))
+    }
+
+    /**
+     * What this device announces: who it is, what it is playing, and who is driving whom.
+     *
+     * Kept to one unfragmented packet, and well inside what a device from before these extras reads -- a
+     * longer one would reach it cut short and be dropped whole. A cover's address goes first if it does not
+     * fit, then the title and artist are shortened, and only then the song itself.
+     */
+    private fun announcement(): DeviceAnnouncement? {
+        val secret = key() ?: return null
+        val base = identity() ?: return null
+        var extra = extraFromHere()
+        repeat(SHORTENINGS) { attempt ->
+            val text = ConnectProtocol.json.encodeToString(AnnouncementExtra.serializer(), extra)
+            val unsigned = base.copy(extra = text)
+            val signed = unsigned.copy(extraTag = ConnectSignature.sign(secret, unsigned.signableWithExtra()))
+            val size = ConnectProtocol.json.encodeToString(DeviceAnnouncement.serializer(), signed).toByteArray(Charsets.UTF_8).size
+            if (size <= MAX_ANNOUNCEMENT_BYTES) return signed
+            val playing = extra.nowPlaying
+            extra = when (attempt) {
+                0 -> extra.copy(nowPlaying = playing?.copy(artworkUrl = null))
+                1 -> extra.copy(nowPlaying = playing?.copy(title = playing.title.take(SHORT_TEXT), artist = playing.artist.take(SHORT_TEXT)))
+                else -> extra.copy(nowPlaying = null)
+            }
+        }
+        return base
+    }
+
+    private fun extraFromHere(): AnnouncementExtra {
+        val snapshot = host.snapshot()
+        val driven = mutableState.value.target
+        val drivenBy = driver?.takeIf { currentDriver() != null }
+        return AnnouncementExtra(
+            terminal = kind == DeviceKind.TERMINAL,
+            nowPlaying = snapshot.track?.nowPlaying(snapshot.playing, snapshot.positionMs, snapshot.durationMs),
+            drivenBy = drivenBy?.let { DeviceRef(it.id.orEmpty(), it.name) },
+            driving = driven?.let { DeviceRef(it.id, it.name) },
+        )
     }
 
     companion object {
@@ -622,5 +972,20 @@ class ConnectManager(
         private const val POLL_EVERY_MS = 1_000L
 
         private const val DRIVER_FORGOTTEN_AFTER_MS = 30_000L
+
+        /**
+         * The most an announcement may be: inside one Ethernet frame, so it is never sent in pieces, and far
+         * inside the 2048 bytes a device from before announcements carried a song reads at most.
+         */
+        internal const val MAX_ANNOUNCEMENT_BYTES = 1_400
+        private const val SHORTENINGS = 4
+        private const val SHORT_TEXT = 60
+
+        /** A short key for a queue's songs, which changes when they do. Not a security measure; a cache key. */
+        internal fun queueKeyOf(tracks: List<Track>): String {
+            var hash = 1125899906842597L
+            for (track in tracks) for (char in track.queueKey) hash = 31 * hash + char.code
+            return "${tracks.size}-${java.lang.Long.toHexString(hash)}"
+        }
     }
 }

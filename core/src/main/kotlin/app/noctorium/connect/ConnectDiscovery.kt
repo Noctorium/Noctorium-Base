@@ -13,6 +13,8 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import java.net.DatagramPacket
 import java.net.DatagramSocket
 import java.net.InetAddress
@@ -40,8 +42,18 @@ data class ConnectPeer(
     val kind: DeviceKind,
     val address: String,
     val port: Int,
+    /** When it was last heard from, by this device's clock: what [nowPlaying]'s position is as of. */
     val lastSeenAtMs: Long,
-)
+    /** What it is playing, or null with nothing to play -- or for a device from before devices said so. */
+    val nowPlaying: NowPlaying? = null,
+    /** The device driving it, if one is. */
+    val drivenBy: DeviceRef? = null,
+    /** The device it is driving, if any: then the music is there, and this one is its remote control. */
+    val driving: DeviceRef? = null,
+) {
+    /** How far into its song it is at [nowMs] on this device's clock: moving on from what it last said while it plays. */
+    fun positionAt(nowMs: Long): Long = nowPlaying?.positionAfter(nowMs - lastSeenAtMs) ?: 0
+}
 
 /**
  * Finding the listener's other devices, and being found by them.
@@ -164,7 +176,21 @@ class ConnectDiscovery(
         return null
     }
 
+    /**
+     * Says this device is here now, rather than at the next beat.
+     *
+     * For a change somebody is looking at on another device: a song started, paused or skipped, a device
+     * taken over or let go of. Three seconds is fine for "still here" and far too slow for "now paused", which
+     * every other device's Connect page should show within the second.
+     */
+    fun announceNow() {
+        wake.trySend(Unit)
+    }
+
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+
     private suspend fun announce(socket: DatagramSocket, announcement: () -> DeviceAnnouncement?) {
+        var lastSentAt = 0L
         while (currentlyActive()) {
             val mine = announcement()
             if (mine != null) {
@@ -177,9 +203,13 @@ class ConnectDiscovery(
                         runCatching { socket.send(DatagramPacket(bytes, bytes.size, target, port)) }
                     }
                 }
+                lastSentAt = clock()
             }
             prune()
-            delay(ConnectProtocol.ANNOUNCE_EVERY_MS)
+            withTimeoutOrNull(ConnectProtocol.ANNOUNCE_EVERY_MS) { wake.receive() }
+            // A few a second at most, however fast things change: a seek bar dragged is a change a frame.
+            val since = clock() - lastSentAt
+            if (since in 0 until MIN_ANNOUNCE_GAP_MS) delay(MIN_ANNOUNCE_GAP_MS - since)
         }
     }
 
@@ -205,16 +235,20 @@ class ConnectDiscovery(
             val secret = key() ?: continue
             if (heard.id == announcement()?.id) continue
             if (!believable(heard, secret)) continue
+            val extra = extraOf(heard, secret)
 
             heard(
                 ConnectPeer(
                     id = heard.id,
                     name = heard.name,
-                    kind = heard.kind,
+                    kind = deviceKind(heard.kind, extra?.terminal == true),
                     // From the envelope, not the letter. See the class comment.
                     address = packet.address.hostAddress ?: continue,
                     port = heard.port,
                     lastSeenAtMs = clock(),
+                    nowPlaying = extra?.nowPlaying,
+                    drivenBy = extra?.drivenBy,
+                    driving = extra?.driving,
                 ),
             )
         }
@@ -227,6 +261,18 @@ class ConnectDiscovery(
         val minutesOut = kotlin.math.abs(clock() / 60_000 - heard.stamp)
         if (minutesOut > STAMP_TOLERANCE_MINUTES) return false
         return ConnectSignature.matches(key, heard.signable(), heard.tag)
+    }
+
+    /**
+     * What else the announcement says, if its own signature holds; nothing otherwise.
+     *
+     * A device from before these existed sends neither field, and is listed with nothing playing, as it was.
+     */
+    private fun extraOf(heard: DeviceAnnouncement, key: String): AnnouncementExtra? {
+        val text = heard.extra ?: return null
+        val tag = heard.extraTag ?: return null
+        if (!ConnectSignature.matches(key, heard.signableWithExtra(), tag)) return null
+        return runCatching { ConnectProtocol.json.decodeFromString(AnnouncementExtra.serializer(), text) }.getOrNull()
     }
 
     private fun currentlyActive(): Boolean = scope?.isActive == true && socket?.isClosed == false
@@ -259,6 +305,9 @@ class ConnectDiscovery(
         const val STAMP_TOLERANCE_MINUTES = 5L
 
         const val MAX_PACKET_BYTES = 2048
+
+        /** The least time between two announcements, however fast things change. */
+        const val MIN_ANNOUNCE_GAP_MS = 200L
     }
 }
 

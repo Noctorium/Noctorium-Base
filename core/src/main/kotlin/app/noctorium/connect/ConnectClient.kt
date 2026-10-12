@@ -49,6 +49,13 @@ class ConnectClient internal constructor(
         }.getOrElse { StateReply(null, "an answer that could not be read: ${it.message}") }
     }
 
+    /** The device's whole queue, or null -- from a device too old to give it, too. */
+    suspend fun queue(peer: ConnectPeer, key: String, from: DeviceAnnouncement): RemoteQueue? {
+        val reply = send(peer.address, peer.port, key, from, "GET", "/queue", "")
+        if (!reply.ok) return null
+        return runCatching { ConnectProtocol.json.decodeFromString(RemoteQueue.serializer(), reply.body) }.getOrNull()
+    }
+
     suspend fun command(peer: ConnectPeer, key: String, from: DeviceAnnouncement, command: Command): CommandReply {
         val body = ConnectProtocol.json.encodeToString(
             Command.serializer(),

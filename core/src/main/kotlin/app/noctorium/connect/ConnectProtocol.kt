@@ -51,7 +51,67 @@ object ConnectProtocol {
     val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 }
 
-enum class DeviceKind { DESKTOP, PHONE }
+/**
+ * What sort of device another one is, for its icon and its name in a list.
+ *
+ * TERMINAL never goes on the wire as itself. A device from before it existed would fail to read an
+ * announcement or a state naming it, and drop the device altogether; so a terminal says DESKTOP, as it always
+ * did, and adds that it is a terminal in a field the older device ignores. See [onTheWire].
+ */
+enum class DeviceKind { DESKTOP, PHONE, TERMINAL }
+
+/** What [this] is called on the wire, where only the kinds every version knows are written. */
+val DeviceKind.onTheWire: DeviceKind get() = if (this == DeviceKind.TERMINAL) DeviceKind.DESKTOP else this
+
+/** The kind a device said it is, its terminal flag included. */
+internal fun deviceKind(kind: DeviceKind, terminal: Boolean): DeviceKind = if (terminal) DeviceKind.TERMINAL else kind
+
+/** One device, named: who is driving, or being driven. */
+@Serializable
+data class DeviceRef(val id: String, val name: String)
+
+/**
+ * What a device is playing, small enough to go out with every announcement.
+ *
+ * So every device on the network knows what each of the others is playing without asking each one, and a
+ * Connect page can show the lot. Only the song, its cover and where it is: the queue and the rest are asked of
+ * the one device being driven, once it is. The provider is its name rather than [ProviderType], so a service
+ * added later does not make a whole announcement unreadable to a device that has never heard of it.
+ */
+@Serializable
+data class NowPlaying(
+    val title: String,
+    val artist: String = "",
+    val provider: String? = null,
+    val artworkUrl: String? = null,
+    val playing: Boolean = false,
+    /** How far in, when the announcement went out. Moving on from there by the clock while [playing]. */
+    val positionMs: Long = 0,
+    val durationMs: Long = 0,
+) {
+    /** Where it has got to [elapsedMs] after the announcement was heard: still while paused, moving while playing. */
+    fun positionAfter(elapsedMs: Long): Long {
+        val moved = if (playing) positionMs + elapsedMs.coerceAtLeast(0) else positionMs
+        return if (durationMs > 0) moved.coerceAtMost(durationMs) else moved
+    }
+}
+
+/**
+ * What an announcement says beyond who is announcing: what it is playing and who is driving whom.
+ *
+ * Carried as JSON text inside the announcement ([DeviceAnnouncement.extra]) and signed as that exact text
+ * ([DeviceAnnouncement.extraTag]), so a field added to this later is still covered by the signature a device
+ * from before it checks, and is simply not read by that device.
+ */
+@Serializable
+data class AnnouncementExtra(
+    val terminal: Boolean = false,
+    val nowPlaying: NowPlaying? = null,
+    /** The device driving this one, if any. */
+    val drivenBy: DeviceRef? = null,
+    /** The device this one is driving, if any: the music is there, and this is its remote control. */
+    val driving: DeviceRef? = null,
+)
 
 /**
  * A device saying it is here.
@@ -76,9 +136,20 @@ data class DeviceAnnouncement(
     /** Unix minutes. Bounds how long a copied announcement stays believable. */
     val stamp: Long,
     val tag: String,
+    /**
+     * [AnnouncementExtra] as JSON text: what this device is playing, and who is driving whom.
+     *
+     * Not covered by [tag], which a device from before this existed checks and goes on checking exactly as it
+     * did -- it ignores both fields it does not know. [extraTag] covers everything [tag] does and this text too.
+     */
+    val extra: String? = null,
+    val extraTag: String? = null,
 ) {
     /** Everything the tag covers, in a fixed order, so both ends build the same string. */
     fun signable(): String = "$v|$id|$name|${kind.name}|$port|$stamp"
+
+    /** Everything [extraTag] covers: what [tag] does, and [extra] exactly as it was sent. */
+    fun signableWithExtra(): String = "${signable()}|${extra.orEmpty()}"
 }
 
 @Serializable
@@ -114,9 +185,43 @@ data class RemoteState(
     val repeat: String = "OFF",
     /** Set when this device is itself being driven by another, so two remotes cannot fight in silence. */
     val controlledBy: String? = null,
+    /** The driving device's id, beside its name above. */
+    val controlledById: String? = null,
+    /** The device this one is itself driving, if any. */
+    val driving: DeviceRef? = null,
+    /** See [DeviceKind.onTheWire]: [kind] says DESKTOP for a terminal, and this says which it is. */
+    val terminal: Boolean = false,
+    /**
+     * Which queue this device has, as a short key that changes when the songs in it do, so a remote control
+     * fetches the whole queue (`GET /queue`) once each time it changes rather than every second.
+     */
+    val queueKey: String? = null,
 )
 
-enum class CommandType { PLAY, PAUSE, NEXT, PREVIOUS, SEEK, VOLUME, SHUFFLE, REPEAT, TAKE_OVER, HAND_BACK }
+/** The kind this device said it is. */
+val RemoteState.deviceKind: DeviceKind get() = deviceKind(kind, terminal)
+
+/** A device's whole queue, for a remote control's queue panel: `GET /queue`. */
+@Serializable
+data class RemoteQueue(val tracks: List<WireTrack>, val index: Int, val key: String)
+
+/**
+ * The instructions.
+ *
+ * JUMP, ADD, REMOVE and MOVE work on the driven device's queue, as the remote control's queue panel shows it.
+ * A device from before them answers them as something it could not read, and the remote says it went wrong.
+ */
+enum class CommandType {
+    PLAY, PAUSE, NEXT, PREVIOUS, SEEK, VOLUME, SHUFFLE, REPEAT, TAKE_OVER, HAND_BACK,
+    /** Play the song at [Command.index] in the queue. */
+    JUMP,
+    /** Put [Command.tracks] in the queue: next when [Command.enabled], at the end otherwise. */
+    ADD,
+    /** Take the song at [Command.index] out of the queue. */
+    REMOVE,
+    /** Move the song at [Command.index] to [Command.toIndex]. */
+    MOVE,
+}
 
 /**
  * One instruction, and whatever it needs to carry.
@@ -139,6 +244,8 @@ data class Command(
     /** Who sent this, so the receiver can say who is driving it. */
     val fromDeviceId: String? = null,
     val fromDeviceName: String? = null,
+    /** Where MOVE puts the song. */
+    val toIndex: Int? = null,
 )
 
 /**
@@ -185,6 +292,20 @@ fun WireTrack.toTrack(): Track = Track(
     artworkUrl = artworkUrl,
     sourceUrl = sourceUrl,
 )
+
+/** This song as an announcement carries it. */
+fun WireTrack.nowPlaying(playing: Boolean, positionMs: Long, durationMs: Long): NowPlaying = NowPlaying(
+    title = title,
+    artist = artists.joinToString { it.name },
+    provider = provider.name,
+    artworkUrl = artworkUrl,
+    playing = playing,
+    positionMs = positionMs,
+    durationMs = durationMs.takeIf { it > 0 } ?: this.durationMs ?: 0,
+)
+
+/** What a device said it was playing, in the shape an announcement carries; null with nothing to play. */
+val RemoteState.nowPlaying: NowPlaying? get() = track?.nowPlaying(playing, positionMs, durationMs)
 
 // -- signing -------------------------------------------------------------------------------------
 

@@ -21,6 +21,9 @@ interface ConnectCommands {
      */
     suspend fun state(drivenBy: String? = null): RemoteState
     suspend fun handle(command: Command): CommandReply
+
+    /** The whole queue, for a remote control's queue panel; null where there is none to give. */
+    suspend fun queue(): RemoteQueue? = null
 }
 
 /**
@@ -125,6 +128,9 @@ class ConnectServer(
                             RemoteState.serializer(),
                             commands.state(request.headers[HEADER_DRIVING]),
                         )
+
+                    request.method == "GET" && request.path == "/queue" ->
+                        commands.queue()?.let { ConnectProtocol.json.encodeToString(RemoteQueue.serializer(), it) }
 
                     request.method == "POST" && request.path == "/command" -> {
                         val command = ConnectProtocol.json.decodeFromString(Command.serializer(), request.body)

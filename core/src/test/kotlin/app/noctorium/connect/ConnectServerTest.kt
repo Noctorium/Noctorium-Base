@@ -182,6 +182,31 @@ class ConnectServerTest {
     }
 
     @Test
+    fun `the whole queue is given to a signed request, and to nobody else`() = runBlocking {
+        val queued = listOf(track("one"), track("two")).map { it.toWire() }
+        val withQueue = ConnectServer(
+            commands = object : ConnectCommands by Commands(host) {
+                override suspend fun queue() = RemoteQueue(queued, 1, "2-abc")
+            },
+            key = { key },
+            clock = { now },
+        )
+        val port = withQueue.start()
+        try {
+            val there = ConnectPeer("target", "Phone", DeviceKind.PHONE, "127.0.0.1", port, now)
+            val queue = ConnectClient(clock = { now }).queue(there, key, from)
+            assertEquals(listOf("one", "two"), queue?.tracks?.map { it.id })
+            assertEquals(1, queue?.index)
+            assertNull(ConnectClient(clock = { now }).queue(there, "not-the-account-key", from))
+        } finally {
+            withQueue.stop()
+        }
+        // A device with no queue to give, or too old to know the question, gives nothing rather than failing.
+        start()
+        assertNull(ConnectClient(clock = { now }).queue(peer, key, from))
+    }
+
+    @Test
     fun `a device is reached at an IPv6 address`() = runBlocking {
         val v6 = ConnectServer(commands = Commands(host), key = { key }, clock = { now }, listenOn = java.net.InetSocketAddress("::1", 0))
         val port = v6.start()

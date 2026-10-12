@@ -95,6 +95,30 @@ class SimulatedPlayer(
     override suspend fun setRepeat(mode: String) = change("repeat $mode") { repeat = mode }
     override suspend fun standDown() = change("standDown") { mark(positionMs); playing = false }
 
+    override suspend fun jumpTo(index: Int) = change("jump $index") {
+        if (index in tracks.indices) { this.index = index; mark(0); playing = true }
+    }
+
+    override suspend fun addToQueue(tracks: List<Track>, next: Boolean) = change("add ${tracks.size}${if (next) " next" else ""}") {
+        val at = if (next) (index + 1).coerceIn(0, this.tracks.size) else this.tracks.size
+        this.tracks = this.tracks.take(at) + tracks + this.tracks.drop(at)
+    }
+
+    override suspend fun removeFromQueue(index: Int) = change("remove $index") {
+        if (index in tracks.indices) {
+            tracks = tracks.filterIndexed { i, _ -> i != index }
+            if (index < this.index) this.index -= 1
+        }
+    }
+
+    override suspend fun moveInQueue(from: Int, to: Int) = change("move $from to $to") {
+        if (from in tracks.indices && to in tracks.indices) {
+            val playingNow = current
+            tracks = tracks.toMutableList().apply { add(to, removeAt(from)) }
+            index = tracks.indexOf(playingNow)
+        }
+    }
+
     private fun mark(positionMs: Long) {
         positionAtMark = positionMs
         markedAt = clock()
