@@ -36,6 +36,7 @@ import app.noctorium.playback.PlaybackEngine
 import app.noctorium.playback.MIN_SPEED
 import app.noctorium.playback.MAX_SPEED
 import app.noctorium.playback.PlaybackState
+import app.noctorium.playback.QueueState
 import app.noctorium.playback.PlaybackStatus
 import app.noctorium.playback.VolumeBoost
 import app.noctorium.playlists.LocalPlaylist
@@ -110,6 +111,7 @@ import app.noctorium.connect.ConnectManager
 import app.noctorium.connect.ConnectPeer
 import app.noctorium.connect.ConnectState
 import app.noctorium.connect.DeviceKind
+import app.noctorium.connect.MusicPlace
 import app.noctorium.connect.NetworkPresence
 import app.noctorium.connect.PlaybackSnapshot
 import app.noctorium.connect.QueueSnapshot
@@ -159,7 +161,14 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.min
 
 @kotlinx.serialization.Serializable
-enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS }
+/**
+ * The places the window or the phone can show.
+ *
+ * CONNECT is Noctorium Connect's own page: where the music is, every device on the network with what it is
+ * playing, and moving the music between them. Everything it shows is in [AppState.connect] and
+ * [AppState.musicPlace]; everything it does is [AppState.playOn], [AppState.playHere] and [AppState.moveMusic].
+ */
+enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS, CONNECT }
 
 /** What to do with a pasted link. Playing it is what pasting means; the rest are one tap away. */
 enum class LinkAction { PLAY, QUEUE, DOWNLOAD, SAVE }
@@ -705,6 +714,17 @@ class AppState(
         override suspend fun setRepeat(mode: String) {
             queue.setRepeat(runCatching { RepeatMode.valueOf(mode) }.getOrDefault(RepeatMode.OFF))
         }
+        override suspend fun jumpTo(index: Int) {
+            this@AppState.queue.jumpTo(index)?.let { playEnriched(it) }
+        }
+
+        override suspend fun addToQueue(tracks: List<Track>, next: Boolean) {
+            // Play next puts each in front of the one before, so the last goes in first and they keep their order.
+            if (next) tracks.asReversed().forEach(this@AppState.queue::playNext) else tracks.forEach(this@AppState.queue::addToQueue)
+        }
+
+        override suspend fun removeFromQueue(index: Int) = this@AppState.queue.removeAt(index)
+        override suspend fun moveInQueue(from: Int, to: Int) = this@AppState.queue.move(from, to)
         override suspend fun standDown() = player.stop()
     }
 
@@ -721,6 +741,33 @@ class AppState(
 
     /** The listener's other devices on this network, and whichever one is being driven. */
     val connect: StateFlow<ConnectState> = connectManager.state
+
+    /**
+     * Where the music is: here, on the device this one is the remote control of, on another device by itself,
+     * or nowhere. What the Connect page puts first.
+     */
+    val musicPlace: StateFlow<MusicPlace> = combine(playback, connect) { local, connect ->
+        connect.musicPlace(herePlaying = local.isPlaying, hereHasSong = local.track != null)
+    }.stateIn(scope, SharingStarted.Eagerly, MusicPlace.Nowhere)
+
+    /**
+     * The playback the player shows: this device's own, or -- while it is the remote control of another -- that
+     * device's song, cover, place in it, playing or paused, and volume, its place moving on smoothly between
+     * the second-by-second answers. See [playbackToShow]. Every button the player has drives whichever this is.
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val shownPlayback: StateFlow<PlaybackState> = combine(
+        playback,
+        connect,
+        connect.map { it.target != null && it.remote?.playing == true }.distinctUntilChanged().flatMapLatest { moving ->
+            if (moving) flow { while (true) { emit(System.currentTimeMillis()); delay(SHOWN_POSITION_TICK_MS) } } else flowOf(0L)
+        },
+    ) { local, connect, _ -> connect.playbackToShow(local, System.currentTimeMillis()) }
+        .stateIn(scope, SharingStarted.Eagerly, playback.value)
+
+    /** The queue the player shows: this device's own, or the driven device's as far as it has said. See [queueToShow]. */
+    val shownQueue: StateFlow<QueueState> = combine(queue.state, connect) { local, connect -> connect.queueToShow(local) }
+        .stateIn(scope, SharingStarted.Eagerly, QueueState())
 
     private val mutableUpdates = MutableStateFlow(
         UpdateState(
@@ -908,6 +955,12 @@ class AppState(
      * left, it does not: stopping is going back to the start.
      */
     fun stop() {
+        // The other device's Stop: paused, back at the start of its song.
+        if (drivingAnotherDevice()) {
+            connectManager.control { Command(CommandType.PAUSE) }
+            connectManager.controlLatest(Command(CommandType.SEEK, positionMs = 0))
+            return
+        }
         pendingResume = null
         when (playback.value.status) {
             PlaybackStatus.PLAYING, PlaybackStatus.PAUSED -> scope.launch {
@@ -937,6 +990,7 @@ class AppState(
     fun toggleStopAfterCurrent() = mutableStopAfterCurrent.update { !it }
 
     fun setVolume(value: Float) {
+        if (drivingAnotherDevice()) return connectSetVolume(value)
         scope.launch {
             player.setVolume(value)
         }
@@ -966,8 +1020,28 @@ class AppState(
             },
         )
     }
-    fun toggleMute() { scope.launch { player.setMuted(!playback.value.isMuted) } }
-    fun seekTo(positionMs: Long) { scope.launch { player.seekTo(positionMs) } }
+    fun toggleMute() {
+        // Another device's mute is its volume at nothing, and back to where it was.
+        if (drivingAnotherDevice()) {
+            val volume = connect.value.remote?.volume ?: return
+            if (volume > 0f) {
+                remoteVolumeBeforeMute = volume
+                connectSetVolume(0f)
+            } else {
+                connectSetVolume(remoteVolumeBeforeMute.takeIf { it > 0f } ?: 1f)
+            }
+            return
+        }
+        scope.launch { player.setMuted(!playback.value.isMuted) }
+    }
+
+    /** The other device's volume before this device's mute button turned it down, for turning it back up. */
+    private var remoteVolumeBeforeMute = 0f
+
+    fun seekTo(positionMs: Long) {
+        if (drivingAnotherDevice()) return connectSeekTo(positionMs)
+        scope.launch { player.seekTo(positionMs) }
+    }
 
     fun next() {
         if (drivingAnotherDevice()) return connectNext()
@@ -1006,13 +1080,42 @@ class AppState(
      * For the system's controls -- a lock screen or a notification greys the button out when this is false.
      */
     val canGoPrevious: Boolean get() = queue.state.value.hasPrevious || playback.value.track != null
-    fun jumpToQueueItem(index: Int) { startPlay { queue.jumpTo(index) } }
-    fun moveQueueItem(from: Int, to: Int) = queue.move(from, to)
-    fun removeQueueItem(index: Int) = queue.removeAt(index)
-    fun addToQueue(track: Track) = queue.addToQueue(track)
-    fun playNext(track: Track) = queue.playNext(track)
-    fun toggleShuffle() = queue.toggleShuffle()
-    fun cycleRepeat() = queue.cycleRepeat()
+    // The queue, as the player shows it -- which, while another device has the music, is that device's: see
+    // [shownQueue]. Each of these goes to whichever queue that is.
+    fun jumpToQueueItem(index: Int) {
+        if (drivingAnotherDevice()) return connectManager.control { Command(CommandType.JUMP, index = index) }
+        startPlay { queue.jumpTo(index) }
+    }
+
+    fun moveQueueItem(from: Int, to: Int) {
+        if (drivingAnotherDevice()) return connectManager.control { Command(CommandType.MOVE, index = from, toIndex = to) }
+        queue.move(from, to)
+    }
+
+    fun removeQueueItem(index: Int) {
+        if (drivingAnotherDevice()) return connectManager.control { Command(CommandType.REMOVE, index = index) }
+        queue.removeAt(index)
+    }
+
+    fun addToQueue(track: Track) {
+        if (drivingAnotherDevice()) return connectManager.control { Command(CommandType.ADD, tracks = listOf(track.toWire()), enabled = false) }
+        queue.addToQueue(track)
+    }
+
+    fun playNext(track: Track) {
+        if (drivingAnotherDevice()) return connectManager.control { Command(CommandType.ADD, tracks = listOf(track.toWire()), enabled = true) }
+        queue.playNext(track)
+    }
+
+    fun toggleShuffle() {
+        if (drivingAnotherDevice()) return connectToggleShuffle()
+        queue.toggleShuffle()
+    }
+
+    fun cycleRepeat() {
+        if (drivingAnotherDevice()) return connectCycleRepeat()
+        queue.cycleRepeat()
+    }
 
     /** Starts the sleep timer, and remembers the length so it is the first offer next time. */
     fun startSleepTimer(minutes: Int) {
@@ -3733,6 +3836,17 @@ class AppState(
     }
 
     private suspend fun playEnriched(track: Track) {
+        // A song chosen while another device has the music is played there, as the player here is its remote
+        // control: the queue it was chosen from goes with it. Every way of starting a song comes through here,
+        // so this is the one place that has to know. Taking the music back, and being handed it, both let go of
+        // the other device first.
+        if (drivingAnotherDevice()) {
+            val queued = queue.state.value
+            val tracks = queued.tracks.ifEmpty { listOf(track) }
+            val index = tracks.indexOfFirst { it.queueKey == track.queueKey }.takeIf { it >= 0 } ?: queued.currentIndex
+            connect.value.target?.let { connectManager.transferTo(it, tracks, index.coerceAtLeast(0), 0) }
+            return
+        }
         // Everything plays through here — pressing a track, and the queue moving on by itself — which is why
         // this is where a Spotify reference becomes a real recording. A track that cannot be matched is not
         // played at all, and the queue is left holding the Spotify entry so trying again is possible.
@@ -4490,13 +4604,36 @@ class AppState(
     }
 
     /**
-     * Moves what is playing here to [peer], from the same second.
-     *
-     * The whole queue goes, not just the current track, so the next song is right as well as this one.
+     * Plays on [peer]: the music moves there from wherever it is now -- this device, the device this one is
+     * driving, or another device playing by itself -- at the same second, with the whole queue. This device
+     * is its remote control from then on. The Connect page's "Play on" for each device.
      */
-    fun playOn(peer: ConnectPeer) {
-        val queued = queue.state.value
-        connectManager.transferTo(peer, queued.tracks, queued.currentIndex, playback.value.positionMs)
+    fun playOn(peer: ConnectPeer) = moveMusic(from = musicSource(), to = peer)
+
+    /** Plays here: the music comes to this device from wherever it is now. The Connect page's "Play here". */
+    fun playHere() {
+        val from = musicSource() ?: return
+        moveMusic(from = from, to = null)
+    }
+
+    /**
+     * Moves the music from [from] to [to]; null for either is this device. Any device can move it between any
+     * two: a phone can send what the desktop is playing to the laptop.
+     */
+    fun moveMusic(from: ConnectPeer?, to: ConnectPeer?) {
+        if (from == null) {
+            val queued = queue.state.value
+            to?.let { connectManager.transferTo(it, queued.tracks, queued.currentIndex, playback.value.positionMs) }
+            return
+        }
+        connectManager.move(from, to) { back -> connectHost.takeOver(back.tracks, back.index, back.positionMs) }
+    }
+
+    /** Where the music is to be moved from: the device being driven, or here, or another device that has it. */
+    private fun musicSource(): ConnectPeer? = when (val place = musicPlace.value) {
+        is MusicPlace.Driving -> place.peer
+        is MusicPlace.Elsewhere -> place.peer
+        MusicPlace.Here, MusicPlace.Nowhere -> connect.value.target
     }
 
     fun connectPlayPause() = connectManager.control {
@@ -4505,10 +4642,28 @@ class AppState(
 
     fun connectNext() = connectManager.control { Command(CommandType.NEXT) }
     fun connectPrevious() = connectManager.control { Command(CommandType.PREVIOUS) }
-    fun connectSeekTo(positionMs: Long) = connectManager.control { Command(CommandType.SEEK, positionMs = positionMs) }
-    fun connectSetVolume(value: Float) = connectManager.control { Command(CommandType.VOLUME, volume = value) }
+
+    /** Sent as the seek bar is let go, or as fast as it is dragged: only the latest goes while one is on its way. */
+    fun connectSeekTo(positionMs: Long) = connectManager.controlLatest(Command(CommandType.SEEK, positionMs = positionMs))
+
+    /** Likewise for the volume slider. */
+    fun connectSetVolume(value: Float) = connectManager.controlLatest(Command(CommandType.VOLUME, volume = value))
+
     fun connectToggleShuffle() = connectManager.control {
         Command(CommandType.SHUFFLE, enabled = connect.value.remote?.shuffle != true)
+    }
+
+    /** Off, all, one, off -- the order the repeat button goes through here -- from what the other device has. */
+    fun connectCycleRepeat() = connectManager.control {
+        val now = runCatching { RepeatMode.valueOf(connect.value.remote?.repeat ?: "OFF") }.getOrDefault(RepeatMode.OFF)
+        Command(
+            CommandType.REPEAT,
+            repeat = when (now) {
+                RepeatMode.OFF -> RepeatMode.ALL
+                RepeatMode.ALL -> RepeatMode.ONE
+                RepeatMode.ONE -> RepeatMode.OFF
+            }.name,
+        )
     }
 
     /** Stops driving the other device, and leaves it playing. */
@@ -4551,6 +4706,13 @@ class AppState(
             playback.map { it.status == PlaybackStatus.PLAYING || it.status == PlaybackStatus.RESOLVING }
                 .distinctUntilChanged()
                 .collect { started -> if (started && drivingAnotherDevice()) connectManager.playingHereInstead() }
+        }
+        // And says so to every other device at once when the song changes, starts or stops, so their Connect
+        // pages show it within the moment rather than at the next beat.
+        scope.launch {
+            playback.map { Triple(it.track?.queueKey, it.isPlaying, it.status == PlaybackStatus.PAUSED) }
+                .distinctUntilChanged()
+                .collect { connectManager.announceNow() }
         }
     }
 

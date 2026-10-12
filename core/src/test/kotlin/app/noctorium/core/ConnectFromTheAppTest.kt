@@ -3,11 +3,13 @@ package app.noctorium.core
 import app.noctorium.account.NoctoriumAccountClient
 import app.noctorium.connect.ConnectManager
 import app.noctorium.connect.DeviceKind
+import app.noctorium.connect.MusicPlace
 import app.noctorium.connect.SimulatedPlayer
 import app.noctorium.core.AppStateHarness.song
 import app.noctorium.core.AppStateHarness.waitFor
 import app.noctorium.domain.PlaybackOrigin
 import app.noctorium.playback.PlaybackStatus
+import app.noctorium.playback.RepeatMode
 import app.noctorium.settings.ConnectPreferences
 import app.noctorium.settings.InMemorySecretStore
 import app.noctorium.settings.NoctoriumPreferences
@@ -125,13 +127,91 @@ class ConnectFromTheAppTest {
     }
 
     @Test
-    fun `a song started here stops the other device`() {
+    fun `a song chosen here plays on the device that has the music, with the list it was chosen from`() {
+        handedToTheSpeaker()
+        val others = listOf(song("x"), song("y"), song("z"))
+
+        app.play(others[1], PlaybackOrigin.PLAYLIST, others)
+
+        waitFor("the speaker to play it") { speakerPlayer.current?.id == "y" && speakerPlayer.playing }
+        assertEquals(others.map { it.id }, speakerPlayer.tracks.map { it.id })
+        assertEquals("Speaker", app.connect.value.target?.name, "this one stopped being its remote control")
+        assertFalse(engine.calls.any { it.startsWith("play") }, "it played here as well: ${engine.calls}")
+    }
+
+    @Test
+    fun `the player shows the other device, its song and its place moving on, and a pause at once`() {
+        handedToTheSpeaker(index = 1, at = 30_000)
+
+        waitFor("the player to show the speaker's song") {
+            app.shownPlayback.value.track?.id == "b" && app.shownPlayback.value.status == PlaybackStatus.PLAYING
+        }
+        val first = app.shownPlayback.value.positionMs
+        assertTrue(first >= 30_000, "it showed ${first}ms")
+        waitFor("its place to move on between the speaker's answers") { app.shownPlayback.value.positionMs >= first + 500 }
+        waitFor("the music to be on the speaker") { (app.musicPlace.value as? MusicPlace.Driving)?.peer?.name == "Speaker" }
+
+        app.togglePlayback()
+        waitFor("the player to show it paused") { app.shownPlayback.value.status == PlaybackStatus.PAUSED }
+        waitFor("the speaker to pause") { !speakerPlayer.playing }
+        // And this device's own player was never asked for anything.
+        assertEquals(PlaybackStatus.IDLE, app.playback.value.status)
+    }
+
+    @Test
+    fun `every button the player has drives the other device`() {
         handedToTheSpeaker()
 
-        app.play(songs[2], PlaybackOrigin.PLAYLIST, songs)
+        app.seekTo(90_000)
+        waitFor("the speaker to seek") { speakerPlayer.positionMs >= 90_000 }
+        app.setVolume(0.3f)
+        waitFor("the speaker to turn down") { speakerPlayer.volume == 0.3f }
+        waitFor("the player to show it") { app.shownPlayback.value.volume == 0.3f }
+        app.toggleShuffle()
+        waitFor("the speaker to shuffle") { speakerPlayer.shuffle }
+        app.cycleRepeat()
+        waitFor("the speaker to repeat the queue") { speakerPlayer.repeat == "ALL" }
+        waitFor("the queue to show both") { app.shownQueue.value.shuffleEnabled && app.shownQueue.value.repeatMode == RepeatMode.ALL }
 
+        app.toggleMute()
+        waitFor("the speaker to go silent") { speakerPlayer.volume == 0f }
+        app.toggleMute()
+        waitFor("and back to where it was") { speakerPlayer.volume == 0.3f }
+
+        app.stop()
+        waitFor("the speaker to stop at the start") { !speakerPlayer.playing && speakerPlayer.positionMs == 0L }
+        assertTrue(engine.calls.isEmpty(), "this one's own player was used: ${engine.calls}")
+    }
+
+    @Test
+    fun `the queue the player shows is the other device's, and its buttons change that one`() {
+        handedToTheSpeaker(index = 0, at = 0)
+        waitFor("the player's queue to be the speaker's") {
+            app.shownQueue.value.tracks.map { it.id } == songs.map { it.id } && app.shownQueue.value.currentIndex == 0
+        }
+
+        app.jumpToQueueItem(2)
+        waitFor("the speaker to play the third") { speakerPlayer.index == 2 }
+        waitFor("the queue to show it") { app.shownQueue.value.currentIndex == 2 }
+
+        app.addToQueue(song("d"))
+        waitFor("the speaker's queue to grow") { speakerPlayer.tracks.lastOrNull()?.id == "d" }
+        waitFor("the queue shown to follow") { app.shownQueue.value.tracks.lastOrNull()?.id == "d" }
+        app.removeQueueItem(0)
+        waitFor("the speaker's first song to go") { speakerPlayer.tracks.first().id == "b" }
+        assertEquals(songs.map { it.id }, app.queue.state.value.tracks.map { it.id }, "this one's own queue was changed")
+    }
+
+    @Test
+    fun `play here takes the music from the other device, with its queue`() {
+        handedToTheSpeaker(index = 1, at = 30_000)
+
+        app.playHere()
+
+        waitFor("the song here") { engine.state.value.track?.id == "b" }
         waitFor("the speaker to stop") { !speakerPlayer.playing }
-        waitFor("this one to stop being a remote control") { app.connect.value.target == null }
-        assertEquals(PlaybackStatus.PLAYING, engine.state.value.status)
+        waitFor("this one to stop being its remote control") { app.connect.value.target == null }
+        waitFor("the music to be here") { app.musicPlace.value == MusicPlace.Here }
+        assertEquals(songs.map { it.id }, app.queue.state.value.tracks.map { it.id })
     }
 }
