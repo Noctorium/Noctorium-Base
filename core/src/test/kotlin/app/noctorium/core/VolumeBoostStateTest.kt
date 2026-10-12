@@ -146,7 +146,8 @@ class VolumeBoostStateTest {
         val routing = RoutingPlaybackEngine(local, spotify, { it.id.startsWith("spotify") }, scope)
         routing.setVolumeBoostPercent(400)
         routing.play(AppStateHarness.song("spotify-1"))
-        waitFor("Spotify's state") { routing.state.value.track?.id == "spotify-1" }
+        // Playing, which only Spotify's player says: the routing has caught up with it, not just been told of it.
+        waitFor("Spotify's state") { routing.state.value.status == app.noctorium.playback.PlaybackStatus.PLAYING }
         assertFalse(routing.state.value.volumeBoostAvailable, "no booster while Spotify's app makes the sound")
 
         routing.stop()
