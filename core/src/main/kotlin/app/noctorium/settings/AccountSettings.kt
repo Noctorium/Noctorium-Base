@@ -201,6 +201,16 @@ enum class PlayerBarStyle(val displayName: String, val description: String) {
         "Toolbar",
         "One row of flat buttons, as a desktop music player has them: add to a playlist, previous, play, pause, stop and next, a slider and the time, then repeat, shuffle and the volume.",
     ),
+    /**
+     * The Toolbar with play and pause one button again and no add button, and every other button the bar can carry
+     * along its far end: like, lyrics and the queue, then repeat and shuffle, then the sleep timer, Connect, the
+     * speed and the volume. Stop is an ordinary button here, there when asked for, as on the other bars; any of the
+     * rest can be put away in the same setting.
+     */
+    TOOLBAR_2(
+        "Toolbar 2",
+        "The Toolbar's flat buttons with play and pause as one, and more of them: like, lyrics and the queue, repeat and shuffle, the sleep timer, Connect, the speed and the volume.",
+    ),
 }
 
 /**
@@ -249,6 +259,11 @@ enum class PhonePlayerBarStyle(val displayName: String, val description: String)
     TOOLBAR(
         "Toolbar",
         "The track over a row of flat buttons -- previous, play, pause, stop and next -- with a thin slider and the time.",
+    ),
+    /** The desktop's Toolbar 2 for a thumb: play and pause as one, and like, the queue, shuffle and repeat in the row. */
+    TOOLBAR_2(
+        "Toolbar 2",
+        "The track over a row of flat buttons with play and pause as one, and more of them: like, previous, play, next, the queue, shuffle and repeat, over a thin slider and the time.",
     ),
 }
 
