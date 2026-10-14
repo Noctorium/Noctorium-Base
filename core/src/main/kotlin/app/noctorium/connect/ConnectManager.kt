@@ -343,6 +343,9 @@ class ConnectManager(
             housekeeping = null
             discovery.stop()
             server.stop()
+            // The device driving this one goes too: nothing it sends can arrive now, and the upkeep that would forget
+            // a driver gone quiet has just been cancelled, so "Controlled from Desk" would otherwise stay on for good.
+            driver = null
             mutableState.update {
                 it.copy(
                     available = false,
@@ -351,6 +354,8 @@ class ConnectManager(
                     target = null,
                     remote = null,
                     remoteQueue = null,
+                    controlledBy = null,
+                    controlledById = null,
                 )
             }
         }

@@ -116,6 +116,19 @@ class ConnectInSyncTest {
     }
 
     @Test
+    fun `a device driven by another stops saying so the moment Connect is switched off on it`() = runBlocking {
+        phonePlayer.play(songs, 0, 0)
+        phone.handTo(phone.await("Desk"), songs, 0, 0)
+        eventually("the desk to see itself driven by the phone") { desk.state.value.controlledBy == "Phone" }
+
+        // Switched off, nothing from the phone can reach it, and the upkeep that would forget a quiet driver is gone
+        // with the rest: so the desk lets go itself, there and then, rather than saying "Controlled from Phone" for good.
+        desk.stop()
+        assertNull(desk.state.value.controlledBy)
+        assertNull(desk.state.value.controlledById)
+    }
+
+    @Test
     fun `a terminal is known as a terminal, even where only desktops and phones are written down`() = runBlocking {
         assertEquals(DeviceKind.TERMINAL, phone.await("Laptop").kind)
         assertEquals(DeviceKind.DESKTOP, phone.await("Desk").kind)
