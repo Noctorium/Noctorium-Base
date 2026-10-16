@@ -8,6 +8,9 @@ import app.noctorium.vk.VkSource
 import app.noctorium.vk.VkUnavailable
 import app.noctorium.bandcamp.BandcampMusicProvider
 import app.noctorium.deezer.DeezerMusicProvider
+import app.noctorium.applemusic.AppleMusicClient
+import app.noctorium.applemusic.AppleMusicDeveloperToken
+import app.noctorium.applemusic.AppleMusicProvider
 import app.noctorium.tidal.TidalAccess
 import app.noctorium.tidal.TidalApp
 import app.noctorium.tidal.TidalApplication
@@ -204,7 +207,8 @@ enum class ProviderFilter(val displayName: String) {
     SPOTIFY("Spotify"),
     VK("VK Music"),
     DEEZER("Deezer"),
-    TIDAL("Tidal");
+    TIDAL("Tidal"),
+    APPLE_MUSIC("Apple Music");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -216,6 +220,7 @@ enum class ProviderFilter(val displayName: String) {
         VK -> provider == ProviderType.VK
         DEEZER -> provider == ProviderType.DEEZER
         TIDAL -> provider == ProviderType.TIDAL
+        APPLE_MUSIC -> provider == ProviderType.APPLE_MUSIC
     }
 }
 
@@ -229,6 +234,7 @@ enum class SearchMode(val displayName: String) {
     VK("VK Music"),
     DEEZER("Deezer"),
     TIDAL("Tidal"),
+    APPLE_MUSIC("Apple Music"),
 }
 
 data class LibraryState(
@@ -503,6 +509,8 @@ class AppState(
     private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
     private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
     private val tidalClient: TidalClient = TidalClient(),
+    /** Apple Music's catalogue and library; null for the one reading with the web player's token, or the listener's own. */
+    appleMusicClient: AppleMusicClient? = null,
     /** What this device calls itself on the network, when the listener has not renamed it. */
     private val deviceName: () -> String = { "Noctorium" },
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
@@ -604,6 +612,23 @@ class AppState(
         country = { mutableSettings.value.preferences.tidalCountry.ifBlank { deviceCountry() ?: "US" } },
     )
 
+    /**
+     * Apple Music's two tokens, held here once read from the credential store, since every request carries them and
+     * reading that store runs PowerShell on Windows. The developer token is the listener's own MusicKit token, or
+     * null for the web player's; the listener's token is from Apple's sign-in page, or null for nobody signed in.
+     */
+    @Volatile private var appleMusicOwnDeveloperToken: String? = null
+    @Volatile private var appleMusicToken: Pair<Boolean, String?> = false to null
+
+    private val appleMusicClient: AppleMusicClient =
+        appleMusicClient ?: AppleMusicClient(AppleMusicDeveloperToken(own = { appleMusicOwnDeveloperToken }))
+
+    private val appleMusic = AppleMusicProvider(
+        client = this.appleMusicClient,
+        userToken = { appleMusicUserToken() },
+        storefront = { appleMusicStorefront() },
+    )
+
     /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
     private val serviceStreams = ServiceStreams { sourceUrl ->
         bandcamp.streamFor(sourceUrl)?.let(::ServiceStream) ?: vk.streamFor(sourceUrl)
@@ -674,6 +699,7 @@ class AppState(
         vk,
         deezer,
         tidal,
+        appleMusic,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -979,6 +1005,12 @@ class AppState(
         // The same for Tidal, whose app and sign-in are both in the credential store.
         scope.launch(Dispatchers.IO) {
             publishTidalState(connecting = mutableSettings.value.tidal.connecting, message = mutableSettings.value.tidal.message)
+        }
+        // And for Apple Music, whose developer token of the listener's own, if any, is there too.
+        publishAppleMusicState()
+        scope.launch(Dispatchers.IO) {
+            appleMusicOwnDeveloperToken = runCatching { credentials.get(APPLE_MUSIC_DEVELOPER_TOKEN) }.getOrNull()?.takeIf(String::isNotBlank)
+            publishAppleMusicState(checking = mutableSettings.value.appleMusic.checking, message = mutableSettings.value.appleMusic.message)
         }
         scope.launch(Dispatchers.IO) {
             // Through the same helper as everything else: the credential can be missing while the saved
@@ -1939,6 +1971,107 @@ class AppState(
                     connected = connected,
                     connecting = connecting,
                     accountName = preferences.tidalAccountName,
+                    message = message,
+                ),
+            )
+        }
+    }
+
+    // --- Apple Music, which is read and never played from ---
+
+    /**
+     * Signs in to Apple Music with the token Apple's own web player keeps once the listener has signed in on Apple's
+     * page: in whatever form it arrives -- harvested from the `media-user-token` cookie by the platform's sign-in
+     * browser (see [app.noctorium.auth.APPLE_MUSIC_SIGN_IN]), or pasted.
+     *
+     * The token is checked with Apple, by asking which storefront the account is in, before anything is kept: a token
+     * copied wrong is a message, not a library that never loads.
+     */
+    fun completeAppleMusicSignIn(text: String) {
+        val token = AppleMusicClient.userTokenIn(text) ?: run {
+            publishAppleMusicState(message = "That is not an Apple Music sign-in. It is the media-user-token cookie on music.apple.com.")
+            return
+        }
+        publishAppleMusicState(checking = true)
+        scope.launch {
+            try {
+                val storefront = appleMusicClient.storefront(token)
+                withContext(Dispatchers.IO) { credentials.put(APPLE_MUSIC_USER_TOKEN, token) }
+                appleMusicToken = true to token
+                updatePreferences { copy(appleMusicSignedIn = true, appleMusicStorefront = storefront) }
+                publishAppleMusicState(message = "Signed in to Apple Music. Your library is in the library, and its songs play matched on YouTube Music.")
+                mutableLibrary.update { it.withoutProvider(ProviderType.APPLE_MUSIC).copy(loaded = false) }
+                refreshLibrary(force = true)
+                refreshHome()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Exception) {
+                publishAppleMusicState(
+                    message = if ((failure as? app.noctorium.applemusic.AppleMusicUnavailable)?.signedOut == true) {
+                        "Apple Music did not accept that sign-in. Sign in again on Apple's page."
+                    } else {
+                        readableFailure(failure, "Could not sign in to Apple Music.")
+                    },
+                )
+            }
+        }
+    }
+
+    /** Forgets the Apple Music sign-in here. Nothing at Apple changes. */
+    fun disconnectAppleMusic() {
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { credentials.remove(APPLE_MUSIC_USER_TOKEN) } }
+            appleMusicToken = true to null
+            updatePreferences { copy(appleMusicSignedIn = false, appleMusicStorefront = "") }
+            mutableLibrary.update { it.withoutProvider(ProviderType.APPLE_MUSIC) }
+            publishAppleMusicState(message = "Signed out of Apple Music.")
+            refreshHome()
+        }
+    }
+
+    /**
+     * Reads Apple Music with a developer token of the listener's own -- one they made with a MusicKit key of their
+     * own -- or, given a blank, with the one Apple's web player is served again. Kept in the credential store.
+     */
+    fun setAppleMusicDeveloperToken(token: String) {
+        val cleaned = token.trim()
+        scope.launch(Dispatchers.IO) {
+            val stored = runCatching {
+                if (cleaned.isBlank()) credentials.remove(APPLE_MUSIC_DEVELOPER_TOKEN) else credentials.put(APPLE_MUSIC_DEVELOPER_TOKEN, cleaned)
+            }
+            if (stored.isFailure) {
+                publishAppleMusicState(message = "Could not keep the token securely: ${stored.exceptionOrNull()?.message?.take(120)}")
+                return@launch
+            }
+            appleMusicOwnDeveloperToken = cleaned.ifBlank { null }
+            publishAppleMusicState(
+                message = if (cleaned.isBlank()) "Apple Music is read the way its web player reads it again." else "Apple Music is read with your own developer token now.",
+            )
+        }
+    }
+
+    /** The listener's Apple Music token, read from the credential store once; null for nobody signed in. */
+    private suspend fun appleMusicUserToken(): String? {
+        if (!mutableSettings.value.preferences.appleMusicSignedIn) return null
+        val (read, token) = appleMusicToken
+        if (read) return token
+        return withContext(Dispatchers.IO) { runCatching { credentials.get(APPLE_MUSIC_USER_TOKEN) }.getOrNull() }
+            .also { appleMusicToken = true to it }
+    }
+
+    /** Where Apple Music's catalogue is read: the account's storefront, this device's country, or the United States. */
+    private fun appleMusicStorefront(): String =
+        mutableSettings.value.preferences.appleMusicStorefront.ifBlank { deviceCountry()?.lowercase() ?: "us" }
+
+    private fun publishAppleMusicState(checking: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                appleMusic = AppleMusicConnectionState(
+                    connected = preferences.appleMusicSignedIn,
+                    checking = checking,
+                    storefront = appleMusicStorefront(),
+                    ownDeveloperToken = appleMusicOwnDeveloperToken != null,
                     message = message,
                 ),
             )
@@ -4166,6 +4299,7 @@ class AppState(
                 SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
                 SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
                 SearchMode.TIDAL -> providers.filter { it.type == ProviderType.TIDAL }
+                SearchMode.APPLE_MUSIC -> providers.filter { it.type == ProviderType.APPLE_MUSIC }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -5653,7 +5787,8 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.DEEZER -> deezerProfileId.isNotBlank()
     // Signed in: the account's id is kept exactly as long as the sign-in is.
     ProviderType.TIDAL -> tidalUserId.isNotBlank()
-    ProviderType.APPLE_MUSIC -> false
+    // Signed in, which is kept exactly as long as the sign-in is.
+    ProviderType.APPLE_MUSIC -> appleMusicSignedIn
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -5755,7 +5890,7 @@ private const val LINK_DETAILS_WAIT_MS = 60_000L
 
 internal const val NOT_A_MUSIC_LINK =
     "That isn't a link to a song or a playlist. Paste one from YouTube Music, YouTube, SoundCloud, Bandcamp, " +
-        "Spotify or VK."
+        "Spotify, VK, Apple Music, Deezer or Tidal."
 
 /**
  * What to say once a link has been dealt with, or null where the screen already shows it: a song that is
@@ -5906,6 +6041,13 @@ private const val SLEEP_FADE_STEP_MS = 250L
 private const val TIDAL_CLIENT_ID = "tidal.client_id"
 private const val TIDAL_CLIENT_SECRET = "tidal.client_secret"
 private const val TIDAL_REFRESH_TOKEN = "tidal.refresh_token"
+
+/**
+ * Credential-store keys for the listener's Apple Music token, from Apple's sign-in page, and for a developer token of
+ * their own. The first is a working key to their library for as long as Apple honours it.
+ */
+private const val APPLE_MUSIC_USER_TOKEN = "applemusic.user_token"
+private const val APPLE_MUSIC_DEVELOPER_TOKEN = "applemusic.developer_token"
 
 /**
  * The country this device is set to, as two capital letters, or null where it is set to none: what Tidal's and Apple

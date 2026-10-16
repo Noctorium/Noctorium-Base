@@ -205,6 +205,7 @@ enum class HomePart(val displayName: String, val description: String) {
     VK("From VK Music", "VK's suggestions for you, and what is popular there."),
     DEEZER("From Deezer", "Its charts and its editors' picks, and your loved tracks."),
     TIDAL("From Tidal", "The mixes Tidal makes for you."),
+    APPLE_MUSIC("From Apple Music", "What you played lately, what it recommends, and what is most played where you are."),
 }
 
 /** Home's suggested rows, without the ones from a service the listener put away. */
@@ -217,6 +218,7 @@ fun List<HomeSection>.withoutHidden(hidden: Set<HomePart>): List<HomeSection> = 
         ProviderType.VK -> HomePart.VK in hidden
         ProviderType.DEEZER -> HomePart.DEEZER in hidden
         ProviderType.TIDAL -> HomePart.TIDAL in hidden
+        ProviderType.APPLE_MUSIC -> HomePart.APPLE_MUSIC in hidden
         else -> false
     }
 }

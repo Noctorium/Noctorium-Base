@@ -260,7 +260,7 @@ class SpotifyClientTest {
     }
 
     @Test
-    fun `a reply that is not JSON is a failure rather than a crash`() = runBlocking {
+    fun `a reply that is not JSON is a failure rather than a crash`(): Unit = runBlocking {
         val http = ScriptedSpotify(mapOf(playlistsUrl to ok("<html>a proxy sign-in page</html>")))
 
         assertIs<SpotifyRead.Failed>(SpotifyClient(http).playlists("token"))

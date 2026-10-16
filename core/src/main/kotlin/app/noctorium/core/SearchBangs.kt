@@ -37,6 +37,8 @@ object SearchBangs {
         "deezer" to SearchMode.DEEZER,
         "td" to SearchMode.TIDAL,
         "tidal" to SearchMode.TIDAL,
+        "am" to SearchMode.APPLE_MUSIC,
+        "applemusic" to SearchMode.APPLE_MUSIC,
         "all" to SearchMode.HYBRID,
     )
 

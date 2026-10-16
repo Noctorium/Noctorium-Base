@@ -128,6 +128,41 @@ val YOUTUBE_SESSION_URLS = listOf(
     "https://music.youtube.com/",
 )
 
+/*
+ * Signing in to Apple Music in the embedded browser.
+ *
+ * The platform opens [APPLE_MUSIC_SIGN_IN] -- Apple's own web player, at its sign-in -- and the listener signs in
+ * with Apple there, in whatever window Apple's page opens for it. Once they have, the web player keeps the
+ * listener's Apple Music token in its `media-user-token` cookie on music.apple.com. The platform reads the cookie
+ * store for [APPLE_MUSIC_SITE] every few seconds, and as soon as [appleMusicUserToken] finds the token, hands it to
+ * AppState.completeAppleMusicSignIn, which checks it with Apple before keeping it in the credential store. Nothing
+ * else is taken from the browser, and the token is never written to a log or shown.
+ */
+
+/** Where Apple Music's sign-in starts: the web player's own, which moves to Apple's account page and back. */
+const val APPLE_MUSIC_SIGN_IN = "https://music.apple.com/login"
+
+/** Where the web player's `media-user-token` cookie is read from once it is signed in. */
+const val APPLE_MUSIC_SITE = "https://music.apple.com/"
+
+/** The name of the cookie the signed-in web player keeps the listener's Apple Music token in. */
+const val APPLE_MUSIC_USER_TOKEN_COOKIE = "media-user-token"
+
+/**
+ * The addresses whose cookies make up an Apple Music web sign-in, for clearing before a fresh one and after
+ * Noctorium has taken the token over: in the embedded browser's own store, never the listener's own browser.
+ */
+val APPLE_MUSIC_SESSION_URLS = listOf(
+    "https://music.apple.com/",
+    "https://authorize.music.apple.com/",
+    "https://idmsa.apple.com/",
+    "https://appleid.apple.com/",
+)
+
+/** The listener's Apple Music token, once the signed-in web player has set it, or null while it has not. */
+fun appleMusicUserToken(cookies: List<HarvestedCookie>): String? =
+    cookies.lastOrNull { it.name == APPLE_MUSIC_USER_TOKEN_COOKIE && it.isLive() }?.value
+
 /**
  * Moves a session that has been accepted into the place the application reads it from.
  *

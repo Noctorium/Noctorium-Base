@@ -163,6 +163,10 @@ internal object AppStateHarness {
         // A Deezer that is never there unless a test gives one: a harness must never reach the real one.
         deezer: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(NoDeezer),
         tidal: app.noctorium.tidal.TidalClient = app.noctorium.tidal.TidalClient(NoTidal),
+        appleMusic: app.noctorium.applemusic.AppleMusicClient = app.noctorium.applemusic.AppleMusicClient(
+            NoAppleMusic,
+            app.noctorium.applemusic.AppleMusicDeveloperToken(NoAppleMusic, cache = null),
+        ),
     ): AppState = AppState(
         ytDlp = backend,
         credentials = credentials,
@@ -181,7 +185,13 @@ internal object AppStateHarness {
         referenceMatches = referenceMatches,
         deezerClient = deezer,
         tidalClient = tidal,
+        appleMusicClient = appleMusic,
     )
+
+    private object NoAppleMusic : app.noctorium.applemusic.AppleMusicHttp {
+        override suspend fun get(url: String, headers: Map<String, String>) =
+            app.noctorium.net.HttpReply(app.noctorium.net.Http.UNREACHABLE, "no Apple Music in this harness")
+    }
 
     private object NoDeezer : app.noctorium.deezer.DeezerHttp {
         override suspend fun get(url: String) = app.noctorium.net.HttpReply(app.noctorium.net.Http.UNREACHABLE, "no Deezer in this harness")

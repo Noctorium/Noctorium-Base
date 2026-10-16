@@ -658,6 +658,16 @@ data class NoctoriumPreferences(
     val tidalAccountName: String = "",
     /** The country Tidal said the account is in, which its catalogue is read in. Blank until somebody signs in. */
     val tidalCountry: String = "",
+    /**
+     * Whether somebody is signed in to Apple Music, kept exactly as long as the sign-in is: the listener's token
+     * itself lives in the credential store, never here, and so does a developer token of their own.
+     */
+    val appleMusicSignedIn: Boolean = false,
+    /**
+     * The storefront -- `us`, `gb` -- of the account signed in to Apple Music, which the catalogue is read in. Blank
+     * until somebody signs in, and then this device's country is used, or the United States'.
+     */
+    val appleMusicStorefront: String = "",
     /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
     val playbackSpeed: Float = 1f,
     /**
@@ -1162,6 +1172,25 @@ data class SettingsState(
     val vk: VkConnectionState = VkConnectionState(),
     val deezer: DeezerConnectionState = DeezerConnectionState(),
     val tidal: TidalConnectionState = TidalConnectionState(),
+    val appleMusic: AppleMusicConnectionState = AppleMusicConnectionState(),
+)
+
+/**
+ * The Apple Music sign-in, and how the last one went.
+ *
+ * The catalogue -- search, albums, artists, playlists -- works with nobody signed in. Signing in, on Apple's own page
+ * in the embedded browser (see [app.noctorium.auth.APPLE_MUSIC_SIGN_IN]), adds the library and Home's rows.
+ */
+data class AppleMusicConnectionState(
+    /** A sign-in is kept. Apple may still refuse it, which shows up as a message when it does. */
+    val connected: Boolean = false,
+    /** True while a sign-in is being checked with Apple. */
+    val checking: Boolean = false,
+    /** The storefront the catalogue is read in: the account's once signed in, and this device's country before. */
+    val storefront: String = "",
+    /** A developer token of the listener's own is in use, rather than the one Apple's web player is served. */
+    val ownDeveloperToken: Boolean = false,
+    val message: String? = null,
 )
 
 /**

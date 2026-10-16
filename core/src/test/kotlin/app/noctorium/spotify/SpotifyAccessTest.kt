@@ -159,7 +159,7 @@ class SpotifyAccessTest {
     }
 
     @Test
-    fun `disconnecting forgets the sign-in here and on disk`() = runBlocking {
+    fun `disconnecting forgets the sign-in here and on disk`(): Unit = runBlocking {
         val subject = access { _, _ -> SpotifyAuth.Result.Success(tokens()) }
         subject.access()
 

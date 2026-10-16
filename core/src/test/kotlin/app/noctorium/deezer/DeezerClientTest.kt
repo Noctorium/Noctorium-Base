@@ -162,7 +162,7 @@ class DeezerClientTest {
     }
 
     @Test
-    fun `a page that fails part way keeps what came before it`() = runBlocking {
+    fun `a page that fails part way keeps what came before it`(): Unit = runBlocking {
         val http = ScriptedDeezer { url ->
             if (url.endsWith("index=2")) HttpReply(500, "") else DeezerFixtures.ok(
                 DeezerFixtures.page(DeezerFixtures.track(1, "One"), DeezerFixtures.track(2, "Two"), next = "$api/playlist/7/tracks?limit=100&index=2"),
