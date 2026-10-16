@@ -142,7 +142,17 @@ internal class ListenBrainzClient(
 internal data class LastFmSession(val username: String, val key: String)
 
 /**
- * A refusal from Last.fm, with its error number kept.
+ * A service that speaks Last.fm's own protocol, the Audioscrobbler API 2.0: Last.fm, and Libre.fm, which runs GNU FM
+ * and answers the same methods at its own addresses -- the same token, the same page to allow an application on, the
+ * same signed requests and the same error numbers. One client serves both, pointed at the one wanted.
+ */
+enum class AudioscrobblerSite(val displayName: String, internal val apiRoot: String, internal val approvalPage: String) {
+    LAST_FM("Last.fm", "https://ws.audioscrobbler.com/2.0/", "https://www.last.fm/api/auth/"),
+    LIBRE_FM("Libre.fm", "https://libre.fm/2.0/", "https://libre.fm/api/auth/"),
+}
+
+/**
+ * A refusal from Last.fm -- or Libre.fm, whose numbers are the same -- with its error number kept.
  *
  * The number is what tells a sign-in Last.fm no longer honours from a bad moment on its side, and the two
  * want opposite handling: one needs the listener to connect again, the other only needs a retry.
@@ -182,10 +192,16 @@ internal object LastFmApplication {
     private fun env(name: String): String? = System.getenv(name)?.trim()?.takeIf(String::isNotBlank)
 }
 
+/**
+ * Last.fm's protocol, spoken to [site]: Last.fm itself, or Libre.fm, which takes the same application identifiers.
+ * Libre.fm asks no application to register first -- any key of the right length is one -- so Noctorium's own serve
+ * there as they are.
+ */
 internal class LastFmClient(
     private val http: ScrobbleHttpClient = DefaultScrobbleHttpClient(),
     apiKey: String? = LastFmApplication.apiKey,
     sharedSecret: String? = LastFmApplication.sharedSecret,
+    val site: AudioscrobblerSite = AudioscrobblerSite.LAST_FM,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     @Volatile private var activeApiKey: String? = apiKey
@@ -202,23 +218,23 @@ internal class LastFmClient(
 
     suspend fun beginAuthorization(): String {
         val params = signed(mapOf("method" to "auth.getToken"))
-        val response = http.get(API_ROOT + "?" + formEncode(params + ("format" to "json")))
+        val response = http.get(site.apiRoot + "?" + formEncode(params + ("format" to "json")))
         val root = parse(response)
-        return root["token"]?.jsonPrimitive?.contentOrNull ?: error("Last.fm returned no authorization token")
+        return root["token"]?.jsonPrimitive?.contentOrNull ?: error("${site.displayName} returned no authorization token")
     }
 
     fun authorizationUrl(token: String): String {
-        val key = activeApiKey ?: error("Last.fm API credentials are not configured")
-        return "https://www.last.fm/api/auth/?api_key=${encode(key)}&token=${encode(token)}"
+        val key = activeApiKey ?: error("${site.displayName} API credentials are not configured")
+        return "${site.approvalPage}?api_key=${encode(key)}&token=${encode(token)}"
     }
 
     suspend fun completeAuthorization(token: String): LastFmSession {
         val params = signed(mapOf("method" to "auth.getSession", "token" to token))
-        val response = http.get(API_ROOT + "?" + formEncode(params + ("format" to "json")))
-        val session = parse(response)["session"]?.jsonObject ?: error("Last.fm authorization was not approved yet")
+        val response = http.get(site.apiRoot + "?" + formEncode(params + ("format" to "json")))
+        val session = parse(response)["session"]?.jsonObject ?: error("${site.displayName} authorization was not approved yet")
         return LastFmSession(
-            session["name"]?.jsonPrimitive?.contentOrNull ?: error("Last.fm returned no username"),
-            session["key"]?.jsonPrimitive?.contentOrNull ?: error("Last.fm returned no session key"),
+            session["name"]?.jsonPrimitive?.contentOrNull ?: error("${site.displayName} returned no username"),
+            session["key"]?.jsonPrimitive?.contentOrNull ?: error("${site.displayName} returned no session key"),
         )
     }
 
@@ -242,7 +258,7 @@ internal class LastFmClient(
         }
         val params = signed(base)
         val response = http.post(
-            API_ROOT,
+            site.apiRoot,
             formEncode(params + ("format" to "json")),
             "application/x-www-form-urlencoded; charset=utf-8",
         )
@@ -250,30 +266,28 @@ internal class LastFmClient(
     }
 
     internal fun signature(parameters: Map<String, String>): String {
-        val secret = activeSharedSecret ?: error("Last.fm shared secret is not configured")
+        val secret = activeSharedSecret ?: error("${site.displayName} shared secret is not configured")
         val source = parameters.toSortedMap().entries.joinToString("") { (key, value) -> key + value } + secret
         return MessageDigest.getInstance("MD5").digest(source.toByteArray(StandardCharsets.UTF_8))
             .joinToString("") { "%02x".format(it) }
     }
 
     private fun signed(parameters: Map<String, String>): Map<String, String> {
-        val key = activeApiKey ?: error("Last.fm API credentials are not configured")
+        val key = activeApiKey ?: error("${site.displayName} API credentials are not configured")
         val values = parameters + ("api_key" to key)
         return values + ("api_sig" to signature(values))
     }
 
     private fun parse(response: ScrobbleHttpResponse): JsonObject {
         val root = runCatching { json.parseToJsonElement(response.body).jsonObject }.getOrElse {
-            error("Last.fm returned an invalid response (${response.status})")
+            error("${site.displayName} returned an invalid response (${response.status})")
         }
         root["error"]?.jsonPrimitive?.intOrNull?.let { code ->
-            throw LastFmException(code, "Last.fm error $code: ${root["message"]?.jsonPrimitive?.contentOrNull ?: "request failed"}")
+            throw LastFmException(code, "${site.displayName} error $code: ${root["message"]?.jsonPrimitive?.contentOrNull ?: "request failed"}")
         }
-        check(response.status in 200..299) { "Last.fm returned ${response.status}" }
+        check(response.status in 200..299) { "${site.displayName} returned ${response.status}" }
         return root
     }
-
-    private companion object { const val API_ROOT = "https://ws.audioscrobbler.com/2.0/" }
 }
 
 private fun formEncode(parameters: Map<String, String>): String = parameters.entries.joinToString("&") { (key, value) ->

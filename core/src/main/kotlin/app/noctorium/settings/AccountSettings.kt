@@ -716,6 +716,8 @@ data class NoctoriumPreferences(
     val discordPresenceEnabled: Boolean = false,
     val lastFmUsername: String = "",
     val listenBrainzUsername: String = "",
+    /** Who Libre.fm said is signed in, as [lastFmUsername] is for Last.fm; the sign-in itself is in the credential store. */
+    val libreFmUsername: String = "",
     /** Replaced by [youtubeCookies]; only read once so settings written by older builds keep working. */
     val youtubeBrowser: BrowserSession? = null,
     /** Replaced by [soundCloudCookies]; only read once so settings written by older builds keep working. */
@@ -1097,11 +1099,18 @@ data class ScrobbleServiceState(
     val status: ScrobbleConnectionStatus = ScrobbleConnectionStatus.DISCONNECTED,
     val username: String? = null,
     val message: String? = null,
+    /**
+     * The page where Noctorium is allowed on the account, while that is awaited: kept, so that when no browser opened
+     * -- as happened on Linux -- or the page was closed, it can be copied into one or opened again.
+     */
+    val approvalUrl: String? = null,
 )
 
 data class ScrobbleState(
     val lastFm: ScrobbleServiceState = ScrobbleServiceState(),
     val listenBrainz: ScrobbleServiceState = ScrobbleServiceState(),
+    /** Libre.fm, which speaks Last.fm's protocol: see [app.noctorium.scrobble.AudioscrobblerSite]. */
+    val libreFm: ScrobbleServiceState = ScrobbleServiceState(),
     val lastFmConfigured: Boolean = false,
     val lastEvent: String? = null,
     val scrobblesThisSession: Int = 0,

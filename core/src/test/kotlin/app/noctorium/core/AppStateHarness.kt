@@ -147,10 +147,15 @@ internal object AppStateHarness {
         // Kept in memory unless a test says where: every state writing the one file under the test folder would
         // have each test reading the listens of the others.
         history: PlayHistory = PlayHistory(PlayHistoryRepository(null)),
+        // What opening a page and the clipboard do, for a test that says; nothing at all otherwise.
+        system: SystemBridge = Bridge,
+        // The scrobblers, for a test that stands in for their services; the application's own otherwise.
+        scrobbleManager: app.noctorium.scrobble.ScrobbleManager? = null,
     ): AppState = AppState(
         ytDlp = Backend,
         credentials = credentials,
-        system = Bridge,
+        system = system,
+        scrobbleManager = scrobbleManager ?: app.noctorium.scrobble.ScrobbleManager(credentials),
         playbackEngine = engine,
         injectedProviders = providers,
         settingsRepository = SettingsRepository(settings),

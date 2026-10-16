@@ -58,6 +58,7 @@ import app.noctorium.playback.SponsorBlockClient
 import app.noctorium.playlists.shareableText
 import app.noctorium.providers.MusicProvider
 import app.noctorium.providers.BackendMusicProvider
+import app.noctorium.scrobble.AudioscrobblerSite
 import app.noctorium.scrobble.ScrobbleLog
 import app.noctorium.scrobble.ScrobbleManager
 import app.noctorium.social.LikeOutcome
@@ -857,7 +858,8 @@ class AppState(
     private var lyricsJob: Job? = null
     private var libraryJob: Job? = null
     private var playlistJob: Job? = null
-    private var lastFmApprovalJob: Job? = null
+    /** The wait for Noctorium to be allowed, one for each of Last.fm and Libre.fm, so a new sign-in replaces its own. */
+    private val approvalJobs = java.util.concurrent.ConcurrentHashMap<AudioscrobblerSite, Job>()
     // Declared here, above init, because init starts the watchers that use them. Kotlin sets a class up in
     // the order it is written, and one declared further down is still null when a watcher started in init
     // first reaches for it -- which is how the artist watcher crashed the moment the desktop opened.
@@ -879,7 +881,7 @@ class AppState(
         scrobbleManager.observe(playback, scope)
         scope.launch {
             val preferences = mutableSettings.value.preferences
-            scrobbleManager.initialize(preferences.lastFmUsername, preferences.listenBrainzUsername)
+            scrobbleManager.initialize(preferences.lastFmUsername, preferences.listenBrainzUsername, preferences.libreFmUsername)
             scrobbleManager.state.collect { scrobbling ->
                 mutableSettings.update { it.copy(scrobbling = scrobbling) }
             }
@@ -3376,28 +3378,62 @@ class AppState(
         mutableSettings.update { it.copy(message = "ListenBrainz disconnected.") }
     }
 
-    fun beginLastFmLogin() {
-        lastFmApprovalJob?.cancel()
+    fun beginLastFmLogin() = beginScrobblerLogin(AudioscrobblerSite.LAST_FM)
+
+    fun beginLibreFmLogin() = beginScrobblerLogin(AudioscrobblerSite.LIBRE_FM)
+
+    /**
+     * Starts signing in to [site] in the browser, and waits for Noctorium to be allowed there.
+     *
+     * The waiting starts whether or not a browser opened. On Linux one often did not -- the call answered and
+     * nothing appeared -- and sign-in stopped there, with the page's address thrown away. Now the page stays in the
+     * scrobbler's state to copy into a browser or open again ([copyScrobblerSignInLink]), and allowing Noctorium on
+     * it from any browser finishes the sign-in here as it would have.
+     */
+    private fun beginScrobblerLogin(site: AudioscrobblerSite) {
+        approvalJobs.remove(site)?.cancel()
         scope.launch {
-            runCatching { scrobbleManager.beginLastFmAuthorization() }
+            runCatching { scrobbleManager.beginAuthorization(site) }
                 .onSuccess { authorization ->
-                    runCatching { withContext(Dispatchers.IO) { browseSecureUrl(authorization.url) } }
-                        .onSuccess {
-                            mutableSettings.update { it.copy(message = "Allow Noctorium in the Last.fm window that just opened.") }
-                            watchLastFmApproval(authorization.token)
-                        }
-                        .onFailure { mutableSettings.update { state -> state.copy(message = it.message ?: "Could not open Last.fm") } }
+                    watchScrobblerApproval(site, authorization.token)
+                    val opened = runCatching { withContext(Dispatchers.IO) { browseSecureUrl(authorization.url) } }.isSuccess
+                    mutableSettings.update {
+                        it.copy(
+                            message = if (opened) {
+                                "Allow Noctorium on the ${site.displayName} page that just opened. No page? Copy the link and open it in your browser."
+                            } else {
+                                "Your browser did not open. Copy the link into it, and allow Noctorium on ${site.displayName} there."
+                            },
+                        )
+                    }
                 }
-                .onFailure { error -> mutableSettings.update { it.copy(message = error.message ?: "Could not start Last.fm sign-in") } }
+                .onFailure { error -> mutableSettings.update { it.copy(message = error.message ?: "Could not start ${site.displayName} sign-in") } }
         }
     }
 
-    private fun watchLastFmApproval(token: String) {
-        lastFmApprovalJob = scope.launch {
-            val username = runCatching { scrobbleManager.awaitLastFmApproval(token) }.getOrNull() ?: return@launch
-            updatePreferences { copy(lastFmUsername = username) }
-            mutableSettings.update { it.copy(message = "Last.fm connected as $username.") }
+    private fun watchScrobblerApproval(site: AudioscrobblerSite, token: String) {
+        approvalJobs[site] = scope.launch {
+            val username = runCatching { scrobbleManager.awaitApproval(site, token) }.getOrNull() ?: return@launch
+            rememberScrobblerUsername(site, username)
+            mutableSettings.update { it.copy(message = "${site.displayName} connected as $username.") }
         }
+    }
+
+    private fun rememberScrobblerUsername(site: AudioscrobblerSite, username: String) = updatePreferences {
+        when (site) {
+            AudioscrobblerSite.LAST_FM -> copy(lastFmUsername = username)
+            AudioscrobblerSite.LIBRE_FM -> copy(libreFmUsername = username)
+        }
+    }
+
+    /** The page to allow Noctorium on, put on the clipboard: for a browser that did not open, or one of the listener's choosing. */
+    fun copyScrobblerSignInLink(site: AudioscrobblerSite) {
+        val state = scrobbleManager.state.value
+        val link = (if (site == AudioscrobblerSite.LAST_FM) state.lastFm else state.libreFm).approvalUrl
+            ?: return mutableSettings.update { it.copy(message = "Start ${site.displayName} sign-in first.") }
+        runCatching { system.copyToClipboard(link) }
+            .onSuccess { mutableSettings.update { it.copy(message = "Link copied. Open it in your browser and allow Noctorium on ${site.displayName}.") } }
+            .onFailure { mutableSettings.update { it.copy(message = "Could not reach the clipboard. The link is $link") } }
     }
 
     fun configureLastFmApplication(apiKey: String, sharedSecret: String) {
@@ -3408,24 +3444,31 @@ class AppState(
         }
     }
 
-    fun finishLastFmLogin() {
-        lastFmApprovalJob?.cancel()
+    fun finishLastFmLogin() = finishScrobblerLogin(AudioscrobblerSite.LAST_FM)
+
+    fun finishLibreFmLogin() = finishScrobblerLogin(AudioscrobblerSite.LIBRE_FM)
+
+    private fun finishScrobblerLogin(site: AudioscrobblerSite) {
+        approvalJobs.remove(site)?.cancel()
         scope.launch {
-            runCatching { scrobbleManager.completeLastFmAuthorization() }
+            runCatching { scrobbleManager.completeAuthorization(site) }
                 .onSuccess { username ->
-                    updatePreferences { copy(lastFmUsername = username) }
-                    mutableSettings.update { it.copy(message = "Last.fm connected as $username.") }
+                    rememberScrobblerUsername(site, username)
+                    mutableSettings.update { it.copy(message = "${site.displayName} connected as $username.") }
                 }
-                .onFailure { error -> mutableSettings.update { it.copy(message = error.message ?: "Last.fm approval is not complete") } }
+                .onFailure { error -> mutableSettings.update { it.copy(message = error.message ?: "${site.displayName} approval is not complete") } }
         }
     }
 
-    fun disconnectLastFm() {
-        lastFmApprovalJob?.cancel()
-        lastFmApprovalJob = null
-        scrobbleManager.disconnectLastFm()
-        updatePreferences { copy(lastFmUsername = "") }
-        mutableSettings.update { it.copy(message = "Last.fm disconnected.") }
+    fun disconnectLastFm() = disconnectScrobbler(AudioscrobblerSite.LAST_FM)
+
+    fun disconnectLibreFm() = disconnectScrobbler(AudioscrobblerSite.LIBRE_FM)
+
+    private fun disconnectScrobbler(site: AudioscrobblerSite) {
+        approvalJobs.remove(site)?.cancel()
+        scrobbleManager.disconnect(site)
+        rememberScrobblerUsername(site, "")
+        mutableSettings.update { it.copy(message = "${site.displayName} disconnected.") }
     }
 
     /** Every Discord option funnels through here, so one path keeps the live card in step with the settings. */

@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.collect
 import java.time.Instant
 import kotlin.math.min
 
+/** A sign-in begun on Last.fm or Libre.fm: the token it is for, and the page where the listener allows Noctorium. */
 data class LastFmAuthorization(val token: String, val url: String)
 
 class ScrobbleManager internal constructor(
@@ -26,6 +27,7 @@ class ScrobbleManager internal constructor(
     private val pendingRepository: PendingScrobbleRepository = PendingScrobbleRepository(),
     private val epochSeconds: () -> Long = { Instant.now().epochSecond },
     private val nanoTime: () -> Long = System::nanoTime,
+    private val libreFm: LastFmClient = LastFmClient(site = AudioscrobblerSite.LIBRE_FM),
 ) {
     /**
      * What the application builds, as opposed to what a test builds.
@@ -35,21 +37,55 @@ class ScrobbleManager internal constructor(
      */
     constructor(credentials: SecretStore) : this(credentials = credentials, listenBrainz = ListenBrainzClient())
 
+    /**
+     * One account on a service that speaks Last.fm's protocol, and what is known of it while this runs: the sign-in,
+     * and the token of one begun and not yet allowed. Last.fm and Libre.fm are each one of these, kept under names
+     * of their own in the credential store, and signed in, scrobbled to and let go of the same way.
+     */
+    private class Audioscrobbler(
+        val site: AudioscrobblerSite,
+        val client: LastFmClient,
+        val target: ScrobbleTarget,
+        val sessionName: String,
+        val pendingName: String,
+    ) {
+        @Volatile var sessionKey: String? = null
+        @Volatile var pendingToken: String? = null
+    }
+
+    private val lastFmAccount = Audioscrobbler(AudioscrobblerSite.LAST_FM, lastFm, ScrobbleTarget.LASTFM, LASTFM_SESSION, LASTFM_PENDING)
+    private val libreFmAccount = Audioscrobbler(AudioscrobblerSite.LIBRE_FM, libreFm, ScrobbleTarget.LIBREFM, LIBREFM_SESSION, LIBREFM_PENDING)
+    private val audioscrobblers = listOf(lastFmAccount, libreFmAccount)
+
+    private fun account(site: AudioscrobblerSite): Audioscrobbler = if (site == AudioscrobblerSite.LAST_FM) lastFmAccount else libreFmAccount
+
     private val mutableState = MutableStateFlow(ScrobbleState(lastFmConfigured = lastFm.configured))
     val state: StateFlow<ScrobbleState> = mutableState.asStateFlow()
     private var listenBrainzToken: String? = null
-    private var lastFmSessionKey: String? = null
-    private var pendingLastFmToken: String? = null
 
-    suspend fun initialize(lastFmUsername: String, listenBrainzUsername: String) = withContext(Dispatchers.IO) {
+    /** Puts [service] where [account]'s state is shown: Last.fm's place or Libre.fm's. */
+    private fun show(account: Audioscrobbler, service: ScrobbleServiceState) = mutableState.update {
+        if (account === lastFmAccount) it.copy(lastFm = service) else it.copy(libreFm = service)
+    }
+
+    /** What [account] shows while a sign-in waits to be allowed: the page to allow it on, kept to copy or open again. */
+    private fun awaiting(account: Audioscrobbler, token: String, message: String) = ScrobbleServiceState(
+        ScrobbleConnectionStatus.AWAITING_APPROVAL,
+        message = message,
+        approvalUrl = runCatching { account.client.authorizationUrl(token) }.getOrNull(),
+    )
+
+    suspend fun initialize(lastFmUsername: String, listenBrainzUsername: String, libreFmUsername: String = "") = withContext(Dispatchers.IO) {
         val storedLastFmApiKey = credentials.get(LASTFM_API_KEY)
         val storedLastFmSecret = credentials.get(LASTFM_SHARED_SECRET)
         if (storedLastFmApiKey != null && storedLastFmSecret != null) {
             lastFm.updateCredentials(storedLastFmApiKey, storedLastFmSecret)
         }
         listenBrainzToken = credentials.get(LISTENBRAINZ_TOKEN)
-        lastFmSessionKey = credentials.get(LASTFM_SESSION)
-        pendingLastFmToken = credentials.get(LASTFM_PENDING)
+        audioscrobblers.forEach { account ->
+            account.sessionKey = credentials.get(account.sessionName)
+            account.pendingToken = credentials.get(account.pendingName)
+        }
         /*
          * A sign-in made through another Last.fm application than the one this build signs in as.
          *
@@ -57,31 +93,37 @@ class ScrobbleManager internal constructor(
          * a new name means a new application -- every stored sign-in stops working at once, and each
          * scrobble would fail into the queue with nobody told why. Caught here instead, and said once. The
          * sign-ins saved before this was recorded all came from the application Noctorium first shipped,
-         * unless the listener had set up one of their own.
+         * unless the listener had set up one of their own. Libre.fm keeps no such tie, so only Last.fm's is checked.
          */
         val sessionApplication = credentials.get(LASTFM_SESSION_APPLICATION)
             ?: storedLastFmApiKey
             ?: LastFmApplication.FIRST_API_KEY
-        val madeElsewhere = (lastFmSessionKey != null || pendingLastFmToken != null) && sessionApplication != lastFm.apiKey
+        val madeElsewhere = (lastFmAccount.sessionKey != null || lastFmAccount.pendingToken != null) && sessionApplication != lastFm.apiKey
         if (madeElsewhere) {
             credentials.remove(LASTFM_SESSION)
             credentials.remove(LASTFM_PENDING)
             credentials.remove(LASTFM_SESSION_APPLICATION)
-            lastFmSessionKey = null
-            pendingLastFmToken = null
+            lastFmAccount.sessionKey = null
+            lastFmAccount.pendingToken = null
             ScrobbleLog.event("lastfm_session_from_other_application")
+        }
+        fun stateOf(account: Audioscrobbler, username: String): ScrobbleServiceState {
+            val pending = account.pendingToken
+            return when {
+                account.sessionKey != null -> ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, username.ifBlank { null })
+                pending != null -> awaiting(account, pending, "Allow Noctorium on ${account.site.displayName}'s page, then finish sign-in.")
+                else -> ScrobbleServiceState()
+            }
         }
         mutableState.update { it.copy(
             lastFmConfigured = lastFm.configured,
             listenBrainz = if (listenBrainzToken != null) {
                 ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, listenBrainzUsername.ifBlank { null })
             } else ScrobbleServiceState(),
-            lastFm = when {
-                madeElsewhere -> ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = RECONNECT_LASTFM)
-                lastFmSessionKey != null -> ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, lastFmUsername.ifBlank { null })
-                pendingLastFmToken != null -> ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = "Approve Noctorium in your browser, then finish sign-in.")
-                else -> ScrobbleServiceState()
-            },
+            lastFm = if (madeElsewhere) {
+                ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = reconnect(lastFmAccount))
+            } else stateOf(lastFmAccount, lastFmUsername),
+            libreFm = stateOf(libreFmAccount, libreFmUsername),
             pendingScrobbles = pendingRepository.list().size,
         ) }
         flushPending()
@@ -129,108 +171,120 @@ class ScrobbleManager internal constructor(
         ScrobbleLog.event("listenbrainz_disconnected")
     }
 
-    suspend fun beginLastFmAuthorization(): LastFmAuthorization {
-        check(lastFm.configured) { "Last.fm application credentials are missing from this build" }
-        mutableState.update { it.copy(
-            lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTING, message = "Starting Last.fm authorization…"),
-        ) }
-        return runCatching {
-            val token = lastFm.beginAuthorization()
-            withContext(Dispatchers.IO) { credentials.put(LASTFM_PENDING, token) }
-            pendingLastFmToken = token
-            mutableState.update { it.copy(
-                lastFm = ScrobbleServiceState(
-                    ScrobbleConnectionStatus.AWAITING_APPROVAL,
-                    message = "Approve Noctorium in the browser window that just opened.",
-                ),
-            ) }
-            LastFmAuthorization(token, lastFm.authorizationUrl(token))
-        }.getOrElse { error ->
-            mutableState.update { it.copy(
-                lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = safeMessage(error)),
-            ) }
-            throw error
-        }
-    }
+    suspend fun beginLastFmAuthorization(): LastFmAuthorization = beginAuthorization(AudioscrobblerSite.LAST_FM)
 
-    suspend fun completeLastFmAuthorization(): String = runCatching { exchangePendingLastFmToken() }
-        .getOrElse { error ->
-            mutableState.update { it.copy(
-                lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = safeMessage(error)),
-            ) }
-            throw error
-        }
+    suspend fun completeLastFmAuthorization(): String = completeAuthorization(AudioscrobblerSite.LAST_FM)
 
-    /**
-     * Waits for the listener to approve Noctorium in the browser and finishes sign-in on its own. Returns the
-     * connected username, or null when the approval never arrived or another authorization replaced this one.
-     */
     suspend fun awaitLastFmApproval(
         token: String,
         attempts: Int = APPROVAL_POLL_ATTEMPTS,
         pollDelayMillis: Long = APPROVAL_POLL_DELAY_MS,
+    ): String? = awaitApproval(AudioscrobblerSite.LAST_FM, token, attempts, pollDelayMillis)
+
+    fun disconnectLastFm() = disconnect(AudioscrobblerSite.LAST_FM)
+
+    /**
+     * Asks [site] for a sign-in token and gives back the page to allow Noctorium on.
+     *
+     * The page is also kept in the state ([ScrobbleServiceState.approvalUrl]) for as long as the sign-in waits, so
+     * that it can be copied into a browser by hand when none opened, or opened again when the first was closed.
+     */
+    suspend fun beginAuthorization(site: AudioscrobblerSite): LastFmAuthorization {
+        val account = account(site)
+        check(account.client.configured) { "${site.displayName} application credentials are missing from this build" }
+        show(account, ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTING, message = "Starting ${site.displayName} sign-in…"))
+        return runCatching {
+            val token = account.client.beginAuthorization()
+            withContext(Dispatchers.IO) { credentials.put(account.pendingName, token) }
+            account.pendingToken = token
+            show(account, awaiting(account, token, "Allow Noctorium on ${site.displayName}'s page, and it connects by itself."))
+            LastFmAuthorization(token, account.client.authorizationUrl(token))
+        }.getOrElse { error ->
+            show(account, ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = safeMessage(error)))
+            throw error
+        }
+    }
+
+    suspend fun completeAuthorization(site: AudioscrobblerSite): String {
+        val account = account(site)
+        return runCatching { exchangePendingToken(account) }
+            .getOrElse { error ->
+                val pending = account.pendingToken
+                show(
+                    account,
+                    if (pending != null) awaiting(account, pending, safeMessage(error))
+                    else ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = safeMessage(error)),
+                )
+                throw error
+            }
+    }
+
+    /**
+     * Waits for the listener to allow Noctorium on [site]'s page and finishes sign-in on its own. Returns the
+     * connected username, or null when the approval never arrived or another sign-in replaced this one.
+     */
+    suspend fun awaitApproval(
+        site: AudioscrobblerSite,
+        token: String,
+        attempts: Int = APPROVAL_POLL_ATTEMPTS,
+        pollDelayMillis: Long = APPROVAL_POLL_DELAY_MS,
     ): String? {
+        val account = account(site)
         repeat(attempts) {
             delay(pollDelayMillis)
-            if (pendingLastFmToken != token) return null
-            val username = runCatching { exchangePendingLastFmToken() }.getOrNull()
+            if (account.pendingToken != token) return null
+            val username = runCatching { exchangePendingToken(account) }.getOrNull()
             if (username != null) return username
         }
-        if (pendingLastFmToken == token) {
-            mutableState.update { it.copy(
-                lastFm = ScrobbleServiceState(
-                    ScrobbleConnectionStatus.AWAITING_APPROVAL,
-                    message = "Still waiting for approval — finish sign-in once you have allowed Noctorium.",
-                ),
-            ) }
+        if (account.pendingToken == token) {
+            show(account, awaiting(account, token, "Still waiting — finish sign-in once you have allowed Noctorium on ${site.displayName}."))
         }
         return null
     }
 
-    private suspend fun exchangePendingLastFmToken(): String {
-        val token = pendingLastFmToken ?: credentials.get(LASTFM_PENDING)
-            ?: error("Start Last.fm sign-in first")
-        val session = lastFm.completeAuthorization(token)
+    private suspend fun exchangePendingToken(account: Audioscrobbler): String {
+        val token = account.pendingToken ?: credentials.get(account.pendingName)
+            ?: error("Start ${account.site.displayName} sign-in first")
+        val session = account.client.completeAuthorization(token)
         withContext(Dispatchers.IO) {
-            credentials.put(LASTFM_SESSION, session.key)
-            lastFm.apiKey?.let { credentials.put(LASTFM_SESSION_APPLICATION, it) }
-            credentials.remove(LASTFM_PENDING)
+            credentials.put(account.sessionName, session.key)
+            if (account === lastFmAccount) lastFm.apiKey?.let { credentials.put(LASTFM_SESSION_APPLICATION, it) }
+            credentials.remove(account.pendingName)
         }
-        lastFmSessionKey = session.key
-        pendingLastFmToken = null
-        mutableState.update { it.copy(
-            lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, session.username, "Ready to scrobble"),
-        ) }
-        ScrobbleLog.event("lastfm_connected", mapOf("username" to session.username))
+        account.sessionKey = session.key
+        account.pendingToken = null
+        show(account, ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, session.username, "Ready to scrobble"))
+        ScrobbleLog.event("${account.target.logName}_connected", mapOf("username" to session.username))
         return session.username
     }
 
-    fun disconnectLastFm() {
-        credentials.remove(LASTFM_SESSION)
-        credentials.remove(LASTFM_PENDING)
-        credentials.remove(LASTFM_SESSION_APPLICATION)
-        lastFmSessionKey = null
-        pendingLastFmToken = null
-        mutableState.update { it.copy(lastFm = ScrobbleServiceState()) }
-        ScrobbleLog.event("lastfm_disconnected")
+    fun disconnect(site: AudioscrobblerSite) {
+        val account = account(site)
+        credentials.remove(account.sessionName)
+        credentials.remove(account.pendingName)
+        if (account === lastFmAccount) credentials.remove(LASTFM_SESSION_APPLICATION)
+        account.sessionKey = null
+        account.pendingToken = null
+        show(account, ScrobbleServiceState())
+        ScrobbleLog.event("${account.target.logName}_disconnected")
     }
 
     /**
-     * Lets go of a Last.fm sign-in that Last.fm has said is no good, and asks for a new one.
+     * Lets go of a sign-in the service has said is no good, and asks for a new one.
      *
      * Only for error 9, the one that means the session itself is dead: anything else is a bad moment and
-     * is retried from the queue. The scrobble that found out stays queued, and goes once Last.fm is
+     * is retried from the queue. The scrobble that found out stays queued, and goes once the service is
      * connected again.
      */
-    private suspend fun dropRefusedLastFmSession(error: Throwable) {
-        if ((error as? LastFmException)?.invalidSession != true || lastFmSessionKey == null) return
+    private suspend fun dropRefusedSession(account: Audioscrobbler, error: Throwable) {
+        if ((error as? LastFmException)?.invalidSession != true || account.sessionKey == null) return
         withContext(Dispatchers.IO) {
-            credentials.remove(LASTFM_SESSION)
-            credentials.remove(LASTFM_SESSION_APPLICATION)
+            credentials.remove(account.sessionName)
+            if (account === lastFmAccount) credentials.remove(LASTFM_SESSION_APPLICATION)
         }
-        lastFmSessionKey = null
-        mutableState.update { it.copy(lastFm = ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = RECONNECT_LASTFM)) }
-        ScrobbleLog.event("lastfm_session_refused")
+        account.sessionKey = null
+        show(account, ScrobbleServiceState(ScrobbleConnectionStatus.ERROR, message = reconnect(account)))
+        ScrobbleLog.event("${account.target.logName}_session_refused")
     }
 
     fun observe(playback: StateFlow<PlaybackState>, scope: CoroutineScope) {
@@ -284,18 +338,24 @@ class ScrobbleManager internal constructor(
     }
 
     private suspend fun sendNowPlaying(track: ScrobbleTrack) = supervisorScope {
-        val results = buildList {
-            listenBrainzToken?.let { token -> add(async { runCatching { listenBrainz.nowPlaying(token, track) }.map { "ListenBrainz" } }) }
-            lastFmSessionKey?.let { key -> add(async { runCatching { lastFm.nowPlaying(key, track) }.map { "Last.fm" } }) }
-        }.awaitAll()
-        val successful = results.mapNotNull(Result<String>::getOrNull)
+        // Each answer beside the account it came from, none for ListenBrainz, which has no sign-in to drop.
+        val results = buildList<Pair<Audioscrobbler?, Deferred<Result<String>>>> {
+            listenBrainzToken?.let { token -> add(null to async { runCatching { listenBrainz.nowPlaying(token, track) }.map { "ListenBrainz" } }) }
+            audioscrobblers.forEach { account ->
+                account.sessionKey?.let { key ->
+                    add(account to async { runCatching { account.client.nowPlaying(key, track) }.map { account.site.displayName } })
+                }
+            }
+        }.map { (account, deferred) -> account to deferred.await() }
+        val successful = results.mapNotNull { (_, result) -> result.getOrNull() }
         if (successful.isNotEmpty()) {
             mutableState.update { it.copy(lastEvent = "Now playing sent to ${successful.joinToString()}") }
             ScrobbleLog.event("now_playing_sent", mapOf("track" to track.queueKey, "services" to successful.joinToString()))
         }
-        results.mapNotNull(Result<String>::exceptionOrNull).forEach { error ->
+        results.forEach { (account, result) ->
+            val error = result.exceptionOrNull() ?: return@forEach
             ScrobbleLog.event("now_playing_failed", mapOf("track" to track.queueKey, "message" to safeMessage(error)))
-            dropRefusedLastFmSession(error)
+            account?.let { dropRefusedSession(it, error) }
         }
     }
 
@@ -303,7 +363,9 @@ class ScrobbleManager internal constructor(
         flushPending()
         val attempts = buildList {
             listenBrainzToken?.let { token -> add(ScrobbleTarget.LISTENBRAINZ to async { runCatching { listenBrainz.scrobble(token, track, startedAt) } }) }
-            lastFmSessionKey?.let { key -> add(ScrobbleTarget.LASTFM to async { runCatching { lastFm.scrobble(key, track, startedAt) } }) }
+            audioscrobblers.forEach { account ->
+                account.sessionKey?.let { key -> add(account.target to async { runCatching { account.client.scrobble(key, track, startedAt) } }) }
+            }
         }
         val results = attempts.map { (target, deferred) -> target to deferred.await() }
         val successful = results.mapNotNull { (target, result) -> result.getOrNull()?.let { target.displayName } }
@@ -318,26 +380,31 @@ class ScrobbleManager internal constructor(
             pendingRepository.enqueue(PendingScrobble(target, track, startedAt))
             mutableState.update { it.copy(lastEvent = "Scrobble failed: ${safeMessage(error)}") }
             ScrobbleLog.event("scrobble_queued", mapOf("track" to track.queueKey, "service" to target.name, "message" to safeMessage(error)))
-            dropRefusedLastFmSession(error)
+            accountFor(target)?.let { dropRefusedSession(it, error) }
         }
         mutableState.update { it.copy(pendingScrobbles = pendingRepository.list().size) }
     }
+
+    private fun accountFor(target: ScrobbleTarget): Audioscrobbler? = audioscrobblers.firstOrNull { it.target == target }
 
     private suspend fun flushPending() {
         val queued = pendingRepository.list()
         if (queued.isEmpty()) return
         val remaining = mutableListOf<PendingScrobble>()
         queued.forEach { item ->
+            val account = accountFor(item.target)
             val result = when (item.target) {
                 ScrobbleTarget.LISTENBRAINZ -> listenBrainzToken?.let { token -> runCatching { listenBrainz.scrobble(token, item.track, item.startedAtSeconds) } }
-                ScrobbleTarget.LASTFM -> lastFmSessionKey?.let { key -> runCatching { lastFm.scrobble(key, item.track, item.startedAtSeconds) } }
+                ScrobbleTarget.LASTFM, ScrobbleTarget.LIBREFM -> account?.sessionKey?.let { key ->
+                    runCatching { account.client.scrobble(key, item.track, item.startedAtSeconds) }
+                }
             }
             when {
                 result == null -> remaining += item
                 result.isSuccess -> ScrobbleLog.event("queued_scrobble_sent", mapOf("track" to item.track.queueKey, "service" to item.target.name))
                 else -> {
                     remaining += item.copy(attempts = item.attempts + 1)
-                    result.exceptionOrNull()?.let { dropRefusedLastFmSession(it) }
+                    result.exceptionOrNull()?.let { error -> account?.let { dropRefusedSession(it, error) } }
                 }
             }
         }
@@ -353,10 +420,18 @@ class ScrobbleManager internal constructor(
         const val LASTFM_SHARED_SECRET = "lastfm.shared_secret"
         /** The API key of the Last.fm application the stored session was made through. */
         const val LASTFM_SESSION_APPLICATION = "lastfm.session_application"
+        const val LIBREFM_SESSION = "librefm.session"
+        const val LIBREFM_PENDING = "librefm.pending"
         const val RECONNECT_LASTFM = "Last.fm needs connecting again: it no longer accepts the old sign-in. " +
             "Anything played meanwhile is kept and sent once you do."
         const val APPROVAL_POLL_ATTEMPTS = 60
         const val APPROVAL_POLL_DELAY_MS = 2_000L
+
+        /** What a service says when it no longer takes the sign-in it gave. */
+        private fun reconnect(account: Audioscrobbler): String =
+            if (account.site == AudioscrobblerSite.LAST_FM) RECONNECT_LASTFM
+            else "${account.site.displayName} needs connecting again: it no longer accepts the old sign-in. " +
+                "Anything played meanwhile is kept and sent once you do."
 
         fun scrobbleThresholdMs(durationMs: Long): Long? {
             if (durationMs <= 30_000) return null
@@ -369,6 +444,15 @@ private val ScrobbleTarget.displayName: String
     get() = when (this) {
         ScrobbleTarget.LISTENBRAINZ -> "ListenBrainz"
         ScrobbleTarget.LASTFM -> "Last.fm"
+        ScrobbleTarget.LIBREFM -> "Libre.fm"
+    }
+
+/** The service's name as the scrobble log has always written it: "lastfm_connected", "librefm_connected". */
+private val ScrobbleTarget.logName: String
+    get() = when (this) {
+        ScrobbleTarget.LISTENBRAINZ -> "listenbrainz"
+        ScrobbleTarget.LASTFM -> "lastfm"
+        ScrobbleTarget.LIBREFM -> "librefm"
     }
 
 private fun safeMessage(error: Throwable): String = (error.message ?: "Scrobbling failed").take(180)

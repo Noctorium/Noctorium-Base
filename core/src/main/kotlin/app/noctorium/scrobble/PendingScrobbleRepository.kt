@@ -4,6 +4,7 @@ import app.noctorium.platform.TextFiles
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
 import java.nio.file.Files
 import app.noctorium.settings.AppDirectories
 import java.nio.file.Path
@@ -11,7 +12,7 @@ import java.nio.file.StandardCopyOption
 import java.time.Instant
 
 @Serializable
-internal enum class ScrobbleTarget { LISTENBRAINZ, LASTFM }
+internal enum class ScrobbleTarget { LISTENBRAINZ, LASTFM, LIBREFM }
 
 @Serializable
 internal data class PendingScrobble(
@@ -41,9 +42,16 @@ internal class PendingScrobbleRepository(
     @Synchronized
     fun replace(items: List<PendingScrobble>) = write(items.takeLast(500))
 
+    /**
+     * The queue as it was written, one entry at a time: an entry this build cannot read -- one for a service a later
+     * version added -- is passed over rather than costing every scrobble queued beside it.
+     */
     private fun read(): List<PendingScrobble> = runCatching {
         val path = queuePath ?: return@runCatching emptyList()
-        if (!Files.isRegularFile(path)) emptyList() else json.decodeFromString<List<PendingScrobble>>(TextFiles.read(path).orEmpty())
+        if (!Files.isRegularFile(path)) return@runCatching emptyList()
+        json.parseToJsonElement(TextFiles.read(path).orEmpty()).jsonArray.mapNotNull { entry ->
+            runCatching { json.decodeFromJsonElement(PendingScrobble.serializer(), entry) }.getOrNull()
+        }
     }.getOrDefault(emptyList())
 
     private fun write(items: List<PendingScrobble>) {
