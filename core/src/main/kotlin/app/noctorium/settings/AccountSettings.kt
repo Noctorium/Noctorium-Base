@@ -1291,6 +1291,24 @@ data class SpotifyConnectionState(
     val addingPublicPlaylist: Boolean = false,
     /** What the last addition or removal of a public playlist said. Apart from [message], which is the sign-in's. */
     val publicMessage: String? = null,
+    /** The import of Spotify's data download, while it runs and once it has. */
+    val dataImport: SpotifyDataImportState = SpotifyDataImportState(),
+)
+
+/**
+ * The import of Spotify's "Download your data" file: whether one is under way, how far it has got, and what came of
+ * the last one. See [app.noctorium.core.AppState.importSpotifyData].
+ */
+data class SpotifyDataImportState(
+    val importing: Boolean = false,
+    /** What it is doing now -- "Reading the playlists in Playlist1.json…" -- while it runs. */
+    val progress: String? = null,
+    /** What came of the last import, or why it did not happen. */
+    val message: String? = null,
+    /** The last import that worked: how many playlists and songs, and what was left out. */
+    val summary: app.noctorium.spotify.SpotifyImportSummary? = null,
+    /** Whether [message] says the import did not happen, rather than what it made. */
+    val failed: Boolean = false,
 )
 
 /**

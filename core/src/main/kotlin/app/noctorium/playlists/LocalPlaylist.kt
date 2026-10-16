@@ -23,6 +23,12 @@ data class LocalPlaylist(
     val tracks: List<Track> = emptyList(),
     val createdAtEpochSeconds: Long = 0,
     val updatedAtEpochSeconds: Long = 0,
+    /**
+     * What an import made this playlist from, so that importing again replaces its songs rather than making a
+     * second copy beside it. Null for a playlist the listener made, which no import ever touches -- and for every
+     * playlist in a file from before imports, which therefore reads as it always did.
+     */
+    val importedFrom: PlaylistImport? = null,
 ) {
     val trackCount: Int get() = tracks.size
 
@@ -33,6 +39,22 @@ data class LocalPlaylist(
             createdAtEpochSeconds = now,
             updatedAtEpochSeconds = now,
         )
+    }
+}
+
+/**
+ * Where an imported playlist came from: [source], what was imported -- [SPOTIFY_DATA] for Spotify's data download --
+ * and [key], which playlist in it, so the same one is found again by the next import of the same source.
+ */
+@Serializable
+data class PlaylistImport(
+    val source: String,
+    val key: String,
+    val importedAtEpochSeconds: Long = 0,
+) {
+    companion object {
+        /** Spotify's "Download your data" export; [key] is the playlist's name there. */
+        const val SPOTIFY_DATA = "spotify-data"
     }
 }
 

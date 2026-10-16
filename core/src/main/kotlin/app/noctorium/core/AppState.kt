@@ -113,11 +113,15 @@ import app.noctorium.matching.ReferenceMatch
 import app.noctorium.matching.ReferenceMatchStore
 import app.noctorium.spotify.SpotifyMusicProvider
 import app.noctorium.spotify.SpotifyRead
+import app.noctorium.spotify.SpotifyDataExport
+import app.noctorium.spotify.SpotifyExport
+import app.noctorium.spotify.SpotifyExportUnreadable
 import app.noctorium.spotify.SpotifyPublicCopies
 import app.noctorium.spotify.SpotifyPublicLibrary
 import app.noctorium.spotify.SpotifyPublicPages
 import app.noctorium.spotify.SpotifyPublicRead
 import app.noctorium.spotify.SpotifyUnavailable
+import app.noctorium.spotify.into
 import app.noctorium.spotify.isSpotifyShortLink
 import app.noctorium.spotify.spotifyPlaylistIdIn
 import app.noctorium.spotify.SPOTIFY_WITHOUT_SIGN_IN
@@ -388,7 +392,8 @@ data class LikeState(
     fun supports(track: Track): Boolean = when (track.provider) {
         ProviderType.SOUNDCLOUD -> soundCloudReady
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
-        ProviderType.SPOTIFY -> spotifyReady
+        // Not a song from Spotify's data download that came without its Spotify address: it has none to save.
+        ProviderType.SPOTIFY -> spotifyReady && SpotifyDataExport.isSpotifyId(track.id)
         ProviderType.VK -> vkReady
         // Noctorium does not like songs on Apple Music, Deezer or Tidal yet. Once one of their songs plays it is
         // the recording it was matched to, and that recording's heart works as any other does.
@@ -1736,7 +1741,7 @@ class AppState(
         }
     }
 
-    // --- Spotify without a sign-in: public playlists ---
+    // --- Spotify without a sign-in: public playlists, and Spotify's data download ---
 
     /**
      * Follows a public Spotify playlist, which needs nobody signed in: from then on it is in the library with
@@ -1839,6 +1844,59 @@ class AppState(
     }
 
     private fun publishSpotifyPublicState(message: String?, adding: Boolean) = publishSpotifyPublicState(message to adding)
+
+    /**
+     * Imports Spotify's "Download your data" file: the .zip Spotify emails, the folder it unpacks into, or a JSON file
+     * from inside it. A front end lets the listener choose it and passes it here as it is; see
+     * [SPOTIFY_DATA_EXPORT_HOW], which every player shows beside the button, and [SPOTIFY_DATA_EXPORT_LIMITS].
+     *
+     * Each Spotify playlist becomes a playlist here of the same name, and Liked Songs becomes
+     * [app.noctorium.spotify.SPOTIFY_LIKED_SONGS_TITLE]; their songs are Spotify's, played as their YouTube Music
+     * matches with nobody signed in to Spotify at all. Importing again -- a newer file -- replaces the songs of what
+     * the last import made rather than adding a second copy, and never touches a playlist the listener made. Runs
+     * off the main thread; how far it has got, and what it made, are in [SettingsState.spotify]'s `dataImport`, and
+     * what it made is said in the library too.
+     */
+    fun importSpotifyData(path: Path) =
+        runSpotifyImport(path.fileName?.toString() ?: path.toString()) { progress -> SpotifyDataExport.read(path, progress) }
+
+    /** The same, from the file's bytes, for a browser's upload: [fileName] is what the file was called. */
+    fun importSpotifyData(bytes: ByteArray, fileName: String) =
+        runSpotifyImport(fileName) { progress -> SpotifyDataExport.read(fileName, bytes, progress) }
+
+    /**
+     * The same, from a stream, for a phone's file picker. [open] is called off the main thread, once, and what it
+     * opens is closed here when the import has read it -- so a content stream can be handed over as it is.
+     */
+    fun importSpotifyData(fileName: String, open: () -> java.io.InputStream) =
+        runSpotifyImport(fileName) { progress -> open().use { SpotifyDataExport.read(fileName, it, progress) } }
+
+    private fun runSpotifyImport(fileName: String, read: ((String) -> Unit) -> SpotifyExport) {
+        if (mutableSettings.value.spotify.dataImport.importing) return
+        publishSpotifyImport { it.copy(importing = true, progress = "Opening $fileName…", message = null, failed = false) }
+        scope.launch(Dispatchers.IO) {
+            try {
+                val export = read { step -> publishSpotifyImport { it.copy(progress = step) } }
+                // Merged into the playlists as they stand when the file has been read, not as they stood when it was
+                // chosen: an import of a large file takes a moment, and a playlist made meanwhile must survive it.
+                val imported = export.into(mutableLibrary.value.localPlaylists, Instant.now().epochSecond)
+                persistPlaylists(imported.playlists)
+                val summary = imported.summary
+                publishSpotifyImport { SpotifyDataImportState(message = summary.message, summary = summary) }
+                libraryNotice(summary.message)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: SpotifyExportUnreadable) {
+                publishSpotifyImport { it.copy(importing = false, progress = null, message = error.message, failed = true) }
+            } catch (error: Exception) {
+                val said = "Could not read $fileName: ${error.message ?: error::class.java.simpleName}"
+                publishSpotifyImport { it.copy(importing = false, progress = null, message = said.take(240), failed = true) }
+            }
+        }
+    }
+
+    private fun publishSpotifyImport(transform: (SpotifyDataImportState) -> SpotifyDataImportState) =
+        mutableSettings.update { it.copy(spotify = it.spotify.copy(dataImport = transform(it.spotify.dataImport))) }
 
     /**
      * The recording a reference -- a Spotify, Apple Music, Deezer or Tidal track -- stands for, found once and
@@ -2585,7 +2643,12 @@ class AppState(
             }
         }
         // Into Spotify's Liked Songs, or out of it.
-        ProviderType.SPOTIFY -> when (val token = spotifyAccessToken()) {
+        ProviderType.SPOTIFY -> if (!SpotifyDataExport.isSpotifyId(track.id)) {
+            LikeResult(
+                LikeOutcome.UNSUPPORTED_TRACK,
+                "This song came from Spotify's data download without its Spotify address, so it cannot be liked on Spotify.",
+            )
+        } else when (val token = spotifyAccessToken()) {
             null -> LikeResult(LikeOutcome.NEEDS_TOKEN, "Connect Spotify in Settings before liking Spotify songs.")
             else -> when (val saved = spotifyClient.setSaved(track.id, liking, token)) {
                 is SpotifyRead.Ok -> LikeResult(
