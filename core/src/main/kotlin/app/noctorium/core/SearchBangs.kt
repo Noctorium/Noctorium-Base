@@ -33,6 +33,12 @@ object SearchBangs {
         "bc" to SearchMode.BANDCAMP,
         "bandcamp" to SearchMode.BANDCAMP,
         "vk" to SearchMode.VK,
+        "dz" to SearchMode.DEEZER,
+        "deezer" to SearchMode.DEEZER,
+        "td" to SearchMode.TIDAL,
+        "tidal" to SearchMode.TIDAL,
+        "am" to SearchMode.APPLE_MUSIC,
+        "applemusic" to SearchMode.APPLE_MUSIC,
         "all" to SearchMode.HYBRID,
     )
 

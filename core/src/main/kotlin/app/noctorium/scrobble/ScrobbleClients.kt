@@ -109,6 +109,9 @@ internal class ListenBrainzClient(
                         ProviderType.SPOTIFY -> "spotify"
                         ProviderType.BANDCAMP -> "bandcamp.com"
                         ProviderType.VK -> "vk.com"
+                        ProviderType.APPLE_MUSIC -> "music.apple.com"
+                        ProviderType.DEEZER -> "deezer.com"
+                        ProviderType.TIDAL -> "tidal.com"
                         ProviderType.LOCAL -> "local"
                     },
                 )

@@ -1,4 +1,4 @@
-package app.noctorium.spotify
+package app.noctorium.matching
 
 import app.noctorium.domain.Album
 import app.noctorium.domain.Artist
@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
  * So the rule these tests hold to is that a wrong match is worse than no match, and every distractor below
  * is a real thing that turns up in a YouTube Music search.
  */
-class SpotifyMatchTest {
+class ReferenceMatchTest {
     private fun spotify(
         title: String,
         artist: String,
@@ -61,7 +61,7 @@ class SpotifyMatchTest {
     fun `the query is the artist and the title`() {
         assertEquals(
             "Nirvana Come As You Are",
-            SpotifyMatch.searchQuery(spotify("Come As You Are", "Nirvana")),
+            ReferenceMatch.searchQuery(spotify("Come As You Are", "Nirvana")),
         )
     }
 
@@ -73,15 +73,15 @@ class SpotifyMatchTest {
     fun `edition wording is left out of the query`() {
         assertEquals(
             "Nirvana Come As You Are",
-            SpotifyMatch.searchQuery(spotify("Come As You Are - Remastered 2011", "Nirvana")),
+            ReferenceMatch.searchQuery(spotify("Come As You Are - Remastered 2011", "Nirvana")),
         )
         assertEquals(
             "Radiohead Creep",
-            SpotifyMatch.searchQuery(spotify("Creep (Remastered)", "Radiohead")),
+            ReferenceMatch.searchQuery(spotify("Creep (Remastered)", "Radiohead")),
         )
         assertEquals(
             "The Beatles Help!",
-            SpotifyMatch.searchQuery(spotify("Help! - Mono / Remastered", "The Beatles")),
+            ReferenceMatch.searchQuery(spotify("Help! - Mono / Remastered", "The Beatles")),
         )
     }
 
@@ -90,9 +90,9 @@ class SpotifyMatchTest {
     fun `a featured artist and a version stay in the query`() {
         assertEquals(
             "Kanye West Devil In A New Dress (feat. Rick Ross)",
-            SpotifyMatch.searchQuery(spotify("Devil In A New Dress (feat. Rick Ross)", "Kanye West")),
+            ReferenceMatch.searchQuery(spotify("Devil In A New Dress (feat. Rick Ross)", "Kanye West")),
         )
-        assertTrue(SpotifyMatch.searchQuery(spotify("Layla - Acoustic", "Eric Clapton")).contains("Acoustic"))
+        assertTrue(ReferenceMatch.searchQuery(spotify("Layla - Acoustic", "Eric Clapton")).contains("Acoustic"))
     }
 
     // --- Choosing between what came back ---
@@ -108,7 +108,7 @@ class SpotifyMatchTest {
             youTube("Come As You Are (Techno Remix)", "DJ Someone", 305_000, "remix"),
         )
 
-        assertEquals("real", SpotifyMatch.choose(wanted, candidates)?.id)
+        assertEquals("real", ReferenceMatch.choose(wanted, candidates)?.id)
     }
 
     /**
@@ -125,7 +125,7 @@ class SpotifyMatchTest {
             "official",
         )
 
-        assertNotNull(SpotifyMatch.choose(wanted, listOf(candidate)))
+        assertNotNull(ReferenceMatch.choose(wanted, listOf(candidate)))
     }
 
     @Test
@@ -136,7 +136,7 @@ class SpotifyMatchTest {
             youTube("Levels (Hardstyle Bootleg)", "Avicii", 199_000, "bootleg"),
         )
 
-        assertNull(SpotifyMatch.choose(wanted, candidates), "a remix was accepted as the original")
+        assertNull(ReferenceMatch.choose(wanted, candidates), "a remix was accepted as the original")
     }
 
     /** A cover is a different performance by different people, however exactly the title agrees. */
@@ -148,7 +148,7 @@ class SpotifyMatchTest {
             youTube("Creep (Radiohead Cover)", "Another Singer", 240_000, "cover2"),
         )
 
-        assertNull(SpotifyMatch.choose(wanted, candidates), "a cover was accepted as the original")
+        assertNull(ReferenceMatch.choose(wanted, candidates), "a cover was accepted as the original")
     }
 
     /**
@@ -160,7 +160,7 @@ class SpotifyMatchTest {
         val wanted = spotify("Strobe", "deadmau5", 634_000)
         val hourLong = youTube("Strobe", "deadmau5", 3_600_000, "hour")
 
-        assertNull(SpotifyMatch.choose(wanted, listOf(hourLong)))
+        assertNull(ReferenceMatch.choose(wanted, listOf(hourLong)))
     }
 
     /**
@@ -172,7 +172,7 @@ class SpotifyMatchTest {
         val wanted = spotify("Everlong", "Foo Fighters", 250_000)
         val noDuration = youTube("Everlong", "Foo Fighters", null, "unknown")
 
-        assertEquals("unknown", SpotifyMatch.choose(wanted, listOf(noDuration))?.id)
+        assertEquals("unknown", ReferenceMatch.choose(wanted, listOf(noDuration))?.id)
     }
 
     @Test
@@ -180,22 +180,22 @@ class SpotifyMatchTest {
         val wanted = spotify("Sweet Child O' Mine", "Guns N' Roses", 356_000)
         val candidate = youTube("Guns N Roses - Sweet Child O Mine", "GunsNRosesVEVO", 355_000, "gnr")
 
-        assertEquals("gnr", SpotifyMatch.choose(wanted, listOf(candidate))?.id)
+        assertEquals("gnr", ReferenceMatch.choose(wanted, listOf(candidate))?.id)
 
         val beyonce = spotify("Halo", "Beyoncé", 261_000)
-        assertNotNull(SpotifyMatch.choose(beyonce, listOf(youTube("Halo", "Beyonce", 262_000, "halo"))))
+        assertNotNull(ReferenceMatch.choose(beyonce, listOf(youTube("Halo", "Beyonce", 262_000, "halo"))))
     }
 
     @Test
     fun `an empty search result is no match rather than a failure`() {
-        assertNull(SpotifyMatch.choose(spotify("Anything", "Anyone"), emptyList()))
+        assertNull(ReferenceMatch.choose(spotify("Anything", "Anyone"), emptyList()))
     }
 
     /** Matching a Spotify track to another Spotify track would resolve nothing at all. */
     @Test
     fun `a Spotify candidate is never the match`() {
         val wanted = spotify("Come As You Are", "Nirvana")
-        assertNull(SpotifyMatch.choose(wanted, listOf(wanted)))
+        assertNull(ReferenceMatch.choose(wanted, listOf(wanted)))
     }
 
     /**
@@ -207,7 +207,7 @@ class SpotifyMatchTest {
         val wanted = spotify("Levels - Skrillex Remix", "Avicii", 210_000)
         val candidate = youTube("Levels (Skrillex Remix)", "Avicii", 211_000, "remix")
 
-        assertEquals("remix", SpotifyMatch.choose(wanted, listOf(candidate))?.id)
+        assertEquals("remix", ReferenceMatch.choose(wanted, listOf(candidate))?.id)
     }
 
     // --- What actually gets played ---
@@ -222,7 +222,7 @@ class SpotifyMatchTest {
             "gnr",
         )
 
-        val played = SpotifyMatch.resolved(wanted, match)
+        val played = ReferenceMatch.resolved(wanted, match)
 
         // Where the audio comes from, so downloading, liking and scrobbling all act on the real recording.
         assertEquals(ProviderType.YOUTUBE_MUSIC, played.provider)
@@ -242,7 +242,7 @@ class SpotifyMatchTest {
         val wanted = spotify("Halo", "Beyoncé")
         val match = youTube("Halo", "Beyonce", id = "halo").copy(artists = emptyList())
 
-        val played = SpotifyMatch.resolved(wanted, match)
+        val played = ReferenceMatch.resolved(wanted, match)
 
         assertEquals("Beyoncé", played.artistLine)
         // Remapped to the provider whose pages can actually be opened.
@@ -252,7 +252,7 @@ class SpotifyMatchTest {
     @Test
     fun `a resolved track is queued and downloaded under the recording's own key`() {
         val wanted = spotify("Everlong", "Foo Fighters")
-        val played = SpotifyMatch.resolved(wanted, youTube("Everlong", "Foo Fighters", id = "ever"))
+        val played = ReferenceMatch.resolved(wanted, youTube("Everlong", "Foo Fighters", id = "ever"))
 
         assertEquals("YOUTUBE_MUSIC:ever", played.queueKey)
     }
@@ -261,25 +261,69 @@ class SpotifyMatchTest {
 
     @Test
     fun `normalizing leaves only what can be compared`() {
-        assertEquals("guns n roses", SpotifyMatch.normalize("Guns N' Roses"))
-        assertEquals("beyonce", SpotifyMatch.normalize("Beyoncé"))
-        assertEquals("sigur ros", SpotifyMatch.normalize("Sigur Rós"))
-        assertEquals("ac dc", SpotifyMatch.normalize("AC/DC"))
+        assertEquals("guns n roses", ReferenceMatch.normalize("Guns N' Roses"))
+        assertEquals("beyonce", ReferenceMatch.normalize("Beyoncé"))
+        assertEquals("sigur ros", ReferenceMatch.normalize("Sigur Rós"))
+        assertEquals("ac dc", ReferenceMatch.normalize("AC/DC"))
     }
 
     @Test
     fun `a title with nothing but edition wording keeps its original text`() {
         // Stripping everything would leave a blank query, which matches anything at all.
-        assertTrue(SpotifyMatch.strippedTitle("- Remastered").isNotBlank())
-        assertTrue(SpotifyMatch.strippedTitle("(Remastered)").isNotBlank())
+        assertTrue(ReferenceMatch.strippedTitle("- Remastered").isNotBlank())
+        assertTrue(ReferenceMatch.strippedTitle("(Remastered)").isNotBlank())
     }
 
     @Test
     fun `lengths within a few seconds score the same as identical ones`() {
-        assertEquals(1.0, SpotifyMatch.durationScore(213_000, 214_500))
-        assertEquals(0.0, SpotifyMatch.durationScore(213_000, 3_600_000))
+        assertEquals(1.0, ReferenceMatch.durationScore(213_000, 214_500))
+        assertEquals(0.0, ReferenceMatch.durationScore(213_000, 3_600_000))
         // Neutral, not disagreement.
-        assertEquals(0.5, SpotifyMatch.durationScore(213_000, null))
-        assertEquals(0.5, SpotifyMatch.durationScore(null, 213_000))
+        assertEquals(0.5, ReferenceMatch.durationScore(213_000, null))
+        assertEquals(0.5, ReferenceMatch.durationScore(null, 213_000))
+    }
+
+    // --- The other services, matched the same way ---
+
+    private fun deezer(title: String, artist: String, durationMs: Long?, id: String = "3135553") = Track(
+        provider = ProviderType.DEEZER,
+        id = id,
+        title = title,
+        artists = listOf(Artist("27", artist, ProviderType.DEEZER)),
+        album = Album("302127", "Discovery", emptyList(), ProviderType.DEEZER, "https://cdn.example.invalid/cover.jpg"),
+        durationMs = durationMs,
+        artworkUrl = "https://cdn.example.invalid/cover.jpg",
+        sourceUrl = "https://www.deezer.com/track/$id",
+    )
+
+    /** A Deezer song is found as a Spotify one is, and keeps how Deezer wrote it once it plays. */
+    @Test
+    fun `a Deezer song is matched to its recording like a Spotify one`() {
+        val wanted = deezer("One More Time", "Daft Punk", 320_000)
+        val candidates = listOf(
+            youTube("One More Time (Short Radio Edit)", "Daft Punk", 235_000, "edit"),
+            youTube("One More Time", "Daft Punk", 321_000, "real"),
+        )
+
+        val match = ReferenceMatch.choose(wanted, candidates)
+        assertEquals("real", match?.id)
+        val played = ReferenceMatch.resolved(wanted, match!!)
+        assertEquals(ProviderType.YOUTUBE_MUSIC, played.provider)
+        assertEquals("https://cdn.example.invalid/cover.jpg", played.artworkUrl)
+        assertEquals("Daft Punk One More Time", ReferenceMatch.searchQuery(wanted))
+    }
+
+    /** Another service's copy of the song has no more audio than the one being matched, so it is never the match. */
+    @Test
+    fun `a reference is never chosen as the match for another`() {
+        val wanted = deezer("One More Time", "Daft Punk", 320_000)
+        val elsewhere = listOf(
+            spotify("One More Time", "Daft Punk", 320_000, id = "spotify-copy"),
+            deezer("One More Time", "Daft Punk", 320_000, id = "deezer-copy"),
+            deezer("One More Time", "Daft Punk", 320_000, id = "x").copy(provider = ProviderType.APPLE_MUSIC),
+            deezer("One More Time", "Daft Punk", 320_000, id = "y").copy(provider = ProviderType.TIDAL),
+        )
+
+        assertNull(ReferenceMatch.choose(wanted, elsewhere))
     }
 }

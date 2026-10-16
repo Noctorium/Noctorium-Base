@@ -7,6 +7,16 @@ import app.noctorium.vk.VkMusicProvider
 import app.noctorium.vk.VkSource
 import app.noctorium.vk.VkUnavailable
 import app.noctorium.bandcamp.BandcampMusicProvider
+import app.noctorium.deezer.DeezerMusicProvider
+import app.noctorium.applemusic.AppleMusicClient
+import app.noctorium.applemusic.AppleMusicDeveloperToken
+import app.noctorium.applemusic.AppleMusicProvider
+import app.noctorium.tidal.TidalAccess
+import app.noctorium.tidal.TidalApp
+import app.noctorium.tidal.TidalApplication
+import app.noctorium.tidal.TidalAuth
+import app.noctorium.tidal.TidalClient
+import app.noctorium.tidal.TidalMusicProvider
 import app.noctorium.downloads.DownloadManager
 import app.noctorium.downloads.MusicExport
 import app.noctorium.downloads.DownloadsState
@@ -99,8 +109,8 @@ import app.noctorium.playback.RoutingPlaybackEngine
 import app.noctorium.spotify.SpotifyApplication
 import app.noctorium.spotify.SpotifyAuth
 import app.noctorium.spotify.SpotifyClient
-import app.noctorium.spotify.SpotifyMatch
-import app.noctorium.spotify.SpotifyMatchStore
+import app.noctorium.matching.ReferenceMatch
+import app.noctorium.matching.ReferenceMatchStore
 import app.noctorium.spotify.SpotifyMusicProvider
 import app.noctorium.spotify.SpotifyRead
 import app.noctorium.spotify.usesOwnSpotifyApp
@@ -195,7 +205,10 @@ enum class ProviderFilter(val displayName: String) {
     SOUNDCLOUD("SoundCloud"),
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
-    VK("VK Music");
+    VK("VK Music"),
+    DEEZER("Deezer"),
+    TIDAL("Tidal"),
+    APPLE_MUSIC("Apple Music");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -205,6 +218,9 @@ enum class ProviderFilter(val displayName: String) {
         BANDCAMP -> provider == ProviderType.BANDCAMP
         SPOTIFY -> provider == ProviderType.SPOTIFY
         VK -> provider == ProviderType.VK
+        DEEZER -> provider == ProviderType.DEEZER
+        TIDAL -> provider == ProviderType.TIDAL
+        APPLE_MUSIC -> provider == ProviderType.APPLE_MUSIC
     }
 }
 
@@ -216,6 +232,9 @@ enum class SearchMode(val displayName: String) {
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
     VK("VK Music"),
+    DEEZER("Deezer"),
+    TIDAL("Tidal"),
+    APPLE_MUSIC("Apple Music"),
 }
 
 data class LibraryState(
@@ -357,7 +376,10 @@ data class LikeState(
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
         ProviderType.SPOTIFY -> spotifyReady
         ProviderType.VK -> vkReady
-        ProviderType.BANDCAMP, ProviderType.LOCAL -> false
+        // Noctorium does not like songs on Apple Music, Deezer or Tidal yet. Once one of their songs plays it is
+        // the recording it was matched to, and that recording's heart works as any other does.
+        ProviderType.BANDCAMP, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL,
+        ProviderType.LOCAL -> false
     }
 }
 
@@ -372,6 +394,9 @@ internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.SPOTIFY -> "spotify:${track.id}"
     ProviderType.BANDCAMP -> "bc:${track.id}"
     ProviderType.VK -> "vk:${track.id}"
+    ProviderType.APPLE_MUSIC -> "am:${track.id}"
+    ProviderType.DEEZER -> "dz:${track.id}"
+    ProviderType.TIDAL -> "td:${track.id}"
     ProviderType.LOCAL -> "local:${track.id}"
 }
 
@@ -480,7 +505,12 @@ class AppState(
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
     private val accountClient: NoctoriumAccountClient = NoctoriumAccountClient(),
     private val spotifyClient: SpotifyClient = SpotifyClient(),
-    private val spotifyMatches: SpotifyMatchStore = SpotifyMatchStore(),
+    /** Which recording each Spotify, Apple Music, Deezer or Tidal song was matched to. See [ReferenceMatchStore]. */
+    private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
+    private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
+    private val tidalClient: TidalClient = TidalClient(),
+    /** Apple Music's catalogue and library; null for the one reading with the web player's token, or the listener's own. */
+    appleMusicClient: AppleMusicClient? = null,
     /** What this device calls itself on the network, when the listener has not renamed it. */
     private val deviceName: () -> String = { "Noctorium" },
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
@@ -549,19 +579,70 @@ class AppState(
     )
     private val vk = VkMusicProvider(vkClient)
 
+    /**
+     * Deezer, kept by name as well as in the list below: a profile given in Settings is checked through it, and a
+     * pasted Deezer link is opened through it.
+     */
+    private val deezer = DeezerMusicProvider(
+        client = deezerClient,
+        profileId = { mutableSettings.value.preferences.deezerProfileId.toLongOrNull() },
+    )
+
+    /**
+     * Tidal's tokens, and the Tidal app they come through. The app's client id and secret are kept in the credential
+     * store as Last.fm's own keys are, and so is the refresh token: the settings file holds only whose account it is.
+     */
+    private val tidalAccess = TidalAccess(
+        refresh = TidalAuth(openBrowser = ::browseSecureUrl)::refresh,
+        clientCredentials = TidalAuth(openBrowser = ::browseSecureUrl)::clientCredentials,
+        readApp = {
+            credentials.get(TIDAL_CLIENT_ID)?.takeIf(String::isNotBlank)?.let { id ->
+                TidalApp(id, credentials.get(TIDAL_CLIENT_SECRET).orEmpty())
+            }
+        },
+        readRefreshToken = { runCatching { credentials.get(TIDAL_REFRESH_TOKEN) }.getOrNull() },
+        writeRefreshToken = { token -> runCatching { credentials.put(TIDAL_REFRESH_TOKEN, token) } },
+        clearRefreshToken = { runCatching { credentials.remove(TIDAL_REFRESH_TOKEN) } },
+    )
+
+    private val tidal = TidalMusicProvider(
+        client = tidalClient,
+        access = tidalAccess,
+        userId = { mutableSettings.value.preferences.tidalUserId },
+        country = { mutableSettings.value.preferences.tidalCountry.ifBlank { deviceCountry() ?: "US" } },
+    )
+
+    /**
+     * Apple Music's two tokens, held here once read from the credential store, since every request carries them and
+     * reading that store runs PowerShell on Windows. The developer token is the listener's own MusicKit token, or
+     * null for the web player's; the listener's token is from Apple's sign-in page, or null for nobody signed in.
+     */
+    @Volatile private var appleMusicOwnDeveloperToken: String? = null
+    @Volatile private var appleMusicToken: Pair<Boolean, String?> = false to null
+
+    private val appleMusicClient: AppleMusicClient =
+        appleMusicClient ?: AppleMusicClient(AppleMusicDeveloperToken(own = { appleMusicOwnDeveloperToken }))
+
+    private val appleMusic = AppleMusicProvider(
+        client = this.appleMusicClient,
+        userToken = { appleMusicUserToken() },
+        storefront = { appleMusicStorefront() },
+    )
+
     /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
     private val serviceStreams = ServiceStreams { sourceUrl ->
         bandcamp.streamFor(sourceUrl)?.let(::ServiceStream) ?: vk.streamFor(sourceUrl)
     }
 
     /**
-     * The Spotify song each matched recording stands for, by the recording's queue key.
+     * The song each matched recording stands for -- a Spotify, Apple Music, Deezer or Tidal song -- by the
+     * recording's queue key.
      *
-     * A matched Spotify song becomes the recording it was matched to -- see [SpotifyMatch.resolved] -- so
-     * nothing in it says Spotify any more. Autoplay needs to know, to carry on from Spotify rather than from
+     * A matched song becomes the recording it was matched to -- see [ReferenceMatch.resolved] -- so nothing in it
+     * says where it came from any more. Autoplay needs to know, to carry on from that service rather than from
      * YouTube. Declared up here because the watchers started in init can reach for it at once.
      */
-    private val spotifyOrigins = ConcurrentHashMap<String, Track>()
+    private val referenceOrigins = ConcurrentHashMap<String, Track>()
 
     /** Where in its song the queue was left last time, to pick up from when that song is next played. */
     @Volatile private var pendingResume: Pair<String, Long>? = null
@@ -616,6 +697,9 @@ class AppState(
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
         bandcamp,
         vk,
+        deezer,
+        tidal,
+        appleMusic,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -878,6 +962,7 @@ class AppState(
         ytDlp.useServiceStreams(serviceStreams)
         applyAccountPreferences(mutableSettings.value.preferences)
         describeSavedAccounts(mutableSettings.value.preferences)
+        publishDeezerState()
         scrobbleManager.observe(playback, scope)
         scope.launch {
             val preferences = mutableSettings.value.preferences
@@ -916,6 +1001,16 @@ class AppState(
         // What a sign-in begun in the first moment has already said is kept, rather than wiped by this.
         scope.launch(Dispatchers.IO) {
             publishSpotifyState(connecting = mutableSettings.value.spotify.connecting, message = mutableSettings.value.spotify.message)
+        }
+        // The same for Tidal, whose app and sign-in are both in the credential store.
+        scope.launch(Dispatchers.IO) {
+            publishTidalState(connecting = mutableSettings.value.tidal.connecting, message = mutableSettings.value.tidal.message)
+        }
+        // And for Apple Music, whose developer token of the listener's own, if any, is there too.
+        publishAppleMusicState()
+        scope.launch(Dispatchers.IO) {
+            appleMusicOwnDeveloperToken = runCatching { credentials.get(APPLE_MUSIC_DEVELOPER_TOKEN) }.getOrNull()?.takeIf(String::isNotBlank)
+            publishAppleMusicState(checking = mutableSettings.value.appleMusic.checking, message = mutableSettings.value.appleMusic.message)
         }
         scope.launch(Dispatchers.IO) {
             // Through the same helper as everything else: the credential can be missing while the saved
@@ -1596,23 +1691,24 @@ class AppState(
     }
 
     /**
-     * The recording a Spotify track stands for, found once and then remembered.
+     * The recording a reference -- a Spotify, Apple Music, Deezer or Tidal track -- stands for, found once and
+     * then remembered.
      *
-     * Spotify hands out no audio, so this is the only way one of its tracks can make a sound: search for the
-     * song and decide whether what came back is really it. When nothing is close enough, nothing is played
-     * and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
+     * None of those services hands out its audio, so this is the only way one of their tracks can make a sound:
+     * search for the song and decide whether what came back is really it. When nothing is close enough, nothing
+     * is played and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
      * chose is worse than telling them it could not be found.
      *
      * Unless [quiet]: a look ahead at a song nobody has asked for yet must not put up a banner saying it could
      * not be played. The failure is not remembered, so asking to play it later looks again, and explains.
      */
-    private suspend fun resolveSpotify(track: Track, quiet: Boolean = false): Track? {
-        spotifyMatches[track.id]?.let { known ->
-            spotifyOrigins[known.queueKey] = track
+    private suspend fun resolveReference(track: Track, quiet: Boolean = false): Track? {
+        referenceMatches[track]?.let { known ->
+            referenceOrigins[known.queueKey] = track
             return known
         }
 
-        val query = SpotifyMatch.searchQuery(track)
+        val query = ReferenceMatch.searchQuery(track)
         val candidates = runCatching { youTubeSongSearch(query, limit = 8) }.getOrDefault(emptyList())
             .ifEmpty {
                 // The innertube search needs the page identifiers; without them, or when it simply finds
@@ -1620,23 +1716,22 @@ class AppState(
                 runCatching { ytDlp.search(ProviderType.YOUTUBE_MUSIC, query, limit = 8) }
                     .getOrDefault(emptyList())
             }
-        val match = SpotifyMatch.choose(track, candidates)
+        val match = ReferenceMatch.choose(track, candidates)
         if (match == null) {
             if (quiet) return null
-            // Said in both places a Spotify track can be played from, because a track that makes no sound
-            // and explains nothing is the worst outcome this path has. Spotify tracks are started from a
-            // playlist in the library far more often than from anywhere else, and the home screen's banner
-            // is not visible there.
-            val explanation = "Could not find \"${track.title}\" by ${track.artistLine} to play. Spotify " +
-                "does not hand out its audio, so every track has to be matched elsewhere first."
+            // Said in both places a track like this can be played from, because a track that makes no sound
+            // and explains nothing is the worst outcome this path has. They are started from a playlist in the
+            // library far more often than from anywhere else, and the home screen's banner is not visible there.
+            val explanation = "Could not find \"${track.title}\" by ${track.artistLine} to play. " +
+                "${track.provider.displayName} does not hand out its audio, so every track has to be matched elsewhere first."
             mutableUi.update { it.copy(errorMessage = explanation) }
             libraryNotice(explanation)
             return null
         }
 
-        val resolved = SpotifyMatch.resolved(track, match)
-        spotifyOrigins[resolved.queueKey] = track
-        withContext(Dispatchers.IO) { spotifyMatches.put(track.id, resolved) }
+        val resolved = ReferenceMatch.resolved(track, match)
+        referenceOrigins[resolved.queueKey] = track
+        withContext(Dispatchers.IO) { referenceMatches.put(track, resolved) }
         return resolved
     }
 
@@ -1694,6 +1789,308 @@ class AppState(
     fun setBandcampGenres(genres: List<BandcampGenre>) {
         updatePreferences { copy(bandcampGenres = genres.distinct()) }
         refreshHome()
+    }
+
+    // --- Deezer, which is read and never played from ---
+
+    /**
+     * Shows the public playlists, loved tracks and albums of the Deezer profile [input] names, or none for a blank.
+     *
+     * Takes the profile's link as readily as its number, because the link is what gets copied -- the address bar's
+     * `deezer.com/en/profile/123`, or the share button's `link.deezer.com/s/…`, which is followed to see where it
+     * leads. The number is checked with Deezer before it is kept: a mistyped one would otherwise be an empty
+     * library with no reason given.
+     */
+    fun setDeezerProfile(input: String) {
+        if (input.isBlank()) {
+            updatePreferences { copy(deezerProfileId = "", deezerProfileName = "") }
+            mutableSettings.update { it.copy(deezer = DeezerConnectionState(message = "Deezer profile removed.")) }
+            mutableLibrary.update { it.withoutProvider(ProviderType.DEEZER) }
+            refreshHome()
+            return
+        }
+        mutableSettings.update { it.copy(deezer = it.deezer.copy(checking = true, message = null)) }
+        scope.launch {
+            val found = try {
+                val id = deezer.profileIn(input) ?: run {
+                    publishDeezerState(message = "That is not a Deezer profile. Paste the link to your profile, or the number at the end of it.")
+                    return@launch
+                }
+                id to deezer.profile(id)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                publishDeezerState(message = readableFailure(error, "Could not reach Deezer."))
+                return@launch
+            }
+            val (id, profile) = found
+            if (profile == null) {
+                publishDeezerState(message = "Deezer has no profile numbered $id. It is the number at the end of your profile's address.")
+                return@launch
+            }
+            updatePreferences { copy(deezerProfileId = profile.id.toString(), deezerProfileName = profile.name) }
+            publishDeezerState(message = "Showing ${profile.name}'s playlists, loved tracks and albums from Deezer.")
+            mutableLibrary.update { it.withoutProvider(ProviderType.DEEZER).copy(loaded = false) }
+            refreshLibrary(force = true)
+            refreshHome()
+        }
+    }
+
+    // --- Tidal, which is read and never played from ---
+
+    /**
+     * Uses a Tidal app the listener registered -- its client id, and its secret where they give it -- or, given
+     * blanks, none of their own again.
+     *
+     * Both are kept in the credential store, as Last.fm's own keys are. The secret is what lets Tidal's catalogue
+     * be searched without signing in; signing in needs only the id. A different app means the stored sign-in
+     * belongs to something else and cannot be refreshed through this one, so it is let go of here, which is what
+     * stops it showing up later as a refusal.
+     */
+    fun configureTidalApplication(clientId: String, clientSecret: String) {
+        val id = clientId.trim().take(128)
+        val secret = clientSecret.trim().take(256)
+        scope.launch(Dispatchers.IO) {
+            val before = tidalAccess.clientId()
+            val stored = runCatching {
+                if (id.isBlank()) {
+                    credentials.remove(TIDAL_CLIENT_ID)
+                    credentials.remove(TIDAL_CLIENT_SECRET)
+                } else {
+                    credentials.put(TIDAL_CLIENT_ID, id)
+                    if (secret.isBlank()) credentials.remove(TIDAL_CLIENT_SECRET) else credentials.put(TIDAL_CLIENT_SECRET, secret)
+                }
+            }
+            if (stored.isFailure) {
+                publishTidalState(message = "Could not keep your Tidal app securely: ${stored.exceptionOrNull()?.message?.take(120)}")
+                return@launch
+            }
+            tidalAccess.useApp(id.takeIf(String::isNotBlank)?.let { TidalApp(it, secret) })
+            if (tidalAccess.clientId() != before && tidalAccess.isConnected()) forgetTidalSignIn()
+            publishTidalState(
+                message = when {
+                    !tidalAccess.isConfigured() -> TidalAuth.NO_APP
+                    id.isBlank() -> "Back to Noctorium's own Tidal app. Connect Tidal to sign in."
+                    secret.isBlank() -> "Your Tidal app is saved. Connect Tidal to sign in through it; add its secret to search Tidal without signing in."
+                    else -> "Your Tidal app is saved. Tidal can be searched now; connect Tidal to see your collection."
+                },
+            )
+            mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL).copy(loaded = false) }
+        }
+    }
+
+    /**
+     * Signs in to Tidal on its own page in the browser, and reads whose account it is.
+     *
+     * The reply comes back to [tidalRedirectUri] on this device, which has to be among the app's redirect URIs on
+     * developer.tidal.com exactly as written; Settings shows it, and [copyTidalRedirectUri] puts it on the clipboard.
+     */
+    fun connectTidal() {
+        if (mutableSettings.value.tidal.connecting) return
+        scope.launch {
+            val clientId = withContext(Dispatchers.IO) { tidalAccess.clientId() }
+            if (clientId.isBlank()) return@launch publishTidalState(message = TidalAuth.NO_APP)
+            publishTidalState(connecting = true, message = "Finish signing in to Tidal in your browser.")
+            when (val result = TidalAuth(openBrowser = ::browseSecureUrl).authorize(clientId)) {
+                is TidalAuth.Result.Success -> {
+                    withContext(Dispatchers.IO) { tidalAccess.adopt(result.tokens) }
+                    val account = try {
+                        tidalClient.me(result.tokens.accessToken)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (failure: Exception) {
+                        // Signed in, and still not allowed to say whose account it is: the app is not allowed to read
+                        // the user. Saying "connected" here would be the last true thing it heard.
+                        withContext(Dispatchers.IO) { tidalAccess.disconnect() }
+                        publishTidalState(message = readableFailure(failure, "Tidal signed you in, but would not say whose account it is."))
+                        return@launch
+                    }
+                    updatePreferences {
+                        copy(
+                            tidalUserId = result.tokens.userId ?: account.id,
+                            tidalAccountName = account.name,
+                            tidalCountry = account.country.orEmpty(),
+                        )
+                    }
+                    publishTidalState(message = "Tidal connected as ${account.name}. Your collection is in the library.")
+                    mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL).copy(loaded = false) }
+                    refreshLibrary(force = true)
+                    refreshHome()
+                }
+                is TidalAuth.Result.Failure -> publishTidalState(message = result.detail)
+            }
+        }
+    }
+
+    /** Forgets the Tidal sign-in. Nothing is revoked at Tidal, because nothing was ever written there. */
+    fun disconnectTidal() {
+        scope.launch {
+            forgetTidalSignIn()
+            publishTidalState(message = "Tidal disconnected.")
+            refreshHome()
+        }
+    }
+
+    private suspend fun forgetTidalSignIn() {
+        withContext(Dispatchers.IO) { tidalAccess.disconnect() }
+        updatePreferences { copy(tidalUserId = "", tidalAccountName = "", tidalCountry = "") }
+        mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL) }
+    }
+
+    /** The loopback address Tidal sends its reply to, shown so it can be registered for the app. */
+    fun tidalRedirectUri(): String = TidalAuth.redirectUri()
+
+    /** The same, put on the clipboard: Tidal compares it exactly, and typing it out is where this setup goes wrong. */
+    fun copyTidalRedirectUri() {
+        val copied = runCatching { system.copyToClipboard(TidalAuth.redirectUri()) }
+        scope.launch(Dispatchers.IO) {
+            publishTidalState(
+                message = copied.exceptionOrNull()?.let { "Could not reach the clipboard: ${it.message}" }
+                    ?: "Redirect address copied. Paste it into your Tidal app's redirect URIs.",
+            )
+        }
+    }
+
+    /** Opens Tidal's developer dashboard, where a Tidal app of the listener's own is registered. */
+    fun openTidalDeveloperPortal() {
+        runCatching { browseSecureUrl(TidalApplication.DEVELOPER_PORTAL) }.onFailure { failure ->
+            scope.launch(Dispatchers.IO) { publishTidalState(message = failure.message ?: "Could not open Tidal's developer dashboard.") }
+        }
+    }
+
+    /** What Settings says about Tidal. Reads the credential store, so it is called off the main thread. */
+    private fun publishTidalState(connecting: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        val connected = tidalAccess.isConnected()
+        mutableSettings.update {
+            it.copy(
+                tidal = TidalConnectionState(
+                    configured = tidalAccess.isConfigured(),
+                    ownApp = tidalAccess.ownApp() != null,
+                    readsCatalogue = connected || tidalAccess.readsCatalogueSignedOut(),
+                    connected = connected,
+                    connecting = connecting,
+                    accountName = preferences.tidalAccountName,
+                    message = message,
+                ),
+            )
+        }
+    }
+
+    // --- Apple Music, which is read and never played from ---
+
+    /**
+     * Signs in to Apple Music with the token Apple's own web player keeps once the listener has signed in on Apple's
+     * page: in whatever form it arrives -- harvested from the `media-user-token` cookie by the platform's sign-in
+     * browser (see [app.noctorium.auth.APPLE_MUSIC_SIGN_IN]), or pasted.
+     *
+     * The token is checked with Apple, by asking which storefront the account is in, before anything is kept: a token
+     * copied wrong is a message, not a library that never loads.
+     */
+    fun completeAppleMusicSignIn(text: String) {
+        val token = AppleMusicClient.userTokenIn(text) ?: run {
+            publishAppleMusicState(message = "That is not an Apple Music sign-in. It is the media-user-token cookie on music.apple.com.")
+            return
+        }
+        publishAppleMusicState(checking = true)
+        scope.launch {
+            try {
+                val storefront = appleMusicClient.storefront(token)
+                withContext(Dispatchers.IO) { credentials.put(APPLE_MUSIC_USER_TOKEN, token) }
+                appleMusicToken = true to token
+                updatePreferences { copy(appleMusicSignedIn = true, appleMusicStorefront = storefront) }
+                publishAppleMusicState(message = "Signed in to Apple Music. Your playlists and songs are in the library, and play matched on YouTube Music.")
+                mutableLibrary.update { it.withoutProvider(ProviderType.APPLE_MUSIC).copy(loaded = false) }
+                refreshLibrary(force = true)
+                refreshHome()
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (failure: Exception) {
+                publishAppleMusicState(
+                    message = if ((failure as? app.noctorium.applemusic.AppleMusicUnavailable)?.signedOut == true) {
+                        "Apple Music did not accept that sign-in. Sign in again on Apple's page."
+                    } else {
+                        readableFailure(failure, "Could not sign in to Apple Music.")
+                    },
+                )
+            }
+        }
+    }
+
+    /** Forgets the Apple Music sign-in here. Nothing at Apple changes. */
+    fun disconnectAppleMusic() {
+        scope.launch {
+            withContext(Dispatchers.IO) { runCatching { credentials.remove(APPLE_MUSIC_USER_TOKEN) } }
+            appleMusicToken = true to null
+            updatePreferences { copy(appleMusicSignedIn = false, appleMusicStorefront = "") }
+            mutableLibrary.update { it.withoutProvider(ProviderType.APPLE_MUSIC) }
+            publishAppleMusicState(message = "Signed out of Apple Music.")
+            refreshHome()
+        }
+    }
+
+    /**
+     * Reads Apple Music with a developer token of the listener's own -- one they made with a MusicKit key of their
+     * own -- or, given a blank, with the one Apple's web player is served again. Kept in the credential store.
+     */
+    fun setAppleMusicDeveloperToken(token: String) {
+        val cleaned = token.trim()
+        scope.launch(Dispatchers.IO) {
+            val stored = runCatching {
+                if (cleaned.isBlank()) credentials.remove(APPLE_MUSIC_DEVELOPER_TOKEN) else credentials.put(APPLE_MUSIC_DEVELOPER_TOKEN, cleaned)
+            }
+            if (stored.isFailure) {
+                publishAppleMusicState(message = "Could not keep the token securely: ${stored.exceptionOrNull()?.message?.take(120)}")
+                return@launch
+            }
+            appleMusicOwnDeveloperToken = cleaned.ifBlank { null }
+            publishAppleMusicState(
+                message = if (cleaned.isBlank()) "Apple Music is read the way its web player reads it again." else "Apple Music is read with your own developer token now.",
+            )
+        }
+    }
+
+    /** The listener's Apple Music token, read from the credential store once; null for nobody signed in. */
+    private suspend fun appleMusicUserToken(): String? {
+        if (!mutableSettings.value.preferences.appleMusicSignedIn) return null
+        val (read, token) = appleMusicToken
+        if (read) return token
+        return withContext(Dispatchers.IO) { runCatching { credentials.get(APPLE_MUSIC_USER_TOKEN) }.getOrNull() }
+            .also { appleMusicToken = true to it }
+    }
+
+    /** Where Apple Music's catalogue is read: the account's storefront, this device's country, or the United States. */
+    private fun appleMusicStorefront(): String =
+        mutableSettings.value.preferences.appleMusicStorefront.ifBlank { deviceCountry()?.lowercase() ?: "us" }
+
+    private fun publishAppleMusicState(checking: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                appleMusic = AppleMusicConnectionState(
+                    connected = preferences.appleMusicSignedIn,
+                    checking = checking,
+                    storefront = appleMusicStorefront(),
+                    ownDeveloperToken = appleMusicOwnDeveloperToken != null,
+                    message = message,
+                ),
+            )
+        }
+    }
+
+    /** What Settings says about Deezer: the profile kept, if any, and [message]. */
+    private fun publishDeezerState(message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                deezer = DeezerConnectionState(
+                    profileId = preferences.deezerProfileId,
+                    found = preferences.deezerProfileId.isNotBlank(),
+                    name = preferences.deezerProfileName,
+                    message = message,
+                ),
+            )
+        }
     }
 
     /** Loads the listener's own playlists from every provider whose session is configured. */
@@ -2045,6 +2442,11 @@ class AppState(
         ProviderType.VK -> vkLike(track, liking)
         ProviderType.BANDCAMP ->
             LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Bandcamp has no likes; its wishlist is kept on Bandcamp.")
+        ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> LikeResult(
+            LikeOutcome.UNSUPPORTED_TRACK,
+            "Noctorium cannot like songs on ${track.provider.displayName} yet. Play it, and the heart likes the " +
+                "recording it plays from instead.",
+        )
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
@@ -2905,7 +3307,8 @@ class AppState(
     ) = when (provider) {
         ProviderType.SOUNDCLOUD -> createSoundCloudPlaylist(title, tracks, isPublic)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> createYouTubePlaylist(title, tracks, isPublic)
-        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+        ProviderType.TIDAL, ProviderType.LOCAL ->
             libraryNotice("Playlists cannot be made on ${provider.displayName} from Noctorium.")
     }
 
@@ -2913,7 +3316,8 @@ class AppState(
     fun addTrackToPlaylist(playlist: Playlist, track: Track) = when (playlist.provider) {
         ProviderType.SOUNDCLOUD -> addTrackToSoundCloudPlaylist(playlist.id, track)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> addTrackToYouTubePlaylist(playlist.id, track)
-        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+        ProviderType.TIDAL, ProviderType.LOCAL ->
             libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
     }
 
@@ -3893,6 +4297,9 @@ class AppState(
                 SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
                 SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
                 SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
+                SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
+                SearchMode.TIDAL -> providers.filter { it.type == ProviderType.TIDAL }
+                SearchMode.APPLE_MUSIC -> providers.filter { it.type == ProviderType.APPLE_MUSIC }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -3978,10 +4385,11 @@ class AppState(
             return
         }
         // Everything plays through here — pressing a track, and the queue moving on by itself — which is why
-        // this is where a Spotify reference becomes a real recording. A track that cannot be matched is not
-        // played at all, and the queue is left holding the Spotify entry so trying again is possible.
-        val playable = if (track.provider == ProviderType.SPOTIFY && !playsOnSpotify(track)) {
-            resolveSpotify(track)?.also { queue.replace(track.queueKey, it) } ?: return
+        // this is where a reference -- a Spotify, Apple Music, Deezer or Tidal song -- becomes a real recording. A
+        // track that cannot be matched is not played at all, and the queue is left holding the entry so trying
+        // again is possible.
+        val playable = if (track.provider.isReference && !playsOnSpotify(track)) {
+            resolveReference(track)?.also { queue.replace(track.queueKey, it) } ?: return
         } else {
             track
         }
@@ -4277,18 +4685,21 @@ class AppState(
      * the service the listener chose: YouTube Music's radio, SoundCloud's related tracks, Bandcamp's
      * more-from-the-artist, VK's suggestions. Spotify gives apps no recommendations any more, so after a
      * Spotify song it is more from the same artists, on Spotify -- or, playing on Spotify itself, Spotify's
-     * own autoplay, which is followed rather than lined up here. Anything that comes back empty falls back
-     * to YouTube Music's radio, because silence is the one outcome nobody asked for.
+     * own autoplay, which is followed rather than lined up here. After an Apple Music, Deezer or Tidal song it is
+     * whatever that service suggests after it. Anything that comes back empty falls back to YouTube Music's
+     * radio, because silence is the one outcome nobody asked for.
      */
     private suspend fun suggestionsAfter(seed: Track, from: AutoplaySource): Pair<List<Track>, String?> {
         val songs: Pair<List<Track>, String?> = try {
             val context = PlaybackContext(seed.provider, PlaybackOrigin.QUEUE, seedTrackId = seed.id)
-            val spotify = spotifyOrigins[seed.queueKey]
+            val origin = referenceOrigins[seed.queueKey]
             when {
                 from == AutoplaySource.YOUTUBE_MUSIC -> youTubeRadioFor(seed) to YOUTUBE_RADIO
-                spotify != null -> spotifyMore(spotify)
+                origin?.provider == ProviderType.SPOTIFY -> spotifyMore(origin)
+                origin != null -> referenceMore(origin)
                 playsOnSpotify(seed) -> return emptyList<Track>() to SPOTIFY_CHOOSES
                 seed.provider == ProviderType.SPOTIFY -> spotifyMore(seed)
+                seed.provider.isReference -> referenceMore(seed)
                 seed.provider == ProviderType.YOUTUBE_MUSIC || seed.provider == ProviderType.YOUTUBE_VIDEO ->
                     youTubeRadio(seed.id) to YOUTUBE_RADIO
                 seed.provider == ProviderType.SOUNDCLOUD ->
@@ -4331,6 +4742,18 @@ class AppState(
             }.awaitAll().flatten()
         }
         return songs.filterNot { it.id == seed.id }.shuffled() to "More from ${artist.name} on Spotify"
+    }
+
+    /**
+     * What Apple Music, Deezer or Tidal suggests after one of its songs, through its provider's recommendations:
+     * songs of its own, matched on YouTube Music in turn as each is played. Empty where the service has nothing to
+     * say, which hands autoplay to YouTube Music's radio.
+     */
+    private suspend fun referenceMore(seed: Track): Pair<List<Track>, String?> {
+        val provider = providers.firstOrNull { it.type == seed.provider } ?: return emptyList<Track>() to null
+        val context = PlaybackContext(seed.provider, PlaybackOrigin.QUEUE, seedTrackId = seed.id)
+        return provider.getRecommendations(context).filterNot { it.id == seed.id } to
+            "Suggested by ${seed.provider.displayName}"
     }
 
     /**
@@ -4478,20 +4901,21 @@ class AppState(
             delay(WARM_UP_AFTER_MS)
             if (system.isConnectionMetered()) return@launch
             val likeliest = rawRecent.firstOrNull() ?: return@launch
-            if (likeliest.provider == ProviderType.SPOTIFY) return@launch
+            if (likeliest.provider.isReference) return@launch
             prefetch(likeliest)
         }
     }
 
     /** The address for [track], looked up now and remembered by the backend. Quiet about failure. */
     private suspend fun prefetch(track: Track) {
-        // A downloaded track needs no address, and a Spotify track needs matching first -- which is done
-        // here too, since the match is remembered and is the slower half of playing one.
+        // A downloaded track needs no address, and a reference -- a Spotify, Apple Music, Deezer or Tidal track --
+        // needs matching first, which is done here too, since the match is remembered and is the slower half of
+        // playing one.
         if (downloads.localFile(track) != null) return
         // Played by Spotify's app, which needs nothing looked up in advance.
         if (playsOnSpotify(track)) return
-        val playable = if (track.provider == ProviderType.SPOTIFY) {
-            runCatching { resolveSpotify(track, quiet = true) }.getOrNull() ?: return
+        val playable = if (track.provider.isReference) {
+            runCatching { resolveReference(track, quiet = true) }.getOrNull() ?: return
         } else {
             track
         }
@@ -5008,6 +5432,9 @@ class AppState(
                         .ifEmpty { throw BackendException("That Spotify link has nothing in it that can be played.") }
                     link.provider == ProviderType.VK -> vkLinkTracks(link)
                         .ifEmpty { throw BackendException("That VK link has nothing in it that can be played.") }
+                    // Read by their own clients, and matched on YouTube Music as they are played.
+                    link.provider.isReference -> referenceLinkTracks(link)
+                        .ifEmpty { throw BackendException("That ${link.provider.displayName} link has nothing in it that can be played.") }
                     link.kind == LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
                         .ifEmpty { throw BackendException("That playlist has nothing in it that can be played, or it is private.") }
                     else -> link.placeholderTrack().let { placeholder ->
@@ -5066,6 +5493,19 @@ class AppState(
         }
     }
 
+    /**
+     * What a pasted Apple Music, Deezer or Tidal link names: a song, or the songs of an album, an artist or a
+     * playlist, read through the service's own provider exactly as the library and search read them.
+     */
+    private suspend fun referenceLinkTracks(link: MusicLink): List<Track> {
+        val provider = providers.firstOrNull { it.type == link.provider }
+            ?: throw BackendException("${link.provider.displayName} is not set up here.")
+        return when (link.kind) {
+            LinkKind.TRACK -> listOfNotNull(provider.getTrack(link.id))
+            else -> provider.getPlaylistTracks(Playlist(link.id, "", link.provider, sourceUrl = link.url))
+        }
+    }
+
     /** What a pasted VK link names: a song, or a playlist's songs. */
     private suspend fun vkLinkTracks(link: MusicLink): List<Track> {
         if (!vkClient.isSignedIn()) throw BackendException("Sign in to VK in Settings to open VK links.")
@@ -5102,25 +5542,25 @@ class AppState(
     /**
      * The track a download or an export really acts on.
      *
-     * A Spotify track has no audio of its own, so what gets kept on the disk is the recording matched to it,
-     * filed under that recording's own key. This is how a Spotify row in a playlist can still show whether
-     * the song behind it is downloaded — without it, the row would offer to download something already
-     * sitting in the folder.
+     * A Spotify, Apple Music, Deezer or Tidal track has no audio of its own, so what gets kept on the disk is the
+     * recording matched to it, filed under that recording's own key. This is how such a row in a playlist can
+     * still show whether the song behind it is downloaded — without it, the row would offer to download
+     * something already sitting in the folder.
      */
     fun downloadableTrack(track: Track): Track =
-        if (track.provider == ProviderType.SPOTIFY) spotifyMatches[track.id] ?: track else track
+        if (track.provider.isReference) referenceMatches[track] ?: track else track
 
     /**
-     * Runs an action against something that has audio, resolving a Spotify reference first if need be.
+     * Runs an action against something that has audio, resolving a reference first if need be.
      *
      * Resolving costs a search, so this is asynchronous where the direct case is not. Nothing happens when
-     * the song cannot be found, and [resolveSpotify] has already said why.
+     * the song cannot be found, and [resolveReference] has already said why.
      */
     private fun onPlayable(track: Track, act: (Track) -> Unit) {
         if (!canKeep(track)) return libraryNotice(keepRefusal(track))
-        if (track.provider != ProviderType.SPOTIFY) return act(track)
-        spotifyMatches[track.id]?.let { return act(it) }
-        scope.launch { resolveSpotify(track)?.let(act) }
+        if (!track.provider.isReference) return act(track)
+        referenceMatches[track]?.let { return act(it) }
+        scope.launch { resolveReference(track)?.let(act) }
     }
 
     /**
@@ -5141,7 +5581,9 @@ class AppState(
      *
      * Not Bandcamp's. What Bandcamp streams to everybody is there to be heard on the way to being bought,
      * and the file is the artist's to sell -- so Noctorium plays it, and points at the purchase instead.
-     * Not VK's either: VK licenses its music for playing in its own apps, and forbids keeping it.
+     * Not VK's either: VK licenses its music for playing in its own apps, and forbids keeping it. A Spotify, Apple
+     * Music, Deezer or Tidal song may, because what is kept is never theirs: it is the recording it was matched
+     * to on YouTube Music ([downloadableTrack]).
      */
     fun canKeep(track: Track): Boolean = track.provider != ProviderType.BANDCAMP && track.provider != ProviderType.VK
 
@@ -5323,7 +5765,8 @@ private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     // No cookie session to keep. Bandcamp needs only a fan's name and VK keeps a token of its own, so a
     // slot here would send them down the cookie paths below -- which fall back to YouTube's session, and
     // disconnecting either would then have signed YouTube out.
-    ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.LOCAL -> null
+    ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+    ProviderType.TIDAL, ProviderType.LOCAL -> null
 }
 
 /**
@@ -5340,6 +5783,12 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.BANDCAMP -> bandcampUsername.isNotBlank()
     // Signed in: the name is kept exactly as long as the session is.
     ProviderType.VK -> vkAccountName.isNotBlank()
+    // A public profile, as a Bandcamp fan's collection is: its number is all it takes.
+    ProviderType.DEEZER -> deezerProfileId.isNotBlank()
+    // Signed in: the account's id is kept exactly as long as the sign-in is.
+    ProviderType.TIDAL -> tidalUserId.isNotBlank()
+    // Signed in, which is kept exactly as long as the sign-in is.
+    ProviderType.APPLE_MUSIC -> appleMusicSignedIn
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -5441,7 +5890,7 @@ private const val LINK_DETAILS_WAIT_MS = 60_000L
 
 internal const val NOT_A_MUSIC_LINK =
     "That isn't a link to a song or a playlist. Paste one from YouTube Music, YouTube, SoundCloud, Bandcamp, " +
-        "Spotify or VK."
+        "Spotify, VK, Apple Music, Deezer or Tidal."
 
 /**
  * What to say once a link has been dealt with, or null where the screen already shows it: a song that is
@@ -5584,6 +6033,28 @@ private const val KEEP_QUEUE_PAUSE_MS = 1_500L
 
 private const val MAX_SLEEP_FADE_SECONDS = 120
 private const val SLEEP_FADE_STEP_MS = 250L
+
+/**
+ * Credential-store keys for a Tidal app of the listener's own and for Tidal's refresh token. The client id is not a
+ * secret, but it is kept beside the secret it belongs with, as Last.fm's own key is.
+ */
+private const val TIDAL_CLIENT_ID = "tidal.client_id"
+private const val TIDAL_CLIENT_SECRET = "tidal.client_secret"
+private const val TIDAL_REFRESH_TOKEN = "tidal.refresh_token"
+
+/**
+ * Credential-store keys for the listener's Apple Music token, from Apple's sign-in page, and for a developer token of
+ * their own. The first is a working key to their library for as long as Apple honours it.
+ */
+private const val APPLE_MUSIC_USER_TOKEN = "applemusic.user_token"
+private const val APPLE_MUSIC_DEVELOPER_TOKEN = "applemusic.developer_token"
+
+/**
+ * The country this device is set to, as two capital letters, or null where it is set to none: what Tidal's and Apple
+ * Music's catalogues are read in when no account has said otherwise.
+ */
+internal fun deviceCountry(): String? =
+    java.util.Locale.getDefault().country.takeIf { it.length == 2 && it.all(Char::isLetter) }?.uppercase()
 
 /** Where the VK session's cookies are kept in the credential store, before any namespace. */
 private const val VK_COOKIES = "vk.session_cookies"

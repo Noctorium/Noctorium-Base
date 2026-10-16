@@ -5,6 +5,12 @@ import app.noctorium.platform.TextFiles
 import app.noctorium.settings.SettingsRepository
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -28,11 +34,31 @@ data class SavedQueue(
 class QueueStore(private val storePath: Path? = defaultStorePath()) {
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
+    /**
+     * The queue as it was written, read a song at a time.
+     *
+     * A song this build cannot read -- one from a service a later version added -- is left out rather than
+     * costing the whole queue, and the song that was playing stays the one that plays: each one left out before
+     * it moves it up by one. Where the one left out is the song that was playing, the next takes its place, from
+     * its start, since the place that was kept was in another song.
+     */
     @Synchronized
     fun load(): SavedQueue? = runCatching {
         val path = storePath ?: return@runCatching null
-        if (!Files.isRegularFile(path)) null
-        else json.decodeFromString<SavedQueue>(TextFiles.read(path).orEmpty()).takeIf { it.tracks.isNotEmpty() }
+        if (!Files.isRegularFile(path)) return@runCatching null
+        val stored = json.parseToJsonElement(TextFiles.read(path).orEmpty()).jsonObject
+        val listed = stored["tracks"] as? JsonArray ?: return@runCatching null
+        val playing = stored["index"]?.jsonPrimitive?.intOrNull ?: 0
+        val readable = listed.map { entry -> runCatching { json.decodeFromJsonElement(Track.serializer(), entry) }.isSuccess }
+        val leftOutBefore = readable.take(playing.coerceIn(0, listed.size)).count { !it }
+        val playingLeftOut = readable.getOrNull(playing) == false
+        val tidied = JsonObject(
+            stored + mapOf(
+                "tracks" to JsonArray(listed.filterIndexed { at, _ -> readable[at] }),
+                "index" to JsonPrimitive(playing - leftOutBefore),
+            ) + (if (playingLeftOut) mapOf("positionMs" to JsonPrimitive(0)) else emptyMap()),
+        )
+        json.decodeFromJsonElement(SavedQueue.serializer(), tidied).takeIf { it.tracks.isNotEmpty() }
     }.getOrNull()
 
     @Synchronized

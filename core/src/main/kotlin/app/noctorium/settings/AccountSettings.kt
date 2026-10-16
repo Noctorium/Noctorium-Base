@@ -531,6 +531,7 @@ data class NoctoriumPreferences(
     /** The equaliser, applied by whichever player is playing. */
     val equalizer: EqualizerSettings = EqualizerSettings(),
     /** The parts of Home the listener put away. Empty is Home as it has always been. */
+    @Serializable(with = HomePartSetSerializer::class)
     val hiddenHomeParts: Set<HomePart> = emptySet(),
     /**
      * The theme, and the colours for it when the theme is the listener's own.
@@ -638,6 +639,35 @@ data class NoctoriumPreferences(
      * nobody is: the session itself lives in the credential store, never here.
      */
     val vkAccountName: String = "",
+    /**
+     * The number of the listener's Deezer profile, `deezer.com/profile/<number>`, whose public playlists, loved
+     * tracks and albums the library shows. Blank for none.
+     *
+     * A number rather than a sign-in, as Bandcamp's is a name: Deezer shows a public profile to anybody, and lets
+     * no new application sign anybody in.
+     */
+    val deezerProfileId: String = "",
+    /** That profile's name, as Deezer gave it when the number was checked, so Settings can say whose it is. */
+    val deezerProfileName: String = "",
+    /**
+     * The Tidal account signed in: its id, which its collection is read by, and a name for Settings to show. Both
+     * blank when nobody is; the sign-in itself lives in the credential store, never here, and so does the client id
+     * and secret of a Tidal app of the listener's own.
+     */
+    val tidalUserId: String = "",
+    val tidalAccountName: String = "",
+    /** The country Tidal said the account is in, which its catalogue is read in. Blank until somebody signs in. */
+    val tidalCountry: String = "",
+    /**
+     * Whether somebody is signed in to Apple Music, kept exactly as long as the sign-in is: the listener's token
+     * itself lives in the credential store, never here, and so does a developer token of their own.
+     */
+    val appleMusicSignedIn: Boolean = false,
+    /**
+     * The storefront -- `us`, `gb` -- of the account signed in to Apple Music, which the catalogue is read in. Blank
+     * until somebody signs in, and then this device's country is used, or the United States'.
+     */
+    val appleMusicStorefront: String = "",
     /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
     val playbackSpeed: Float = 1f,
     /**
@@ -685,7 +715,11 @@ data class NoctoriumPreferences(
      * began. See [app.noctorium.core.AppState.playFromHome] and [app.noctorium.core.AppState.playFromSearch].
      */
     val homePlay: HomePlay = HomePlay.AUTOPLAY,
-    /** The services that answer a Hybrid search. Each still has to be signed in where it needs that. */
+    /**
+     * The services that answer a Hybrid search. Each still has to be signed in where it needs that. Read a service
+     * at a time, so one from a later version is left out rather than costing every setting in the file.
+     */
+    @Serializable(with = ProviderTypeSetSerializer::class)
     val hybridSearch: Set<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH,
     /** The search mode last chosen, by name, so search opens where it was left. */
     val searchMode: String = "HYBRID",
@@ -1136,6 +1170,65 @@ data class SettingsState(
     val spotify: SpotifyConnectionState = SpotifyConnectionState(),
     val bandcamp: BandcampConnectionState = BandcampConnectionState(),
     val vk: VkConnectionState = VkConnectionState(),
+    val deezer: DeezerConnectionState = DeezerConnectionState(),
+    val tidal: TidalConnectionState = TidalConnectionState(),
+    val appleMusic: AppleMusicConnectionState = AppleMusicConnectionState(),
+)
+
+/**
+ * The Apple Music sign-in, and how the last one went.
+ *
+ * The catalogue -- search, albums, artists, playlists -- works with nobody signed in. Signing in, on Apple's own page
+ * in the embedded browser (see [app.noctorium.auth.APPLE_MUSIC_SIGN_IN]), adds the library and Home's rows.
+ */
+data class AppleMusicConnectionState(
+    /** A sign-in is kept. Apple may still refuse it, which shows up as a message when it does. */
+    val connected: Boolean = false,
+    /** True while a sign-in is being checked with Apple. */
+    val checking: Boolean = false,
+    /** The storefront the catalogue is read in: the account's once signed in, and this device's country before. */
+    val storefront: String = "",
+    /** A developer token of the listener's own is in use, rather than the one Apple's web player is served. */
+    val ownDeveloperToken: Boolean = false,
+    val message: String? = null,
+)
+
+/**
+ * How far along Tidal's setup is: whether there is a Tidal app to go through, whether the catalogue can be read,
+ * and whose collection is showing.
+ *
+ * Noctorium has no Tidal app of its own yet ([app.noctorium.tidal.TidalApplication]), so until it has one
+ * [configured] is false until the listener registers one -- free, at developer.tidal.com -- and gives its client
+ * id, and its secret too if the catalogue is to be read without signing in.
+ */
+data class TidalConnectionState(
+    /** A Tidal app is in force, so signing in is possible. */
+    val configured: Boolean = false,
+    /** It is the listener's own app, from developer.tidal.com, rather than Noctorium's. */
+    val ownApp: Boolean = false,
+    /** Tidal's catalogue can be read: somebody is signed in, or the app's secret is known. */
+    val readsCatalogue: Boolean = false,
+    /** A sign-in is stored. Tidal may still refuse it, which shows up as a message when it does. */
+    val connected: Boolean = false,
+    /** True while the browser is open on Tidal's sign-in page and the reply has not arrived. */
+    val connecting: Boolean = false,
+    val accountName: String = "",
+    /** The address Tidal sends its reply to, which has to be registered for the app exactly as it is. */
+    val redirectUri: String = app.noctorium.tidal.TidalAuth.redirectUri(),
+    val message: String? = null,
+)
+
+/** The Deezer profile the library shows, and how the last look for it went. */
+data class DeezerConnectionState(
+    /** The profile's number, as kept in the settings. Blank when none has been given. */
+    val profileId: String = "",
+    /** Whether Deezer has confirmed a profile with that number. */
+    val found: Boolean = false,
+    /** The profile's own name, once Deezer has confirmed it. Blank until then. */
+    val name: String = "",
+    /** True while Deezer is being asked about the profile. */
+    val checking: Boolean = false,
+    val message: String? = null,
 )
 
 /** The VK account, and how the last sign-in went. */
@@ -1184,7 +1277,15 @@ data class SpotifyConnectionState(
     val device: String = "",
 )
 
-/** Every service a Hybrid search can ask, which is where a fresh install starts. */
+/**
+ * The services a fresh install's Hybrid search asks: every one it can ask, but Apple Music, Deezer and Tidal.
+ *
+ * Those three can only ever be matched on YouTube Music to be played, so each of their results would be a slower,
+ * less certain copy of the YouTube Music result beside it -- the reason Spotify answers only while its songs play
+ * on Spotify. They are there to be chosen, in [HYBRID_SEARCH_SERVICES], by anybody who wants them all the same.
+ * Leaving them out of the default also keeps their names out of a settings file until somebody chooses them, so an
+ * older Noctorium reading the file is not handed names it has never heard of.
+ */
 val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
     app.noctorium.domain.ProviderType.YOUTUBE_MUSIC,
     app.noctorium.domain.ProviderType.YOUTUBE_VIDEO,
@@ -1194,6 +1295,13 @@ val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
     app.noctorium.domain.ProviderType.VK,
 )
 
+/** Every service a Hybrid search can ask, in the order a choice of them is shown. See [DEFAULT_HYBRID_SEARCH]. */
+val HYBRID_SEARCH_SERVICES: List<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH.toList() + listOf(
+    app.noctorium.domain.ProviderType.APPLE_MUSIC,
+    app.noctorium.domain.ProviderType.DEEZER,
+    app.noctorium.domain.ProviderType.TIDAL,
+)
+
 /** Where autoplay finds what comes after the queue. */
 @Serializable
 enum class AutoplaySource(val displayName: String, val description: String) {
@@ -1201,7 +1309,7 @@ enum class AutoplaySource(val displayName: String, val description: String) {
         "The same service",
         "YouTube Music's radio after a YouTube song, SoundCloud's related tracks after a SoundCloud one, " +
             "more from the artist after a Bandcamp or Spotify song -- or Spotify's own autoplay, while Spotify " +
-            "plays its songs itself -- and VK's suggestions after a VK song.",
+            "plays its songs itself -- VK's suggestions after a VK song, and Deezer's radio after a Deezer one.",
     ),
     YOUTUBE_MUSIC("YouTube Music radio", "YouTube Music's radio after every song, whatever service it came from."),
 }

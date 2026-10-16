@@ -3,6 +3,7 @@ package app.noctorium.playlists
 import app.noctorium.platform.TextFiles
 
 import app.noctorium.domain.Track
+import app.noctorium.domain.decodeEach
 import app.noctorium.settings.SettingsRepository
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -22,7 +23,7 @@ class RecentTracksRepository(
     fun load(): List<Track> = runCatching {
         val path = storePath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) emptyList()
-        else json.decodeFromString<List<Track>>(TextFiles.read(path).orEmpty()).take(LIMIT)
+        else json.decodeEach(Track.serializer(), TextFiles.read(path).orEmpty()).take(LIMIT)
     }.getOrDefault(emptyList())
 
     @Synchronized

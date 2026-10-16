@@ -2,7 +2,9 @@ package app.noctorium.playlists
 
 import app.noctorium.platform.TextFiles
 
+import app.noctorium.domain.ForgivingTrackList
 import app.noctorium.domain.Track
+import app.noctorium.domain.decodeEach
 import app.noctorium.settings.SettingsRepository
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -17,6 +19,8 @@ import java.util.UUID
 data class LocalPlaylist(
     val id: String,
     val title: String,
+    /** Read a song at a time, so one from a service a later version added costs that song and not the playlist. */
+    @Serializable(with = ForgivingTrackList::class)
     val tracks: List<Track> = emptyList(),
     val createdAtEpochSeconds: Long = 0,
     val updatedAtEpochSeconds: Long = 0,
@@ -42,7 +46,7 @@ class LocalPlaylistRepository(
     fun load(): List<LocalPlaylist> = runCatching {
         val path = storePath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) emptyList()
-        else json.decodeFromString<List<LocalPlaylist>>(TextFiles.read(path).orEmpty())
+        else json.decodeEach(LocalPlaylist.serializer(), TextFiles.read(path).orEmpty())
     }.getOrDefault(emptyList())
 
     @Synchronized

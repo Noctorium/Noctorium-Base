@@ -63,8 +63,9 @@ class YtDlpService(
             // Spotify is read through its own interface, not fetched; a track from it is searched for on
             // the other services at the moment it is played.
             ProviderType.SPOTIFY -> throw BackendException("Spotify is not searched through yt-dlp")
-            // Each searched through its own interface, which yt-dlp has none of.
-            ProviderType.BANDCAMP, ProviderType.VK ->
+            // Each searched through its own interface, which yt-dlp has none of. Apple Music, Deezer and Tidal
+            // are libraries to read, as Spotify is, and their songs are matched elsewhere when played.
+            ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL ->
                 throw BackendException("${provider.displayName} is not searched through yt-dlp")
             ProviderType.LOCAL -> throw BackendException("Local search is not supported by yt-dlp")
         }
@@ -428,7 +429,8 @@ class YtDlpService(
                 ProviderType.YOUTUBE_MUSIC -> "https://music.youtube.com/watch?v=$raw"
                 ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/watch?v=$raw"
                 ProviderType.SOUNDCLOUD -> null
-                ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> null
+                ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC,
+                ProviderType.DEEZER, ProviderType.TIDAL, ProviderType.LOCAL -> null
             }
         } ?: return null
         // Playlist stubs can arrive without a title; the page slug keeps the track playable and named until
