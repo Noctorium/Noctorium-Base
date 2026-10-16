@@ -10,7 +10,6 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -104,9 +103,7 @@ class ReferenceMatchStore(
             Files.createDirectories(file.parent)
             val temporary = file.resolveSibling("${file.fileName}.tmp")
             TextFiles.write(temporary, json.encodeToString(matches.toMap()))
-            runCatching {
-                Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            }.getOrElse { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING) }
+            TextFiles.moveIntoPlace(temporary, file)
         }
     }
 

@@ -1,5 +1,7 @@
 package app.noctorium.auth
 
+import app.noctorium.platform.TextFiles
+
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -173,9 +175,6 @@ fun appleMusicUserToken(cookies: List<HarvestedCookie>): String? =
  */
 fun adoptCookieFile(candidate: Path, destination: Path): Path {
     Files.createDirectories(destination.parent)
-    return runCatching {
-        Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-    }.getOrElse {
-        Files.move(candidate, destination, StandardCopyOption.REPLACE_EXISTING)
-    }
+    TextFiles.moveIntoPlace(candidate, destination)
+    return destination
 }

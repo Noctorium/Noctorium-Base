@@ -9,7 +9,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 
 /**
  * What the listener has decided a track is called, where the service got it wrong.
@@ -46,9 +45,7 @@ class TrackEditsRepository(
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         TextFiles.write(temporary, json.encodeToString(edits))
-        runCatching {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        }.getOrElse { Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING) }
+        TextFiles.moveIntoPlace(temporary, path)
     }
 
     companion object {

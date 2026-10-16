@@ -1,12 +1,13 @@
 package app.noctorium.settings
 
+import app.noctorium.platform.TextFiles
+
 import app.noctorium.platform.CommandResult
 import app.noctorium.platform.CommandRunner
 import app.noctorium.platform.isMacOs
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -265,11 +266,7 @@ class SecureCredentialStore(
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         Files.writeString(temporary, json.encodeToString(values))
-        runCatching {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        }.getOrElse {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING)
-        }
+        TextFiles.moveIntoPlace(temporary, path)
     }
 
     private fun runPowerShell(script: String, stdin: String): String {

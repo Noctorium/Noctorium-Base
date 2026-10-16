@@ -13,7 +13,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 
 /** The queue as it was left: its songs, which one was playing, and how far into it. */
 @Serializable
@@ -72,9 +71,7 @@ class QueueStore(private val storePath: Path? = defaultStorePath()) {
             Files.createDirectories(path.parent)
             val temporary = path.resolveSibling("${path.fileName}.tmp")
             TextFiles.write(temporary, json.encodeToString(SavedQueue.serializer(), kept))
-            runCatching {
-                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            }.getOrElse { Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING) }
+            TextFiles.moveIntoPlace(temporary, path)
         }
     }
 

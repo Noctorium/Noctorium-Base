@@ -16,7 +16,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.time.Instant
 
 /**
@@ -198,11 +197,7 @@ class DownloadStore(
             val temporary = path.resolveSibling("${path.fileName}.tmp")
             val written = JsonArray(entries.map { json.encodeToJsonElement(DownloadedTrack.serializer(), it) } + kept)
             TextFiles.write(temporary, json.encodeToString(JsonArray.serializer(), written))
-            runCatching {
-                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            }.getOrElse {
-                Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING)
-            }
+            TextFiles.moveIntoPlace(temporary, path)
         }
     }
 

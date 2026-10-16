@@ -14,7 +14,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 import java.time.Instant
 import java.util.Base64
 
@@ -135,8 +134,7 @@ class AppleMusicDeveloperToken internal constructor(
             Files.createDirectories(file.parent)
             val temporary = file.resolveSibling("${file.fileName}.tmp")
             TextFiles.write(temporary, json.encodeToString(Kept.serializer(), kept))
-            runCatching { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE) }
-                .getOrElse { Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING) }
+            TextFiles.moveIntoPlace(temporary, file)
         }
     }
 

@@ -9,7 +9,6 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.StandardCopyOption
 
 /**
  * Browsers yt-dlp can read cookies from. Chromium-based browsers keep their cookie database locked while
@@ -1367,16 +1366,8 @@ class SettingsRepository(
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         TextFiles.write(temporary, json.encodeToString(preferences))
-        runCatching {
-            Files.move(
-                temporary,
-                path,
-                StandardCopyOption.REPLACE_EXISTING,
-                StandardCopyOption.ATOMIC_MOVE,
-            )
-        }.getOrElse {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING)
-        }
+        // Never a moment with no settings file, even while something else is reading it: see moveIntoPlace.
+        TextFiles.moveIntoPlace(temporary, path)
     }
 
     companion object {

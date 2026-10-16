@@ -93,9 +93,7 @@ class PlayHistoryRepository(
         Files.createDirectories(path.parent)
         val temporary = path.resolveSibling("${path.fileName}.tmp")
         TextFiles.write(temporary, json.encodeToString(ListSerializer(HistoryEntry.serializer()), entries))
-        runCatching {
-            Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-        }.getOrElse { Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING) }
+        TextFiles.moveIntoPlace(temporary, path)
     }
 
     companion object {
