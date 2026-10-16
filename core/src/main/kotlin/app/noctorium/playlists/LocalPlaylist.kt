@@ -53,7 +53,7 @@ data class PlaylistImport(
     val importedAtEpochSeconds: Long = 0,
 ) {
     companion object {
-        /** Spotify's "Download your data" export; [key] is the playlist's name there. */
+        /** Spotify's "Download your data" export; [key] is `liked-songs`, or `playlist:` and the playlist's name there. */
         const val SPOTIFY_DATA = "spotify-data"
     }
 }

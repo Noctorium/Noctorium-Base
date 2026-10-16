@@ -456,7 +456,8 @@ internal fun SpotifyExport.into(existing: List<LocalPlaylist>, nowEpochSeconds: 
             empty++
             return@forEach
         }
-        take(if (occurrence == 1) playlist.name else "${playlist.name}#$occurrence", playlist.name, playlist.tracks)
+        val key = SPOTIFY_PLAYLIST_KEY + (if (occurrence == 1) playlist.name else "${playlist.name}#$occurrence")
+        take(key, playlist.name, playlist.tracks)
         lists++
         songs += playlist.tracks.size
     }
@@ -477,8 +478,12 @@ internal fun SpotifyExport.into(existing: List<LocalPlaylist>, nowEpochSeconds: 
 /** What the Liked Songs of an import are called here, so they are not taken for Spotify's own. */
 const val SPOTIFY_LIKED_SONGS_TITLE = "Liked Songs from Spotify"
 
-/** The key an import marks its Liked Songs with: not a name any Spotify playlist can have, since it has a slash. */
-internal const val SPOTIFY_LIKED_SONGS_KEY = "/liked-songs"
+/**
+ * The keys an import marks what it made with: Liked Songs on its own, and every playlist by its name after a prefix,
+ * so that no playlist, whatever it is called, can be taken for Liked Songs.
+ */
+internal const val SPOTIFY_LIKED_SONGS_KEY = "liked-songs"
+internal const val SPOTIFY_PLAYLIST_KEY = "playlist:"
 
 /** "12 playlists", "1 playlist", or null for none. */
 private fun counted(count: Int, one: String, many: String = "${one}s"): String? = when (count) {

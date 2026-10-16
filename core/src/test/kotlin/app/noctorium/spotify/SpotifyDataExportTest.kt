@@ -240,7 +240,7 @@ class SpotifyImportMergeTest {
         // The listener's own playlist of the same name is left exactly as it was.
         assertEquals(mine, imported.playlists[0])
         val made = imported.playlists[2]
-        assertEquals(PlaylistImport(PlaylistImport.SPOTIFY_DATA, "Night Bus Home", 1_000), made.importedFrom)
+        assertEquals(PlaylistImport(PlaylistImport.SPOTIFY_DATA, "playlist:Night Bus Home", 1_000), made.importedFrom)
         assertEquals(listOf(ExportFixtures.id(1), ExportFixtures.id(2)), made.tracks.map { it.id })
         assertEquals(SpotifyImportSummary(playlists = 1, songs = 2, likedSongs = 1, emptyPlaylists = 1), imported.summary)
     }
@@ -250,7 +250,7 @@ class SpotifyImportMergeTest {
         val mine = LocalPlaylist.create("Rainy Mondays", 100).copy(tracks = listOf(song(99)))
         val first = export("Rainy Mondays" to listOf(1), "Rainy Mondays" to listOf(2), liked = listOf(5)).into(listOf(mine), 1_000).playlists
         // The listener renames one the import made; the name stays theirs.
-        val renamed = first.map { if (it.importedFrom?.key == "Rainy Mondays#2") it.copy(title = "Rainy Mondays (the other one)") else it }
+        val renamed = first.map { if (it.importedFrom?.key == "playlist:Rainy Mondays#2") it.copy(title = "Rainy Mondays (the other one)") else it }
 
         val second = export("Rainy Mondays" to listOf(1, 3), "Rainy Mondays" to listOf(4), "New One" to listOf(6), liked = listOf(5, 7))
             .into(renamed, 2_000)
