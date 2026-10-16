@@ -209,11 +209,13 @@ class ScrobbleManager internal constructor(
         val account = account(site)
         return runCatching { exchangePendingToken(account) }
             .getOrElse { error ->
-                val pending = account.pendingToken
+                // Still waiting, with its page, when there is a sign-in to wait for; not connected, with what to do,
+                // when there is none -- "awaiting approval" with no page to approve on was a state with no way out.
+                val pending = account.pendingToken ?: credentials.get(account.pendingName)
                 show(
                     account,
                     if (pending != null) awaiting(account, pending, safeMessage(error))
-                    else ScrobbleServiceState(ScrobbleConnectionStatus.AWAITING_APPROVAL, message = safeMessage(error)),
+                    else ScrobbleServiceState(message = safeMessage(error)),
                 )
                 throw error
             }

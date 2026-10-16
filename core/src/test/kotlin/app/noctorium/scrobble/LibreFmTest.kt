@@ -150,3 +150,16 @@ private class ScriptedAnswers(vararg answers: ScrobbleHttpResponse) : ScrobbleHt
     override suspend fun get(url: String, headers: Map<String, String>) = next()
     override suspend fun post(url: String, body: String, contentType: String, headers: Map<String, String>) = next()
 }
+
+class FinishWithNothingBegunTest {
+    @Test
+    fun `finishing a sign-in that was never begun leaves the service not connected, with what to do`() {
+        val manager = ScrobbleManager(credentials = InMemorySecretStore(), libreFm = LastFmClient(site = AudioscrobblerSite.LIBRE_FM))
+        val failed = runCatching { runBlocking { manager.completeAuthorization(AudioscrobblerSite.LIBRE_FM) } }
+        assertTrue(failed.isFailure)
+        val libre = manager.state.value.libreFm
+        assertEquals(ScrobbleConnectionStatus.DISCONNECTED, libre.status)
+        assertNull(libre.approvalUrl)
+        assertEquals("Start Libre.fm sign-in first", libre.message)
+    }
+}
