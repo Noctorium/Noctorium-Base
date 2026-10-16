@@ -36,6 +36,20 @@ class ServiceLinksTest {
     }
 
     @Test
+    fun `Spotify's embed page, the older playlist address and the older share links are links too`() {
+        assertEquals(
+            MusicLink(ProviderType.SPOTIFY, LinkKind.PLAYLIST, id, "https://open.spotify.com/playlist/$id"),
+            findMusicLink("https://open.spotify.com/embed/playlist/$id?utm_source=generator"),
+        )
+        assertEquals("album:$id", findMusicLink("https://open.spotify.com/embed/album/$id")?.id)
+        assertEquals(id, findMusicLink("https://open.spotify.com/user/someone/playlist/$id")?.id)
+        assertEquals(
+            MusicLink(ProviderType.SPOTIFY, LinkKind.SHORT, "3xYz12", "https://spoti.fi/3xYz12"),
+            findMusicLink("spoti.fi/3xYz12"),
+        )
+    }
+
+    @Test
     fun `Spotify pages that are not music are not links`() {
         assertNull(findMusicLink("https://open.spotify.com/user/someone"))
         assertNull(findMusicLink("https://open.spotify.com/track/short"))

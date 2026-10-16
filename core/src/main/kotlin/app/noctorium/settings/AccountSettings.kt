@@ -634,6 +634,14 @@ data class NoctoriumPreferences(
     /** The Spotify device to play on, by Spotify's id. Blank for whichever one Spotify has active. */
     val spotifyDevice: String = "",
     /**
+     * Public Spotify playlists the library follows without a sign-in, by Spotify id, in the order they were added.
+     *
+     * Ids and nothing else: each is read afresh from its public page every time the library is, and the last good
+     * copy of each lives in a file of its own beside the settings (see app.noctorium.spotify.SpotifyPublicCopies).
+     * Empty for a settings file from before there were any, which therefore reads as it always did.
+     */
+    val spotifyPublicPlaylists: List<String> = emptyList(),
+    /**
      * The name of the VK account signed in, kept so Settings can say whose music is showing. Blank when
      * nobody is: the session itself lives in the credential store, never here.
      */
@@ -1274,6 +1282,15 @@ data class SpotifyConnectionState(
     val devices: List<app.noctorium.spotify.SpotifyDevice> = emptyList(),
     /** The chosen device's id; blank for whichever one Spotify has active. */
     val device: String = "",
+    /**
+     * The public playlists the library follows without a sign-in, in the order they were added, each as it was last
+     * read and with what went wrong the last time, if anything did. See [app.noctorium.core.AppState.addSpotifyPublicPlaylist].
+     */
+    val publicPlaylists: List<app.noctorium.spotify.SpotifyPublicPlaylistState> = emptyList(),
+    /** True while a public playlist is being read, before it is added. */
+    val addingPublicPlaylist: Boolean = false,
+    /** What the last addition or removal of a public playlist said. Apart from [message], which is the sign-in's. */
+    val publicMessage: String? = null,
 )
 
 /**

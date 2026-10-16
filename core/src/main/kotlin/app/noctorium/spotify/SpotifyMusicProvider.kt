@@ -23,10 +23,17 @@ import kotlinx.coroutines.coroutineScope
  *
  * Albums and artists open as playlists, the way Bandcamp's do, so every screen that can open a playlist can
  * open them. An album is its songs; an artist is the songs of their newest albums and singles.
+ *
+ * Without a sign-in -- or with one Spotify refuses, which since 2026 is most of them -- a public playlist or an
+ * album is still read, from its public page ([SpotifyPublicLibrary]), and the public playlists the listener chose
+ * to follow are in the library either way. That page shows a playlist's first hundred songs, so wherever a working
+ * sign-in can read a playlist whole, the sign-in is asked first.
  */
 class SpotifyMusicProvider(
     private val client: SpotifyClient,
     private val access: SpotifyAccess,
+    /** The public playlists followed without a sign-in, and the public pages they are read from. None given, none. */
+    private val public: SpotifyPublicLibrary? = null,
 ) : MusicProvider {
     override val type: ProviderType = ProviderType.SPOTIFY
 
@@ -69,19 +76,66 @@ class SpotifyMusicProvider(
     /** Spotify gives apps no recommendations any more; the queue's own way of carrying on is used instead. */
     override suspend fun getRecommendations(context: PlaybackContext): List<Track> = emptyList()
 
+    /**
+     * The account's playlists, with Liked Songs in front, and after them the public playlists the listener follows
+     * -- each but those the account lists itself, which would otherwise be there twice.
+     *
+     * A sign-in Spotify refuses still throws, so the library goes on saying why; but it no longer takes the
+     * followed playlists with it, which come along in [SpotifyUnavailable.stillRead].
+     */
     override suspend fun getLibraryPlaylists(): List<Playlist> {
-        val token = accessToken() ?: return emptyList()
-        return client.playlists(token).orThrow()
+        val own: SpotifyRead<List<Playlist>>? = when (val ready = access.access()) {
+            is SpotifyAccess.Access.Ready -> client.playlists(ready.accessToken)
+            SpotifyAccess.Access.NotConfigured, SpotifyAccess.Access.NotConnected -> null
+            is SpotifyAccess.Access.Failed -> SpotifyRead.Failed(ready.detail)
+        }
+        val listed = own?.valueOrNull().orEmpty()
+        val followed = public?.listing(excluding = listed.mapTo(HashSet()) { it.id }).orEmpty()
+        return when (own) {
+            null, is SpotifyRead.Ok -> listed + followed
+            is SpotifyRead.Unauthorized -> throw SpotifyUnavailable(own.detail, followed)
+            is SpotifyRead.Failed -> throw SpotifyUnavailable(own.detail, followed)
+        }
     }
 
-    override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> {
-        val token = accessToken() ?: return emptyList()
-        return when {
-            playlist.id.startsWith(SpotifyClient.ALBUM_PREFIX) ->
-                client.albumTracks(playlist.id.removePrefix(SpotifyClient.ALBUM_PREFIX), token).orThrow()
-            playlist.id.startsWith(SpotifyClient.ARTIST_PREFIX) ->
-                artistTracks(playlist.id.removePrefix(SpotifyClient.ARTIST_PREFIX), token)
-            else -> client.playlistTracks(playlist.id, token).orThrow()
+    override suspend fun getPlaylistTracks(playlist: Playlist): List<Track> = open(playlist).tracks
+
+    /**
+     * A playlist's, an album's or an artist's songs, and the public page they were read from where that is where.
+     *
+     * A playlist or an album is asked of the account first, when there is a sign-in, because that reads it whole.
+     * When there is none, or Spotify refuses it -- an app whose owner has no Premium, or a playlist somebody else
+     * made -- its public page is read instead, which needs nobody signed in and shows the first hundred songs. An
+     * artist, and Liked Songs, need the sign-in.
+     */
+    suspend fun open(playlist: Playlist): SpotifyOpened {
+        val id = playlist.id
+        if (id == SpotifyClient.LIKED_SONGS_ID || id.startsWith(SpotifyClient.ARTIST_PREFIX)) {
+            val token = accessToken() ?: return SpotifyOpened(emptyList())
+            return SpotifyOpened(
+                if (id == SpotifyClient.LIKED_SONGS_ID) {
+                    client.playlistTracks(id, token).orThrow()
+                } else {
+                    artistTracks(id.removePrefix(SpotifyClient.ARTIST_PREFIX), token)
+                },
+            )
+        }
+        val signedIn: SpotifyRead<List<Track>>? = when (val ready = access.access()) {
+            is SpotifyAccess.Access.Ready -> if (id.startsWith(SpotifyClient.ALBUM_PREFIX)) {
+                client.albumTracks(id.removePrefix(SpotifyClient.ALBUM_PREFIX), ready.accessToken)
+            } else {
+                client.playlistTracks(id, ready.accessToken)
+            }
+            SpotifyAccess.Access.NotConfigured, SpotifyAccess.Access.NotConnected -> null
+            is SpotifyAccess.Access.Failed -> SpotifyRead.Failed(ready.detail)
+        }
+        if (signedIn is SpotifyRead.Ok) return SpotifyOpened(signedIn.value)
+        val pages = public ?: return SpotifyOpened(signedIn?.orThrow().orEmpty())
+        return when (val read = pages.open(id)) {
+            is SpotifyPublicRead.Ok -> SpotifyOpened(read.list.tracks, read.list)
+            // Private is the answer that matters, whatever the sign-in said: it is why the page has nothing.
+            is SpotifyPublicRead.Missing -> throw SpotifyUnavailable(read.message)
+            else -> throw SpotifyUnavailable(signedIn?.detailOrNull() ?: read.message.orEmpty())
         }
     }
 
@@ -149,5 +203,16 @@ fun Playlist.isSpotifyArtist(): Boolean =
 fun Playlist.isSpotifyAlbum(): Boolean =
     provider == ProviderType.SPOTIFY && id.startsWith(SpotifyClient.ALBUM_PREFIX)
 
-/** A Spotify read that did not happen, with the reason already written for a reader. */
-class SpotifyUnavailable(message: String) : Exception(message)
+/**
+ * A Spotify read that did not happen, with the reason already written for a reader.
+ *
+ * [stillRead] is what could be read all the same: the public playlists the listener follows, which need no sign-in,
+ * when it is the sign-in Spotify refused. The library shows them beside the reason.
+ */
+class SpotifyUnavailable(message: String, val stillRead: List<Playlist> = emptyList()) : Exception(message)
+
+/**
+ * A Spotify playlist's songs as they were opened, and [publicPage] -- the public page's copy, with its name, cover
+ * and whether it was cut short -- when that is where they were read rather than through a sign-in.
+ */
+data class SpotifyOpened(val tracks: List<Track>, val publicPage: SpotifyPublicList? = null)

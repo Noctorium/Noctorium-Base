@@ -167,6 +167,15 @@ internal object AppStateHarness {
             NoAppleMusic,
             app.noctorium.applemusic.AppleMusicDeveloperToken(NoAppleMusic, cache = null),
         ),
+        // A Spotify that is never there unless a test gives one: neither its interface, nor its public pages, nor
+        // its token endpoint. A sign-in is a refresh token in [credentials] and a [spotifyRefresh] that answers.
+        spotify: app.noctorium.spotify.SpotifyClient = app.noctorium.spotify.SpotifyClient(NoSpotify),
+        spotifyPages: app.noctorium.spotify.SpotifyPublicPages = app.noctorium.spotify.SpotifyPublicPages(NoSpotifyPages, gapMs = 0),
+        spotifyCopies: app.noctorium.spotify.SpotifyPublicCopies = app.noctorium.spotify.SpotifyPublicCopies(null),
+        spotifyRefresh: suspend (String, String) -> app.noctorium.spotify.SpotifyAuth.Result =
+            { _, _ -> app.noctorium.spotify.SpotifyAuth.Result.Failure("no Spotify in this harness") },
+        // The application's own file under the test folder unless a test says where, as it always was here.
+        playlists: app.noctorium.playlists.LocalPlaylistRepository = app.noctorium.playlists.LocalPlaylistRepository(),
     ): AppState = AppState(
         ytDlp = backend,
         credentials = credentials,
@@ -186,7 +195,21 @@ internal object AppStateHarness {
         deezerClient = deezer,
         tidalClient = tidal,
         appleMusicClient = appleMusic,
+        spotifyClient = spotify,
+        spotifyPublicPages = spotifyPages,
+        spotifyPublicCopies = spotifyCopies,
+        spotifyRefresh = spotifyRefresh,
+        playlistRepository = playlists,
     )
+
+    private object NoSpotify : app.noctorium.spotify.SpotifyHttp {
+        override suspend fun get(url: String, accessToken: String) =
+            app.noctorium.spotify.SpotifyResponse(app.noctorium.net.Http.UNREACHABLE, "no Spotify in this harness")
+    }
+
+    private object NoSpotifyPages : app.noctorium.spotify.SpotifyPageHttp {
+        override suspend fun get(url: String) = app.noctorium.net.HttpReply(app.noctorium.net.Http.UNREACHABLE, "no Spotify in this harness")
+    }
 
     private object NoAppleMusic : app.noctorium.applemusic.AppleMusicHttp {
         override suspend fun get(url: String, headers: Map<String, String>) =

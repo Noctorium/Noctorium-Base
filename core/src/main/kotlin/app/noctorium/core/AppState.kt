@@ -113,6 +113,14 @@ import app.noctorium.matching.ReferenceMatch
 import app.noctorium.matching.ReferenceMatchStore
 import app.noctorium.spotify.SpotifyMusicProvider
 import app.noctorium.spotify.SpotifyRead
+import app.noctorium.spotify.SpotifyPublicCopies
+import app.noctorium.spotify.SpotifyPublicLibrary
+import app.noctorium.spotify.SpotifyPublicPages
+import app.noctorium.spotify.SpotifyPublicRead
+import app.noctorium.spotify.SpotifyUnavailable
+import app.noctorium.spotify.isSpotifyShortLink
+import app.noctorium.spotify.spotifyPlaylistIdIn
+import app.noctorium.spotify.SPOTIFY_WITHOUT_SIGN_IN
 import app.noctorium.spotify.usesOwnSpotifyApp
 import app.noctorium.account.AccountResult
 import app.noctorium.account.ListeningStats
@@ -197,6 +205,12 @@ data class LinkState(
     /** What the link turned out to be: the one track, or a playlist's worth. */
     val tracks: List<Track> = emptyList(),
     val message: String? = null,
+    /**
+     * The link is a public Spotify playlist, read from its public page, that the library does not follow yet: a
+     * player offers "Keep in library", which is [AppState.addSpotifyPublicPlaylist] with [link]'s url, and this goes
+     * back to false once it is kept.
+     */
+    val canKeepInLibrary: Boolean = false,
 )
 /** Which service's rows Home shows. */
 enum class ProviderFilter(val displayName: String) {
@@ -505,6 +519,15 @@ class AppState(
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
     private val accountClient: NoctoriumAccountClient = NoctoriumAccountClient(),
     private val spotifyClient: SpotifyClient = SpotifyClient(),
+    /** Spotify's public playlist and album pages, read with nobody signed in. See [SpotifyPublicPages]. */
+    private val spotifyPublicPages: SpotifyPublicPages = SpotifyPublicPages(),
+    /** The last good copy of each public Spotify playlist the library follows. See [SpotifyPublicCopies]. */
+    private val spotifyPublicCopies: SpotifyPublicCopies = SpotifyPublicCopies(),
+    /**
+     * How a stored Spotify sign-in is renewed: Spotify's own token endpoint unless something else is given, which
+     * only a test does, so that a sign-in can be stood in for without reaching Spotify.
+     */
+    private val spotifyRefresh: (suspend (clientId: String, refreshToken: String) -> SpotifyAuth.Result)? = null,
     /** Which recording each Spotify, Apple Music, Deezer or Tidal song was matched to. See [ReferenceMatchStore]. */
     private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
     private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
@@ -550,7 +573,7 @@ class AppState(
      * file would leave a working key to somebody's Spotify account in plain text.
      */
     private val spotifyAccess = SpotifyAccess(
-        refresh = SpotifyAuth(openBrowser = ::browseSecureUrl)::refresh,
+        refresh = spotifyRefresh ?: SpotifyAuth(openBrowser = ::browseSecureUrl)::refresh,
         clientId = { SpotifyApplication.clientId(mutableSettings.value.preferences.spotifyClientId) },
         readRefreshToken = { runCatching { credentials.get(SPOTIFY_REFRESH_TOKEN) }.getOrNull() },
         writeRefreshToken = { token -> runCatching { credentials.put(SPOTIFY_REFRESH_TOKEN, token) } },
@@ -679,6 +702,22 @@ class AppState(
     private val playlistVersion = java.util.concurrent.atomic.AtomicLong()
     @Volatile private var playlistsWritten = 0L
 
+    /**
+     * The public Spotify playlists followed without a sign-in: which ones, as the settings keep them, read from their
+     * public pages, with the last good copy of each kept for when a read fails. See [addSpotifyPublicPlaylist].
+     */
+    private val spotifyPublic = SpotifyPublicLibrary(
+        pages = spotifyPublicPages,
+        copies = spotifyPublicCopies,
+        followed = { mutableSettings.value.preferences.spotifyPublicPlaylists },
+    )
+
+    /**
+     * Spotify, kept by name as well as in the list below: a pasted Spotify link is opened through it, and it says
+     * when a playlist's songs came from the public page rather than through a sign-in.
+     */
+    private val spotify = SpotifyMusicProvider(spotifyClient, spotifyAccess, spotifyPublic)
+
     // Declared before the init block below, which reaches for it while opening the home screen.
     private val providers: List<MusicProvider> = injectedProviders ?: listOf(
         BackendMusicProvider(
@@ -694,7 +733,7 @@ class AppState(
             ytDlp,
             playlistTracks = ::soundCloudPlaylistTracks,
         ),
-        SpotifyMusicProvider(spotifyClient, spotifyAccess),
+        spotify,
         bandcamp,
         vk,
         deezer,
@@ -1001,6 +1040,8 @@ class AppState(
         // What a sign-in begun in the first moment has already said is kept, rather than wiped by this.
         scope.launch(Dispatchers.IO) {
             publishSpotifyState(connecting = mutableSettings.value.spotify.connecting, message = mutableSettings.value.spotify.message)
+            // The followed public playlists as they were last read, from their file, so Settings can list them at once.
+            publishSpotifyPublicState()
         }
         // The same for Tidal, whose app and sign-in are both in the credential store.
         scope.launch(Dispatchers.IO) {
@@ -1612,7 +1653,8 @@ class AppState(
      *
      * A Spotify app in development mode reads only the accounts added to it by hand, and answers every other
      * account with 403. Through the listener's own app that is theirs to fix in the dashboard; through
-     * Noctorium's it is not, so the way out is named instead.
+     * Noctorium's it is not, so the way out is named instead -- and, either way, the two ways in that need no
+     * sign-in at all: following public playlists by their links, and importing Spotify's data download.
      */
     private fun spotifyRefusal(detail: String): String {
         val ownApp = mutableSettings.value.preferences.usesOwnSpotifyApp
@@ -1621,16 +1663,17 @@ class AppState(
             // them their account is missing from a list, as this once did, sends them looking for the wrong fix.
             detail.contains("(403)") && detail.contains("Premium", ignoreCase = true) -> if (ownApp) {
                 "Spotify signed you in, but it reads nothing through your Spotify app until the account that owns " +
-                    "the app has Spotify Premium. Once it has, Spotify can take a few hours to allow it."
+                    "the app has Spotify Premium. Once it has, Spotify can take a few hours to allow it. " +
+                    SPOTIFY_WITHOUT_SIGN_IN
             } else {
                 "Spotify signed you in, but it reads nothing through Noctorium's Spotify app until the account " +
                     "that owns that app has Spotify Premium. If yours has Premium, a Spotify app of your own " +
-                    "works instead, under Use your own Spotify app in Settings."
+                    "works instead, under Use your own Spotify app in Settings. " + SPOTIFY_WITHOUT_SIGN_IN
             }
             detail.contains("(403)") && !ownApp ->
                 "Spotify signed you in, but it only lets Noctorium's Spotify app read the accounts added to it so " +
                     "far, and yours is not one yet. You can use a Spotify app of your own instead, under Use your " +
-                    "own Spotify app in Settings."
+                    "own Spotify app in Settings. " + SPOTIFY_WITHOUT_SIGN_IN
             else -> detail
         }
     }
@@ -1672,12 +1715,15 @@ class AppState(
         devices: List<app.noctorium.spotify.SpotifyDevice> = mutableSettings.value.spotify.devices,
     ) {
         val preferences = mutableSettings.value.preferences
+        val connected = spotifyAccess.isConnected()
         mutableSettings.update {
             it.copy(
-                spotify = SpotifyConnectionState(
+                // A copy of what is there, so the public playlists and the import, which are published apart from
+                // the sign-in, are left as they were.
+                spotify = it.spotify.copy(
                     configured = true,
                     ownApp = preferences.usesOwnSpotifyApp,
-                    connected = spotifyAccess.isConnected(),
+                    connected = connected,
                     connecting = connecting,
                     accountName = preferences.spotifyAccountName,
                     message = message,
@@ -1689,6 +1735,110 @@ class AppState(
             )
         }
     }
+
+    // --- Spotify without a sign-in: public playlists ---
+
+    /**
+     * Follows a public Spotify playlist, which needs nobody signed in: from then on it is in the library with
+     * Spotify's playlists, read afresh from its public page every time the library is.
+     *
+     * Takes whatever the listener has: the link the share button copies, `open.spotify.com/playlist/<id>?si=…`, with
+     * a language in it or not; the embed page's address; a `spotify:playlist:` URI; the bare id; or a short
+     * `spotify.link` share link, which is followed to see where it leads. The page is read before anything is kept,
+     * so a playlist that is private, or not there, is refused in words rather than added and found empty later; and
+     * what was added is said, with a note when the page showed as much as it ever does. See
+     * [SPOTIFY_PUBLIC_PLAYLIST_LIMITS] for what this can and cannot do, which every player shows beside it.
+     */
+    fun addSpotifyPublicPlaylist(linkOrId: String) {
+        if (mutableSettings.value.spotify.addingPublicPlaylist) return
+        publishSpotifyPublicState(message = null, adding = true)
+        scope.launch {
+            try {
+                val id = spotifyPlaylistIdIn(linkOrId)
+                    ?: linkOrId.takeIf(::isSpotifyShortLink)?.let { short ->
+                        findMusicLink(short)?.let { shortLinks.expand(it) }?.url?.let(::spotifyPlaylistIdIn)
+                    }
+                val said = when {
+                    id == null -> if (findMusicLink(linkOrId)?.let { it.provider == ProviderType.SPOTIFY } == true) {
+                        "That Spotify link is not a playlist. Only playlists can be followed here; an album or a song opens from its link."
+                    } else {
+                        "That is not a link to a Spotify playlist. In Spotify, choose Share, then Copy link to playlist, and paste it here."
+                    }
+                    spotifyPublic.isFollowed(id) -> {
+                        val title = spotifyPublic.states().firstOrNull { it.id == id }?.title?.takeIf(String::isNotBlank)
+                        if (title == null) "That playlist is already in your library." else "“$title” is already in your library."
+                    }
+                    else -> when (val read = spotifyPublic.read(id, keep = true)) {
+                        is SpotifyPublicRead.Ok -> {
+                            updatePreferences { copy(spotifyPublicPlaylists = (spotifyPublicPlaylists - id) + id) }
+                            mutableLink.update { if (it.link?.id == id) it.copy(canKeepInLibrary = false) else it }
+                            mutableLibrary.update { it.copy(loaded = false) }
+                            refreshLibrary(force = true)
+                            addedMessage(read.list)
+                        }
+                        else -> read.message.orEmpty()
+                    }
+                }
+                publishSpotifyPublicState(message = said, adding = false)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                publishSpotifyPublicState(message = readableFailure(error, "Could not add that playlist."), adding = false)
+            }
+        }
+    }
+
+    /** "Added “Name”: 42 songs.", and what was left out, and the note about the hundred songs where it applies. */
+    private fun addedMessage(list: app.noctorium.spotify.SpotifyPublicList): String = listOfNotNull(
+        "Added “${list.title}”: ${list.tracks.size} ${if (list.tracks.size == 1) "song" else "songs"}.",
+        when (list.leftOut) {
+            0 -> null
+            1 -> "One entry that is not a song, such as a podcast episode, was left out."
+            else -> "${list.leftOut} entries that are not songs, such as podcast episodes, were left out."
+        },
+        "Spotify's public page shows only a playlist's first 100 songs, so that is as far as Noctorium can read this one."
+            .takeIf { list.mayBeLonger },
+    ).joinToString(" ")
+
+    /**
+     * Stops following a public Spotify playlist. Nothing at Spotify changes: following one here never touched it.
+     * The account's own copy, when a working sign-in lists the same playlist, stays where it is.
+     */
+    fun removeSpotifyPublicPlaylist(id: String) {
+        val spotifyId = spotifyPlaylistIdIn(id) ?: id.trim()
+        val title = spotifyPublic.states().firstOrNull { it.id == spotifyId }?.title?.takeIf(String::isNotBlank)
+        if (spotifyId !in mutableSettings.value.preferences.spotifyPublicPlaylists) return
+        val fromPage = spotifyPublic.listedFromPage(spotifyId)
+        updatePreferences { copy(spotifyPublicPlaylists = spotifyPublicPlaylists - spotifyId) }
+        scope.launch(Dispatchers.IO) {
+            spotifyPublic.forget(spotifyId)
+            publishSpotifyPublicState(
+                message = if (title == null) "Removed that playlist from your library." else "Removed “$title” from your library.",
+                adding = mutableSettings.value.spotify.addingPublicPlaylist,
+            )
+        }
+        if (fromPage) {
+            mutableLibrary.update { state ->
+                state.copy(playlists = state.playlists.filterNot { it.provider == ProviderType.SPOTIFY && it.id == spotifyId })
+            }
+        }
+    }
+
+    /**
+     * What Settings says about the followed public playlists: each as last read, and with [said] -- the message, and
+     * whether one is being added -- when there is something new to say. Without it the message and the flag are left
+     * exactly as they are when this lands, so a library refresh finishing cannot put back what an addition begun
+     * meanwhile had replaced.
+     */
+    private fun publishSpotifyPublicState(said: Pair<String?, Boolean>? = null) {
+        val listed = spotifyPublic.states()
+        mutableSettings.update {
+            val (message, adding) = said ?: (it.spotify.publicMessage to it.spotify.addingPublicPlaylist)
+            it.copy(spotify = it.spotify.copy(publicPlaylists = listed, addingPublicPlaylist = adding, publicMessage = message))
+        }
+    }
+
+    private fun publishSpotifyPublicState(message: String?, adding: Boolean) = publishSpotifyPublicState(message to adding)
 
     /**
      * The recording a reference -- a Spotify, Apple Music, Deezer or Tidal track -- stands for, found once and
@@ -2152,7 +2302,10 @@ class AppState(
             val results = connected.map { provider ->
                 async { provider.type to runCatching { provider.getLibraryPlaylists() } }
             }.awaitAll() + listOfNotNull(youTube?.let { ProviderType.YOUTUBE_MUSIC to it })
-            val playlists = soundCloudOwn.orEmpty() + results.flatMap { (_, result) -> result.getOrDefault(emptyList()) }
+            // A Spotify sign-in Spotify refuses still lists the public playlists followed without one.
+            val playlists = soundCloudOwn.orEmpty() + results.flatMap { (_, result) ->
+                result.getOrNull() ?: (result.exceptionOrNull() as? SpotifyUnavailable)?.stillRead.orEmpty()
+            }
             val failures = results.mapNotNull { (type, result) ->
                 result.exceptionOrNull()?.let { error ->
                     val message = libraryFailureMessage(type, error).let { if (type == ProviderType.SPOTIFY) spotifyRefusal(it) else it }
@@ -2160,7 +2313,7 @@ class AppState(
                     val label = providerLabel(type.accountSlot() ?: type)
                     if (message.contains(label, ignoreCase = true)) message else "$label: $message"
                 }
-            }
+            } + spotifyPublic.refreshProblems().takeIf { connected.any { it.type == ProviderType.SPOTIFY } }.orEmpty()
             // The Spotify card says why as well, rather than going on reading "connected" over a library that
             // Spotify will not hand over.
             results.firstOrNull { (type, _) -> type == ProviderType.SPOTIFY }?.second?.exceptionOrNull()?.let { error ->
@@ -2189,6 +2342,8 @@ class AppState(
                             .takeIf { spotifyHalfWay && playlists.isEmpty() },
                 )
             }
+            // Each followed public playlist as it was just read, and what went wrong with any that was not.
+            publishSpotifyPublicState()
         }
     }
 
@@ -2225,6 +2380,8 @@ class AppState(
                     openPlaylistEnriching = tracks.any { it.artworkUrl == null },
                 )
             }
+            // A followed public playlist read just now, or found not to be readable, says so in Settings.
+            if (playlist.provider == ProviderType.SPOTIFY && spotifyPublic.isFollowed(playlist.id)) publishSpotifyPublicState()
             if (tracks.none { it.artworkUrl == null }) return@launch
             resolveArtwork(playlist, provider, tracks)
         }
@@ -5423,12 +5580,17 @@ class AppState(
             try {
                 val link = shortLinks.expand(found)
                     ?: throw BackendException("That share link does not lead to a song or a playlist.")
+                // Where a Spotify playlist's songs were read from its public page, that page's copy: what it is
+                // called, and whether it was cut short.
+                var publicPage: app.noctorium.spotify.SpotifyPublicList? = null
                 val tracks = when {
                     // Read by its own client, which finds the song, the album or the artist behind the address.
                     link.provider == ProviderType.BANDCAMP -> bandcamp.tracksAt(link.url)
                         .ifEmpty { throw BackendException("That Bandcamp page has nothing on it that can be played.") }
-                    // Spotify and VK are read by their own clients, signed in.
+                    // Spotify and VK are read by their own clients: a Spotify playlist or album from its public
+                    // page when there is no sign-in to read it through.
                     link.provider == ProviderType.SPOTIFY -> spotifyLinkTracks(link)
+                        .also { publicPage = it.publicPage }.tracks
                         .ifEmpty { throw BackendException("That Spotify link has nothing in it that can be played.") }
                     link.provider == ProviderType.VK -> vkLinkTracks(link)
                         .ifEmpty { throw BackendException("That VK link has nothing in it that can be played.") }
@@ -5456,7 +5618,18 @@ class AppState(
                     LinkAction.DOWNLOAD -> downloadAll(tracks)
                     LinkAction.SAVE -> exportAll(tracks)
                 }
-                mutableLink.value = LinkState(LinkStatus.DONE, link, action, tracks, linkDoneMessage(action, link, tracks.size))
+                val cutShort = publicPage?.mayBeLonger == true
+                mutableLink.value = LinkState(
+                    LinkStatus.DONE,
+                    link,
+                    action,
+                    tracks,
+                    listOfNotNull(
+                        linkDoneMessage(action, link, tracks.size),
+                        "Spotify's public page shows only a playlist's first 100 songs.".takeIf { cutShort },
+                    ).joinToString(" ").ifBlank { null },
+                    canKeepInLibrary = publicPage?.let { !it.isAlbum && !spotifyPublic.isFollowed(it.id) } == true,
+                )
                 // A song played straight from its link is known only by its address until the player has
                 // read the page. Once it has, the title, artist and cover it found are kept here too, so the
                 // link's screen goes on showing the song after the next one has started.
@@ -5478,18 +5651,37 @@ class AppState(
         }
     }
 
-    /** What a pasted Spotify link names: a song, or the songs of an album, an artist or a playlist. */
-    private suspend fun spotifyLinkTracks(link: MusicLink): List<Track> {
-        val token = spotifyAccessToken()
-            ?: throw BackendException("Connect Spotify in Settings to open Spotify links.")
+    /**
+     * What a pasted Spotify link names: a song, or the songs of an album, an artist or a playlist.
+     *
+     * A playlist or an album opens with nobody signed in, from its public page, and with a sign-in Spotify refuses
+     * the same way; see [SpotifyMusicProvider.open]. A song and an artist need a sign-in that works, since neither
+     * has a public page to be read from.
+     */
+    private suspend fun spotifyLinkTracks(link: MusicLink): app.noctorium.spotify.SpotifyOpened {
+        val needsSignIn = link.kind == LinkKind.TRACK || link.id.startsWith(SpotifyClient.ARTIST_PREFIX)
+        if (!needsSignIn) {
+            return try {
+                spotify.open(Playlist(link.id, "", ProviderType.SPOTIFY, sourceUrl = link.url))
+            } catch (refused: SpotifyUnavailable) {
+                throw BackendException(spotifyRefusal(refused.message ?: "Spotify would not open that link."))
+            }
+        }
+        val token = spotifyAccessToken() ?: throw BackendException(
+            "Connect Spotify in Settings to open Spotify ${if (link.kind == LinkKind.TRACK) "songs" else "artists"} " +
+                "from their links. Playlists and albums open without it.",
+        )
         return when (link.kind) {
             LinkKind.TRACK -> when (val song = spotifyClient.track(link.id, token)) {
-                is SpotifyRead.Ok -> listOf(song.value)
+                is SpotifyRead.Ok -> app.noctorium.spotify.SpotifyOpened(listOf(song.value))
                 is SpotifyRead.Unauthorized -> throw BackendException(song.detail)
                 is SpotifyRead.Failed -> throw BackendException(spotifyRefusal(song.detail))
             }
-            else -> providers.first { it.type == ProviderType.SPOTIFY }
-                .getPlaylistTracks(Playlist(link.id, "", ProviderType.SPOTIFY, sourceUrl = link.url))
+            else -> try {
+                spotify.open(Playlist(link.id, "", ProviderType.SPOTIFY, sourceUrl = link.url))
+            } catch (refused: SpotifyUnavailable) {
+                throw BackendException(spotifyRefusal(refused.message.orEmpty()))
+            }
         }
     }
 
@@ -5837,6 +6029,9 @@ private fun accountStatusFor(outcome: AccountProbeOutcome): AccountConnectionSta
  */
 internal fun libraryFailureMessage(provider: ProviderType, error: Throwable): String {
     val raw = (error.message ?: "the request failed").trim().take(220)
+    // Spotify's are written for a reader already, and some say "private" for a playlist that is, which is not a
+    // session that was refused.
+    if (error is SpotifyUnavailable) return raw
     val label = providerLabel(provider.accountSlot() ?: provider)
     val signedOut = SIGNED_OUT_MARKERS.any { raw.contains(it, ignoreCase = true) }
     return if (signedOut) {

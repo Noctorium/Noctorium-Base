@@ -65,7 +65,7 @@ fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
  * purpose: [readLink] is the part that decides, this only finds places worth asking about.
  */
 private val CANDIDATE = Regex(
-    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com|deezer\.com|deezer\.page\.link|tidal\.com|music\.apple\.com)(?:/[^\s<>"']*)?""",
+    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|spoti\.fi|vk\.ru|vk\.com|deezer\.com|deezer\.page\.link|tidal\.com|music\.apple\.com)(?:/[^\s<>"']*)?""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -105,8 +105,9 @@ private fun readLink(raw: String): MusicLink? {
         host == "soundcloud.com" || host == "m.soundcloud.com" -> soundCloud(segments)
         host.endsWith(".bandcamp.com") -> bandcamp(host, segments)
         host == "open.spotify.com" -> spotify(segments)
-        host == "spotify.link" -> segments.firstOrNull()?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
-            MusicLink(ProviderType.SPOTIFY, LinkKind.SHORT, code, "https://spotify.link/$code")
+        // Spotify's share links, the current one and the one from before it: codes that say nothing until followed.
+        host == "spotify.link" || host == "spoti.fi" -> segments.firstOrNull()?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
+            MusicLink(ProviderType.SPOTIFY, LinkKind.SHORT, code, "https://$host/$code")
         }
         host == "vk.ru" || host == "vk.com" || host == "m.vk.ru" || host == "m.vk.com" -> vk(segments)
         host == "deezer.com" -> deezer(segments)
@@ -239,11 +240,15 @@ private val BANDCAMP_SLUG = Regex("""[A-Za-z0-9_-]+""")
 /**
  * A song, an album, a playlist or an artist on Spotify, `open.spotify.com/track/<id>` and the like.
  *
- * A localised address (`/intl-de/track/...`) is the same thing, and so is one with a share token after it.
- * Albums and artists are named the way Noctorium opens them as playlists: `album:<id>`, `artist:<id>`.
+ * A localised address (`/intl-de/track/...`) is the same thing, and so is one with a share token after it, the
+ * page Spotify makes for putting one in a website (`/embed/playlist/...`), and the older address of a playlist
+ * with its owner in front (`/user/<name>/playlist/...`). Albums and artists are named the way Noctorium opens
+ * them as playlists: `album:<id>`, `artist:<id>`.
  */
 private fun spotify(segments: List<String>): MusicLink? {
-    val parts = if (segments.firstOrNull()?.startsWith("intl-") == true) segments.drop(1) else segments
+    var parts = if (segments.firstOrNull()?.startsWith("intl-") == true) segments.drop(1) else segments
+    if (parts.firstOrNull() == "embed") parts = parts.drop(1)
+    if (parts.firstOrNull() == "user" && parts.getOrNull(2) == "playlist") parts = parts.drop(2)
     val id = parts.getOrNull(1)?.takeIf(SPOTIFY_ID::matches) ?: return null
     return when (parts.firstOrNull()) {
         "track" -> MusicLink(ProviderType.SPOTIFY, LinkKind.TRACK, id, "https://open.spotify.com/track/$id")
