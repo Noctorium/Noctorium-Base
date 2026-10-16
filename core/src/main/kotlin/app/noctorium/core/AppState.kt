@@ -7,6 +7,7 @@ import app.noctorium.vk.VkMusicProvider
 import app.noctorium.vk.VkSource
 import app.noctorium.vk.VkUnavailable
 import app.noctorium.bandcamp.BandcampMusicProvider
+import app.noctorium.deezer.DeezerMusicProvider
 import app.noctorium.downloads.DownloadManager
 import app.noctorium.downloads.MusicExport
 import app.noctorium.downloads.DownloadsState
@@ -195,7 +196,8 @@ enum class ProviderFilter(val displayName: String) {
     SOUNDCLOUD("SoundCloud"),
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
-    VK("VK Music");
+    VK("VK Music"),
+    DEEZER("Deezer");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -205,6 +207,7 @@ enum class ProviderFilter(val displayName: String) {
         BANDCAMP -> provider == ProviderType.BANDCAMP
         SPOTIFY -> provider == ProviderType.SPOTIFY
         VK -> provider == ProviderType.VK
+        DEEZER -> provider == ProviderType.DEEZER
     }
 }
 
@@ -216,6 +219,7 @@ enum class SearchMode(val displayName: String) {
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
     VK("VK Music"),
+    DEEZER("Deezer"),
 }
 
 data class LibraryState(
@@ -488,6 +492,7 @@ class AppState(
     private val spotifyClient: SpotifyClient = SpotifyClient(),
     /** Which recording each Spotify, Apple Music, Deezer or Tidal song was matched to. See [ReferenceMatchStore]. */
     private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
+    private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
     /** What this device calls itself on the network, when the listener has not renamed it. */
     private val deviceName: () -> String = { "Noctorium" },
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
@@ -555,6 +560,15 @@ class AppState(
         writeCookies = { cookies -> credentials.put(vkCookiesKey, cookies.header) },
     )
     private val vk = VkMusicProvider(vkClient)
+
+    /**
+     * Deezer, kept by name as well as in the list below: a profile given in Settings is checked through it, and a
+     * pasted Deezer link is opened through it.
+     */
+    private val deezer = DeezerMusicProvider(
+        client = deezerClient,
+        profileId = { mutableSettings.value.preferences.deezerProfileId.toLongOrNull() },
+    )
 
     /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
     private val serviceStreams = ServiceStreams { sourceUrl ->
@@ -624,6 +638,7 @@ class AppState(
         SpotifyMusicProvider(spotifyClient, spotifyAccess),
         bandcamp,
         vk,
+        deezer,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -886,6 +901,7 @@ class AppState(
         ytDlp.useServiceStreams(serviceStreams)
         applyAccountPreferences(mutableSettings.value.preferences)
         describeSavedAccounts(mutableSettings.value.preferences)
+        publishDeezerState()
         scrobbleManager.observe(playback, scope)
         scope.launch {
             val preferences = mutableSettings.value.preferences
@@ -1702,6 +1718,66 @@ class AppState(
     fun setBandcampGenres(genres: List<BandcampGenre>) {
         updatePreferences { copy(bandcampGenres = genres.distinct()) }
         refreshHome()
+    }
+
+    // --- Deezer, which is read and never played from ---
+
+    /**
+     * Shows the public playlists, loved tracks and albums of the Deezer profile [input] names, or none for a blank.
+     *
+     * Takes the profile's link as readily as its number, because the link is what gets copied -- the address bar's
+     * `deezer.com/en/profile/123`, or the share button's `link.deezer.com/s/…`, which is followed to see where it
+     * leads. The number is checked with Deezer before it is kept: a mistyped one would otherwise be an empty
+     * library with no reason given.
+     */
+    fun setDeezerProfile(input: String) {
+        if (input.isBlank()) {
+            updatePreferences { copy(deezerProfileId = "", deezerProfileName = "") }
+            mutableSettings.update { it.copy(deezer = DeezerConnectionState(message = "Deezer profile removed.")) }
+            mutableLibrary.update { it.withoutProvider(ProviderType.DEEZER) }
+            refreshHome()
+            return
+        }
+        mutableSettings.update { it.copy(deezer = it.deezer.copy(checking = true, message = null)) }
+        scope.launch {
+            val found = try {
+                val id = deezer.profileIn(input) ?: run {
+                    publishDeezerState(message = "That is not a Deezer profile. Paste the link to your profile, or the number at the end of it.")
+                    return@launch
+                }
+                id to deezer.profile(id)
+            } catch (cancellation: CancellationException) {
+                throw cancellation
+            } catch (error: Exception) {
+                publishDeezerState(message = readableFailure(error, "Could not reach Deezer."))
+                return@launch
+            }
+            val (id, profile) = found
+            if (profile == null) {
+                publishDeezerState(message = "Deezer has no profile numbered $id. It is the number at the end of your profile's address.")
+                return@launch
+            }
+            updatePreferences { copy(deezerProfileId = profile.id.toString(), deezerProfileName = profile.name) }
+            publishDeezerState(message = "Showing ${profile.name}'s playlists, loved tracks and albums from Deezer.")
+            mutableLibrary.update { it.withoutProvider(ProviderType.DEEZER).copy(loaded = false) }
+            refreshLibrary(force = true)
+            refreshHome()
+        }
+    }
+
+    /** What Settings says about Deezer: the profile kept, if any, and [message]. */
+    private fun publishDeezerState(message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        mutableSettings.update {
+            it.copy(
+                deezer = DeezerConnectionState(
+                    profileId = preferences.deezerProfileId,
+                    found = preferences.deezerProfileId.isNotBlank(),
+                    name = preferences.deezerProfileName,
+                    message = message,
+                ),
+            )
+        }
     }
 
     /** Loads the listener's own playlists from every provider whose session is configured. */
@@ -3908,6 +3984,7 @@ class AppState(
                 SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
                 SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
                 SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
+                SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -5040,6 +5117,9 @@ class AppState(
                         .ifEmpty { throw BackendException("That Spotify link has nothing in it that can be played.") }
                     link.provider == ProviderType.VK -> vkLinkTracks(link)
                         .ifEmpty { throw BackendException("That VK link has nothing in it that can be played.") }
+                    // Read by their own clients, and matched on YouTube Music as they are played.
+                    link.provider.isReference -> referenceLinkTracks(link)
+                        .ifEmpty { throw BackendException("That ${link.provider.displayName} link has nothing in it that can be played.") }
                     link.kind == LinkKind.PLAYLIST -> ytDlp.listTracks(link.provider, link.url)
                         .ifEmpty { throw BackendException("That playlist has nothing in it that can be played, or it is private.") }
                     else -> link.placeholderTrack().let { placeholder ->
@@ -5095,6 +5175,19 @@ class AppState(
             }
             else -> providers.first { it.type == ProviderType.SPOTIFY }
                 .getPlaylistTracks(Playlist(link.id, "", ProviderType.SPOTIFY, sourceUrl = link.url))
+        }
+    }
+
+    /**
+     * What a pasted Apple Music, Deezer or Tidal link names: a song, or the songs of an album, an artist or a
+     * playlist, read through the service's own provider exactly as the library and search read them.
+     */
+    private suspend fun referenceLinkTracks(link: MusicLink): List<Track> {
+        val provider = providers.firstOrNull { it.type == link.provider }
+            ?: throw BackendException("${link.provider.displayName} is not set up here.")
+        return when (link.kind) {
+            LinkKind.TRACK -> listOfNotNull(provider.getTrack(link.id))
+            else -> provider.getPlaylistTracks(Playlist(link.id, "", link.provider, sourceUrl = link.url))
         }
     }
 
@@ -5375,7 +5468,9 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.BANDCAMP -> bandcampUsername.isNotBlank()
     // Signed in: the name is kept exactly as long as the session is.
     ProviderType.VK -> vkAccountName.isNotBlank()
-    ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> false
+    // A public profile, as a Bandcamp fan's collection is: its number is all it takes.
+    ProviderType.DEEZER -> deezerProfileId.isNotBlank()
+    ProviderType.APPLE_MUSIC, ProviderType.TIDAL -> false
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 

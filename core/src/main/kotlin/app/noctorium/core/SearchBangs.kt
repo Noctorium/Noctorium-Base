@@ -33,6 +33,8 @@ object SearchBangs {
         "bc" to SearchMode.BANDCAMP,
         "bandcamp" to SearchMode.BANDCAMP,
         "vk" to SearchMode.VK,
+        "dz" to SearchMode.DEEZER,
+        "deezer" to SearchMode.DEEZER,
         "all" to SearchMode.HYBRID,
     )
 

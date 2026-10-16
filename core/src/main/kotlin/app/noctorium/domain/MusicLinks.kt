@@ -64,7 +64,7 @@ fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
  * purpose: [readLink] is the part that decides, this only finds places worth asking about.
  */
 private val CANDIDATE = Regex(
-    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com)(?:/[^\s<>"']*)?""",
+    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com|deezer\.com|deezer\.page\.link)(?:/[^\s<>"']*)?""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -108,9 +108,38 @@ private fun readLink(raw: String): MusicLink? {
             MusicLink(ProviderType.SPOTIFY, LinkKind.SHORT, code, "https://spotify.link/$code")
         }
         host == "vk.ru" || host == "vk.com" || host == "m.vk.ru" || host == "m.vk.com" -> vk(segments)
+        host == "deezer.com" -> deezer(segments)
+        // Deezer's share button: a code that says nothing until it is followed.
+        host == "link.deezer.com" && segments.firstOrNull() == "s" ->
+            segments.getOrNull(1)?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
+                MusicLink(ProviderType.DEEZER, LinkKind.SHORT, code, "https://link.deezer.com/s/$code")
+            }
+        host == "deezer.page.link" -> segments.firstOrNull()?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
+            MusicLink(ProviderType.DEEZER, LinkKind.SHORT, code, "https://deezer.page.link/$code")
+        }
         else -> null
     }
 }
+
+/**
+ * A song, an album, a playlist or an artist on Deezer, `deezer.com/track/<number>` and the like, with or without
+ * the language Deezer puts in front (`/en/`, `/fr/`). Albums and artists are named the way Noctorium opens them as
+ * playlists: `album:<number>`, `artist:<number>`.
+ */
+private fun deezer(segments: List<String>): MusicLink? {
+    val parts = if (segments.firstOrNull()?.matches(DEEZER_LANGUAGE) == true) segments.drop(1) else segments
+    val id = parts.getOrNull(1)?.takeIf(DEEZER_ID::matches) ?: return null
+    return when (parts.firstOrNull()) {
+        "track" -> MusicLink(ProviderType.DEEZER, LinkKind.TRACK, id, "https://www.deezer.com/track/$id")
+        "album" -> MusicLink(ProviderType.DEEZER, LinkKind.PLAYLIST, "album:$id", "https://www.deezer.com/album/$id")
+        "artist" -> MusicLink(ProviderType.DEEZER, LinkKind.PLAYLIST, "artist:$id", "https://www.deezer.com/artist/$id")
+        "playlist" -> MusicLink(ProviderType.DEEZER, LinkKind.PLAYLIST, id, "https://www.deezer.com/playlist/$id")
+        else -> null
+    }
+}
+
+private val DEEZER_LANGUAGE = Regex("""[a-z]{2}(-[a-z]{2})?""")
+private val DEEZER_ID = Regex("""\d+""")
 
 private fun youTube(provider: ProviderType, segments: List<String>, query: Map<String, String>): MusicLink? {
     val first = segments.firstOrNull()

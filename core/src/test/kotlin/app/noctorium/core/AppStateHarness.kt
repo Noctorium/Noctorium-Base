@@ -160,6 +160,8 @@ internal object AppStateHarness {
         backend: MusicBackend = Backend(),
         // Kept in memory unless a test says where, for the same reason as the history.
         referenceMatches: app.noctorium.matching.ReferenceMatchStore = app.noctorium.matching.ReferenceMatchStore(null, null),
+        // A Deezer that is never there unless a test gives one: a harness must never reach the real one.
+        deezer: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(NoDeezer),
     ): AppState = AppState(
         ytDlp = backend,
         credentials = credentials,
@@ -176,7 +178,12 @@ internal object AppStateHarness {
         youTubeMusic = youTubeMusic,
         innertubeKeys = innertubeKeys,
         referenceMatches = referenceMatches,
+        deezerClient = deezer,
     )
+
+    private object NoDeezer : app.noctorium.deezer.DeezerHttp {
+        override suspend fun get(url: String) = app.noctorium.net.HttpReply(app.noctorium.net.Http.UNREACHABLE, "no Deezer in this harness")
+    }
 
     /** A YouTube that is never there, so a harness not given one of its own can never reach the real one. */
     private object Unanswered : LikeHttpClient {

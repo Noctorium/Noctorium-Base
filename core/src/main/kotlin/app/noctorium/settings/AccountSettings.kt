@@ -639,6 +639,16 @@ data class NoctoriumPreferences(
      * nobody is: the session itself lives in the credential store, never here.
      */
     val vkAccountName: String = "",
+    /**
+     * The number of the listener's Deezer profile, `deezer.com/profile/<number>`, whose public playlists, loved
+     * tracks and albums the library shows. Blank for none.
+     *
+     * A number rather than a sign-in, as Bandcamp's is a name: Deezer shows a public profile to anybody, and lets
+     * no new application sign anybody in.
+     */
+    val deezerProfileId: String = "",
+    /** That profile's name, as Deezer gave it when the number was checked, so Settings can say whose it is. */
+    val deezerProfileName: String = "",
     /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
     val playbackSpeed: Float = 1f,
     /**
@@ -1141,6 +1151,20 @@ data class SettingsState(
     val spotify: SpotifyConnectionState = SpotifyConnectionState(),
     val bandcamp: BandcampConnectionState = BandcampConnectionState(),
     val vk: VkConnectionState = VkConnectionState(),
+    val deezer: DeezerConnectionState = DeezerConnectionState(),
+)
+
+/** The Deezer profile the library shows, and how the last look for it went. */
+data class DeezerConnectionState(
+    /** The profile's number, as kept in the settings. Blank when none has been given. */
+    val profileId: String = "",
+    /** Whether Deezer has confirmed a profile with that number. */
+    val found: Boolean = false,
+    /** The profile's own name, once Deezer has confirmed it. Blank until then. */
+    val name: String = "",
+    /** True while Deezer is being asked about the profile. */
+    val checking: Boolean = false,
+    val message: String? = null,
 )
 
 /** The VK account, and how the last sign-in went. */
