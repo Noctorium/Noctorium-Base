@@ -113,6 +113,42 @@ class UpdateDownloaderTest {
         assertTrue(seen.all { it in 0f..1f }, "a fraction outside the bar: $seen")
     }
 
+    /** What an earlier attempt downloaded and checked, whose installer was then closed without installing. */
+    @Test
+    fun `a verified download already there is not fetched again`() = runBlocking {
+        val into = directory.resolve("Noctorium-setup.exe")
+        Files.write(into, payload)
+
+        val outcome = UpdateDownloader().fetch(file(), payloadSha, into)
+
+        assertTrue(outcome is UpdateDownloader.Outcome.Ready, "$outcome")
+        assertEquals(0, server.requestCount, "it was downloaded again")
+    }
+
+    @Test
+    fun `a file under the update's name that is not the update is replaced`() = runBlocking {
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(payload)))
+        val into = directory.resolve("Noctorium-setup.exe")
+        Files.write(into, payload.reversedArray())
+
+        val outcome = UpdateDownloader().fetch(file(), payloadSha, into)
+
+        assertTrue(outcome is UpdateDownloader.Outcome.Ready, "$outcome")
+        assertContentEqualsBytes(payload, into.readBytes())
+    }
+
+    @Test
+    fun `what was left of an older release's download is cleared away`() = runBlocking {
+        server.enqueue(MockResponse().setBody(okio.Buffer().write(payload)))
+        val older = directory.resolve("Noctorium-0.0.1-windows-x64.msi.part")
+        Files.write(older, ByteArray(1000))
+        Files.write(older.resolveSibling(older.fileName.toString() + ".ranges"), "noctorium update ranges 1\n".toByteArray())
+
+        UpdateDownloader().fetch(file(), payloadSha, directory.resolve("Noctorium-setup.exe"))
+
+        assertEquals(listOf("Noctorium-setup.exe"), directory.toFile().list()!!.toList())
+    }
+
     private fun assertContentEqualsBytes(expected: ByteArray, actual: ByteArray) {
         assertEquals(expected.toList(), actual.toList())
     }

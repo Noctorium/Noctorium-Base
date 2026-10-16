@@ -23,7 +23,11 @@ interface UpdateInstaller {
     /** What the running application believes it is, or null for a build that was never told. */
     val currentVersion: Version?
 
-    /** Somewhere to put the download. Wiped and reused; nothing here is kept between attempts. */
+    /**
+     * Somewhere to put the download, best somewhere that lasts from one run to the next: a download stopped part
+     * of the way is carried on from what it left here. Only a file that has matched its checksum is ever here
+     * under an update's own name.
+     */
     fun downloadDirectory(): Path
 
     /**
