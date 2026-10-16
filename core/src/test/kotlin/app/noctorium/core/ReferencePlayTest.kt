@@ -55,7 +55,10 @@ class ReferencePlayTest {
         val matches = ReferenceMatchStore(folder.resolve("matches.json"), folder.resolve("spotify-matches.json"))
         AppStateHarness.state(engine = engine, backend = backend, referenceMatches = matches).use { state ->
             state.play(deezerSong)
-            waitFor("the recording to play") { engine.calls.contains("play yt-one-more-time") }
+            // The engine counts the call before it says what is playing, and AppState hears that through the router
+            // a moment later still: wait for what is read below, not only for the call.
+            waitFor("the recording to play") { state.playback.value.track?.id == "yt-one-more-time" }
+            assertTrue(engine.calls.contains("play yt-one-more-time"), "${engine.calls}")
 
             val played = state.playback.value.track!!
             assertEquals(ProviderType.YOUTUBE_MUSIC, played.provider)
