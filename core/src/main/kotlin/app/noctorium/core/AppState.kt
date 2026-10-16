@@ -8,6 +8,12 @@ import app.noctorium.vk.VkSource
 import app.noctorium.vk.VkUnavailable
 import app.noctorium.bandcamp.BandcampMusicProvider
 import app.noctorium.deezer.DeezerMusicProvider
+import app.noctorium.tidal.TidalAccess
+import app.noctorium.tidal.TidalApp
+import app.noctorium.tidal.TidalApplication
+import app.noctorium.tidal.TidalAuth
+import app.noctorium.tidal.TidalClient
+import app.noctorium.tidal.TidalMusicProvider
 import app.noctorium.downloads.DownloadManager
 import app.noctorium.downloads.MusicExport
 import app.noctorium.downloads.DownloadsState
@@ -197,7 +203,8 @@ enum class ProviderFilter(val displayName: String) {
     BANDCAMP("Bandcamp"),
     SPOTIFY("Spotify"),
     VK("VK Music"),
-    DEEZER("Deezer");
+    DEEZER("Deezer"),
+    TIDAL("Tidal");
 
     /** Whether a row from [provider] belongs under this filter. YouTube's videos count as YouTube Music. */
     fun matches(provider: ProviderType): Boolean = when (this) {
@@ -208,6 +215,7 @@ enum class ProviderFilter(val displayName: String) {
         SPOTIFY -> provider == ProviderType.SPOTIFY
         VK -> provider == ProviderType.VK
         DEEZER -> provider == ProviderType.DEEZER
+        TIDAL -> provider == ProviderType.TIDAL
     }
 }
 
@@ -220,6 +228,7 @@ enum class SearchMode(val displayName: String) {
     SPOTIFY("Spotify"),
     VK("VK Music"),
     DEEZER("Deezer"),
+    TIDAL("Tidal"),
 }
 
 data class LibraryState(
@@ -493,6 +502,7 @@ class AppState(
     /** Which recording each Spotify, Apple Music, Deezer or Tidal song was matched to. See [ReferenceMatchStore]. */
     private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
     private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
+    private val tidalClient: TidalClient = TidalClient(),
     /** What this device calls itself on the network, when the listener has not renamed it. */
     private val deviceName: () -> String = { "Noctorium" },
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
@@ -570,6 +580,30 @@ class AppState(
         profileId = { mutableSettings.value.preferences.deezerProfileId.toLongOrNull() },
     )
 
+    /**
+     * Tidal's tokens, and the Tidal app they come through. The app's client id and secret are kept in the credential
+     * store as Last.fm's own keys are, and so is the refresh token: the settings file holds only whose account it is.
+     */
+    private val tidalAccess = TidalAccess(
+        refresh = TidalAuth(openBrowser = ::browseSecureUrl)::refresh,
+        clientCredentials = TidalAuth(openBrowser = ::browseSecureUrl)::clientCredentials,
+        readApp = {
+            credentials.get(TIDAL_CLIENT_ID)?.takeIf(String::isNotBlank)?.let { id ->
+                TidalApp(id, credentials.get(TIDAL_CLIENT_SECRET).orEmpty())
+            }
+        },
+        readRefreshToken = { runCatching { credentials.get(TIDAL_REFRESH_TOKEN) }.getOrNull() },
+        writeRefreshToken = { token -> runCatching { credentials.put(TIDAL_REFRESH_TOKEN, token) } },
+        clearRefreshToken = { runCatching { credentials.remove(TIDAL_REFRESH_TOKEN) } },
+    )
+
+    private val tidal = TidalMusicProvider(
+        client = tidalClient,
+        access = tidalAccess,
+        userId = { mutableSettings.value.preferences.tidalUserId },
+        country = { mutableSettings.value.preferences.tidalCountry.ifBlank { deviceCountry() ?: "US" } },
+    )
+
     /** The addresses of the services read here, for the backend to hand to the player. See [ServiceStreams]. */
     private val serviceStreams = ServiceStreams { sourceUrl ->
         bandcamp.streamFor(sourceUrl)?.let(::ServiceStream) ?: vk.streamFor(sourceUrl)
@@ -639,6 +673,7 @@ class AppState(
         bandcamp,
         vk,
         deezer,
+        tidal,
     )
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -940,6 +975,10 @@ class AppState(
         // What a sign-in begun in the first moment has already said is kept, rather than wiped by this.
         scope.launch(Dispatchers.IO) {
             publishSpotifyState(connecting = mutableSettings.value.spotify.connecting, message = mutableSettings.value.spotify.message)
+        }
+        // The same for Tidal, whose app and sign-in are both in the credential store.
+        scope.launch(Dispatchers.IO) {
+            publishTidalState(connecting = mutableSettings.value.tidal.connecting, message = mutableSettings.value.tidal.message)
         }
         scope.launch(Dispatchers.IO) {
             // Through the same helper as everything else: the credential can be missing while the saved
@@ -1762,6 +1801,147 @@ class AppState(
             mutableLibrary.update { it.withoutProvider(ProviderType.DEEZER).copy(loaded = false) }
             refreshLibrary(force = true)
             refreshHome()
+        }
+    }
+
+    // --- Tidal, which is read and never played from ---
+
+    /**
+     * Uses a Tidal app the listener registered -- its client id, and its secret where they give it -- or, given
+     * blanks, none of their own again.
+     *
+     * Both are kept in the credential store, as Last.fm's own keys are. The secret is what lets Tidal's catalogue
+     * be searched without signing in; signing in needs only the id. A different app means the stored sign-in
+     * belongs to something else and cannot be refreshed through this one, so it is let go of here, which is what
+     * stops it showing up later as a refusal.
+     */
+    fun configureTidalApplication(clientId: String, clientSecret: String) {
+        val id = clientId.trim().take(128)
+        val secret = clientSecret.trim().take(256)
+        scope.launch(Dispatchers.IO) {
+            val before = tidalAccess.clientId()
+            val stored = runCatching {
+                if (id.isBlank()) {
+                    credentials.remove(TIDAL_CLIENT_ID)
+                    credentials.remove(TIDAL_CLIENT_SECRET)
+                } else {
+                    credentials.put(TIDAL_CLIENT_ID, id)
+                    if (secret.isBlank()) credentials.remove(TIDAL_CLIENT_SECRET) else credentials.put(TIDAL_CLIENT_SECRET, secret)
+                }
+            }
+            if (stored.isFailure) {
+                publishTidalState(message = "Could not keep your Tidal app securely: ${stored.exceptionOrNull()?.message?.take(120)}")
+                return@launch
+            }
+            tidalAccess.useApp(id.takeIf(String::isNotBlank)?.let { TidalApp(it, secret) })
+            if (tidalAccess.clientId() != before && tidalAccess.isConnected()) forgetTidalSignIn()
+            publishTidalState(
+                message = when {
+                    !tidalAccess.isConfigured() -> TidalAuth.NO_APP
+                    id.isBlank() -> "Back to Noctorium's own Tidal app. Connect Tidal to sign in."
+                    secret.isBlank() -> "Your Tidal app is saved. Connect Tidal to sign in through it; add its secret to search Tidal without signing in."
+                    else -> "Your Tidal app is saved. Tidal can be searched now; connect Tidal to see your collection."
+                },
+            )
+            mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL).copy(loaded = false) }
+        }
+    }
+
+    /**
+     * Signs in to Tidal on its own page in the browser, and reads whose account it is.
+     *
+     * The reply comes back to [tidalRedirectUri] on this device, which has to be among the app's redirect URIs on
+     * developer.tidal.com exactly as written; Settings shows it, and [copyTidalRedirectUri] puts it on the clipboard.
+     */
+    fun connectTidal() {
+        if (mutableSettings.value.tidal.connecting) return
+        scope.launch {
+            val clientId = withContext(Dispatchers.IO) { tidalAccess.clientId() }
+            if (clientId.isBlank()) return@launch publishTidalState(message = TidalAuth.NO_APP)
+            publishTidalState(connecting = true, message = "Finish signing in to Tidal in your browser.")
+            when (val result = TidalAuth(openBrowser = ::browseSecureUrl).authorize(clientId)) {
+                is TidalAuth.Result.Success -> {
+                    withContext(Dispatchers.IO) { tidalAccess.adopt(result.tokens) }
+                    val account = try {
+                        tidalClient.me(result.tokens.accessToken)
+                    } catch (cancellation: CancellationException) {
+                        throw cancellation
+                    } catch (failure: Exception) {
+                        // Signed in, and still not allowed to say whose account it is: the app is not allowed to read
+                        // the user. Saying "connected" here would be the last true thing it heard.
+                        withContext(Dispatchers.IO) { tidalAccess.disconnect() }
+                        publishTidalState(message = readableFailure(failure, "Tidal signed you in, but would not say whose account it is."))
+                        return@launch
+                    }
+                    updatePreferences {
+                        copy(
+                            tidalUserId = result.tokens.userId ?: account.id,
+                            tidalAccountName = account.name,
+                            tidalCountry = account.country.orEmpty(),
+                        )
+                    }
+                    publishTidalState(message = "Tidal connected as ${account.name}. Your collection is in the library.")
+                    mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL).copy(loaded = false) }
+                    refreshLibrary(force = true)
+                    refreshHome()
+                }
+                is TidalAuth.Result.Failure -> publishTidalState(message = result.detail)
+            }
+        }
+    }
+
+    /** Forgets the Tidal sign-in. Nothing is revoked at Tidal, because nothing was ever written there. */
+    fun disconnectTidal() {
+        scope.launch {
+            forgetTidalSignIn()
+            publishTidalState(message = "Tidal disconnected.")
+            refreshHome()
+        }
+    }
+
+    private suspend fun forgetTidalSignIn() {
+        withContext(Dispatchers.IO) { tidalAccess.disconnect() }
+        updatePreferences { copy(tidalUserId = "", tidalAccountName = "", tidalCountry = "") }
+        mutableLibrary.update { it.withoutProvider(ProviderType.TIDAL) }
+    }
+
+    /** The loopback address Tidal sends its reply to, shown so it can be registered for the app. */
+    fun tidalRedirectUri(): String = TidalAuth.redirectUri()
+
+    /** The same, put on the clipboard: Tidal compares it exactly, and typing it out is where this setup goes wrong. */
+    fun copyTidalRedirectUri() {
+        val copied = runCatching { system.copyToClipboard(TidalAuth.redirectUri()) }
+        scope.launch(Dispatchers.IO) {
+            publishTidalState(
+                message = copied.exceptionOrNull()?.let { "Could not reach the clipboard: ${it.message}" }
+                    ?: "Redirect address copied. Paste it into your Tidal app's redirect URIs.",
+            )
+        }
+    }
+
+    /** Opens Tidal's developer dashboard, where a Tidal app of the listener's own is registered. */
+    fun openTidalDeveloperPortal() {
+        runCatching { browseSecureUrl(TidalApplication.DEVELOPER_PORTAL) }.onFailure { failure ->
+            scope.launch(Dispatchers.IO) { publishTidalState(message = failure.message ?: "Could not open Tidal's developer dashboard.") }
+        }
+    }
+
+    /** What Settings says about Tidal. Reads the credential store, so it is called off the main thread. */
+    private fun publishTidalState(connecting: Boolean = false, message: String? = null) {
+        val preferences = mutableSettings.value.preferences
+        val connected = tidalAccess.isConnected()
+        mutableSettings.update {
+            it.copy(
+                tidal = TidalConnectionState(
+                    configured = tidalAccess.isConfigured(),
+                    ownApp = tidalAccess.ownApp() != null,
+                    readsCatalogue = connected || tidalAccess.readsCatalogueSignedOut(),
+                    connected = connected,
+                    connecting = connecting,
+                    accountName = preferences.tidalAccountName,
+                    message = message,
+                ),
+            )
         }
     }
 
@@ -3985,6 +4165,7 @@ class AppState(
                 SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
                 SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
                 SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
+                SearchMode.TIDAL -> providers.filter { it.type == ProviderType.TIDAL }
             }
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
@@ -5470,7 +5651,9 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.VK -> vkAccountName.isNotBlank()
     // A public profile, as a Bandcamp fan's collection is: its number is all it takes.
     ProviderType.DEEZER -> deezerProfileId.isNotBlank()
-    ProviderType.APPLE_MUSIC, ProviderType.TIDAL -> false
+    // Signed in: the account's id is kept exactly as long as the sign-in is.
+    ProviderType.TIDAL -> tidalUserId.isNotBlank()
+    ProviderType.APPLE_MUSIC -> false
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 
@@ -5715,6 +5898,21 @@ private const val KEEP_QUEUE_PAUSE_MS = 1_500L
 
 private const val MAX_SLEEP_FADE_SECONDS = 120
 private const val SLEEP_FADE_STEP_MS = 250L
+
+/**
+ * Credential-store keys for a Tidal app of the listener's own and for Tidal's refresh token. The client id is not a
+ * secret, but it is kept beside the secret it belongs with, as Last.fm's own key is.
+ */
+private const val TIDAL_CLIENT_ID = "tidal.client_id"
+private const val TIDAL_CLIENT_SECRET = "tidal.client_secret"
+private const val TIDAL_REFRESH_TOKEN = "tidal.refresh_token"
+
+/**
+ * The country this device is set to, as two capital letters, or null where it is set to none: what Tidal's and Apple
+ * Music's catalogues are read in when no account has said otherwise.
+ */
+internal fun deviceCountry(): String? =
+    java.util.Locale.getDefault().country.takeIf { it.length == 2 && it.all(Char::isLetter) }?.uppercase()
 
 /** Where the VK session's cookies are kept in the credential store, before any namespace. */
 private const val VK_COOKIES = "vk.session_cookies"

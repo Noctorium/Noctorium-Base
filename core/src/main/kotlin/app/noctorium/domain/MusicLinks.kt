@@ -64,7 +64,7 @@ fun hasMusicLink(text: String): Boolean = findMusicLink(text) != null
  * purpose: [readLink] is the part that decides, this only finds places worth asking about.
  */
 private val CANDIDATE = Regex(
-    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com|deezer\.com|deezer\.page\.link)(?:/[^\s<>"']*)?""",
+    """(?<![a-z0-9.-])(?:https?://)?(?:[a-z0-9-]+\.)*(?:youtube\.com|youtube-nocookie\.com|youtu\.be|soundcloud\.com|soundcloud\.app\.goo\.gl|bandcamp\.com|open\.spotify\.com|spotify\.link|vk\.ru|vk\.com|deezer\.com|deezer\.page\.link|tidal\.com)(?:/[^\s<>"']*)?""",
     RegexOption.IGNORE_CASE,
 )
 
@@ -117,9 +117,31 @@ private fun readLink(raw: String): MusicLink? {
         host == "deezer.page.link" -> segments.firstOrNull()?.takeIf(SOUNDCLOUD_NAME::matches)?.let { code ->
             MusicLink(ProviderType.DEEZER, LinkKind.SHORT, code, "https://deezer.page.link/$code")
         }
+        host == "tidal.com" || host == "listen.tidal.com" -> tidal(segments)
         else -> null
     }
 }
+
+/**
+ * A song, an album, a playlist or an artist on Tidal, as its sites write them: `tidal.com/browse/track/<number>`,
+ * `tidal.com/track/<number>`, `listen.tidal.com/album/<number>`. A song on its album's page,
+ * `album/<number>/track/<number>`, is the song.
+ */
+private fun tidal(segments: List<String>): MusicLink? {
+    val parts = if (segments.firstOrNull() == "browse") segments.drop(1) else segments
+    if (parts.getOrNull(0) == "album" && parts.getOrNull(2) == "track") return tidal(parts.drop(2))
+    val id = parts.getOrNull(1) ?: return null
+    return when (parts.firstOrNull()) {
+        "track" -> id.takeIf(NUMERIC_ID::matches)?.let { MusicLink(ProviderType.TIDAL, LinkKind.TRACK, it, "https://tidal.com/browse/track/$it") }
+        "album" -> id.takeIf(NUMERIC_ID::matches)?.let { MusicLink(ProviderType.TIDAL, LinkKind.PLAYLIST, "album:$it", "https://tidal.com/browse/album/$it") }
+        "artist" -> id.takeIf(NUMERIC_ID::matches)?.let { MusicLink(ProviderType.TIDAL, LinkKind.PLAYLIST, "artist:$it", "https://tidal.com/browse/artist/$it") }
+        "playlist" -> id.takeIf(TIDAL_PLAYLIST::matches)?.let { MusicLink(ProviderType.TIDAL, LinkKind.PLAYLIST, it, "https://tidal.com/browse/playlist/$it") }
+        else -> null
+    }
+}
+
+/** A Tidal playlist's id, which is a UUID where its songs and albums are numbers. */
+private val TIDAL_PLAYLIST = Regex("""[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}""")
 
 /**
  * A song, an album, a playlist or an artist on Deezer, `deezer.com/track/<number>` and the like, with or without
@@ -128,7 +150,7 @@ private fun readLink(raw: String): MusicLink? {
  */
 private fun deezer(segments: List<String>): MusicLink? {
     val parts = if (segments.firstOrNull()?.matches(DEEZER_LANGUAGE) == true) segments.drop(1) else segments
-    val id = parts.getOrNull(1)?.takeIf(DEEZER_ID::matches) ?: return null
+    val id = parts.getOrNull(1)?.takeIf(NUMERIC_ID::matches) ?: return null
     return when (parts.firstOrNull()) {
         "track" -> MusicLink(ProviderType.DEEZER, LinkKind.TRACK, id, "https://www.deezer.com/track/$id")
         "album" -> MusicLink(ProviderType.DEEZER, LinkKind.PLAYLIST, "album:$id", "https://www.deezer.com/album/$id")
@@ -139,7 +161,7 @@ private fun deezer(segments: List<String>): MusicLink? {
 }
 
 private val DEEZER_LANGUAGE = Regex("""[a-z]{2}(-[a-z]{2})?""")
-private val DEEZER_ID = Regex("""\d+""")
+private val NUMERIC_ID = Regex("""\d+""")
 
 private fun youTube(provider: ProviderType, segments: List<String>, query: Map<String, String>): MusicLink? {
     val first = segments.firstOrNull()

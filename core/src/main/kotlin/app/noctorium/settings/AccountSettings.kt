@@ -649,6 +649,15 @@ data class NoctoriumPreferences(
     val deezerProfileId: String = "",
     /** That profile's name, as Deezer gave it when the number was checked, so Settings can say whose it is. */
     val deezerProfileName: String = "",
+    /**
+     * The Tidal account signed in: its id, which its collection is read by, and a name for Settings to show. Both
+     * blank when nobody is; the sign-in itself lives in the credential store, never here, and so does the client id
+     * and secret of a Tidal app of the listener's own.
+     */
+    val tidalUserId: String = "",
+    val tidalAccountName: String = "",
+    /** The country Tidal said the account is in, which its catalogue is read in. Blank until somebody signs in. */
+    val tidalCountry: String = "",
     /** How fast to play, 1 being as recorded; between [app.noctorium.playback.MIN_SPEED] and MAX_SPEED. */
     val playbackSpeed: Float = 1f,
     /**
@@ -1152,6 +1161,32 @@ data class SettingsState(
     val bandcamp: BandcampConnectionState = BandcampConnectionState(),
     val vk: VkConnectionState = VkConnectionState(),
     val deezer: DeezerConnectionState = DeezerConnectionState(),
+    val tidal: TidalConnectionState = TidalConnectionState(),
+)
+
+/**
+ * How far along Tidal's setup is: whether there is a Tidal app to go through, whether the catalogue can be read,
+ * and whose collection is showing.
+ *
+ * Noctorium has no Tidal app of its own yet ([app.noctorium.tidal.TidalApplication]), so until it has one
+ * [configured] is false until the listener registers one -- free, at developer.tidal.com -- and gives its client
+ * id, and its secret too if the catalogue is to be read without signing in.
+ */
+data class TidalConnectionState(
+    /** A Tidal app is in force, so signing in is possible. */
+    val configured: Boolean = false,
+    /** It is the listener's own app, from developer.tidal.com, rather than Noctorium's. */
+    val ownApp: Boolean = false,
+    /** Tidal's catalogue can be read: somebody is signed in, or the app's secret is known. */
+    val readsCatalogue: Boolean = false,
+    /** A sign-in is stored. Tidal may still refuse it, which shows up as a message when it does. */
+    val connected: Boolean = false,
+    /** True while the browser is open on Tidal's sign-in page and the reply has not arrived. */
+    val connecting: Boolean = false,
+    val accountName: String = "",
+    /** The address Tidal sends its reply to, which has to be registered for the app exactly as it is. */
+    val redirectUri: String = app.noctorium.tidal.TidalAuth.redirectUri(),
+    val message: String? = null,
 )
 
 /** The Deezer profile the library shows, and how the last look for it went. */

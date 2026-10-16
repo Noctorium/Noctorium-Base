@@ -35,6 +35,8 @@ object SearchBangs {
         "vk" to SearchMode.VK,
         "dz" to SearchMode.DEEZER,
         "deezer" to SearchMode.DEEZER,
+        "td" to SearchMode.TIDAL,
+        "tidal" to SearchMode.TIDAL,
         "all" to SearchMode.HYBRID,
     )
 
