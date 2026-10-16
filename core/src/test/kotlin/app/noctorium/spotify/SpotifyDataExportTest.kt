@@ -192,6 +192,17 @@ class SpotifyDataExportTest {
         assertFailsWith<SpotifyExportUnreadable> { SpotifyDataExport.read(folder.resolve("missing.zip")) }
     }
 
+    /** Spotify's other download has the same name and only the listening history in it: the one asked for by mistake. */
+    @Test
+    fun `the listening-history download is told apart from the one with the playlists`() {
+        val history = ExportFixtures.zip(
+            "Spotify Extended Streaming History/ReadMeFirst_ExtendedStreamingHistory.pdf" to "%PDF-1.4 made up".toByteArray(),
+            "Spotify Extended Streaming History/Streaming_History_Audio_2025.json" to """[{"ts":"2025-01-01T10:00:00Z","ms_played":1}]""".toByteArray(),
+        )
+        val said = assertFailsWith<SpotifyExportUnreadable> { SpotifyDataExport.read("my_spotify_data.zip", history) }
+        assertTrue(said.message!!.contains("listening history") && said.message!!.contains("Account data"), said.message)
+    }
+
     @Test
     fun `what was made, and what was left out, is said in a sentence or two`() {
         assertEquals(

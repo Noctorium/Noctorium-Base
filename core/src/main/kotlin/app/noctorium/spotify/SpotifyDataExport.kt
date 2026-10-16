@@ -138,7 +138,8 @@ object SpotifyDataExport {
                     when {
                         isMacShadow(file.toString()) -> Unit
                         name.endsWith(".zip", ignoreCase = true) -> Files.newInputStream(file).use { gathered.zip(it, 1) }
-                        name.endsWith(".json", ignoreCase = true) && !isHistory(name) ->
+                        isHistory(name) -> gathered.sawHistory = true
+                        name.endsWith(".json", ignoreCase = true) ->
                             Files.newInputStream(file).use { gathered.json(name, it.readCapped()) }
                     }
                 } catch (unreadable: SpotifyExportUnreadable) {
@@ -226,16 +227,26 @@ object SpotifyDataExport {
         val files = mutableListOf<String>()
         var sawJson = false
 
+        /**
+         * A listening-history file went by. Spotify's other download, "Extended streaming history", is a
+         * my_spotify_data.zip as well and holds nothing else, so it is the easiest one to ask for by mistake.
+         */
+        var sawHistory = false
+
         fun finished(): SpotifyExport {
             val export = SpotifyExport(playlists.toList(), liked.values.toList(), skipped, albums, files.toList())
             if (export.isEmpty && albums == 0) {
                 throw SpotifyExportUnreadable(
-                    if (sawJson) {
-                        "That has no playlists or Liked Songs from Spotify in it. Choose the my_spotify_data.zip " +
-                            "Spotify emails, or the Playlist1.json and YourLibrary.json inside it."
-                    } else {
-                        "That is not Spotify's data download. Choose the my_spotify_data.zip Spotify emails, or the " +
-                            "Playlist1.json and YourLibrary.json inside it."
+                    when {
+                        sawHistory ->
+                            "That download is your listening history, which has no playlists in it. Ask Spotify for " +
+                                "Account data instead: that is the one with your playlists and Liked Songs."
+                        sawJson ->
+                            "That has no playlists or Liked Songs from Spotify in it. Choose the my_spotify_data.zip " +
+                                "Spotify emails, or the Playlist1.json and YourLibrary.json inside it."
+                        else ->
+                            "That is not Spotify's data download. Choose the my_spotify_data.zip Spotify emails, or the " +
+                                "Playlist1.json and YourLibrary.json inside it."
                     },
                 )
             }
@@ -247,9 +258,19 @@ object SpotifyDataExport {
             val buffered = if (stream.markSupported()) stream else BufferedInputStream(stream)
             buffered.mark(4)
             val head = ByteArray(4)
-            val got = buffered.read(head).coerceAtLeast(0)
+            var got = 0
+            // A stream may hand over fewer bytes than asked for at a time, so the four are gathered until it ends.
+            while (got < head.size) {
+                val read = buffered.read(head, got, head.size - got)
+                if (read < 0) break
+                got += read
+            }
             buffered.reset()
-            if (got >= 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()) zip(buffered, 1) else json(name, buffered.readCapped())
+            when {
+                got >= 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte() -> zip(buffered, 1)
+                isHistory(name) -> sawHistory = true
+                else -> json(name, buffered.readCapped())
+            }
         }
 
         fun zip(stream: InputStream, depth: Int) {
@@ -261,7 +282,8 @@ object SpotifyDataExport {
                 when {
                     entry.isDirectory || isMacShadow(name) -> Unit
                     base.endsWith(".zip", ignoreCase = true) && depth < MOST_NESTED -> zip(entries, depth + 1)
-                    base.endsWith(".json", ignoreCase = true) && !isHistory(base) -> json(base, entries.readCapped())
+                    isHistory(base) -> sawHistory = true
+                    base.endsWith(".json", ignoreCase = true) -> json(base, entries.readCapped())
                 }
                 entry = runCatching { entries.nextEntry }.getOrElse { throw notReadable() } ?: break
             }

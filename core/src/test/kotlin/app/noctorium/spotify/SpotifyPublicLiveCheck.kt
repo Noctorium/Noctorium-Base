@@ -6,9 +6,9 @@ import kotlin.test.assertTrue
 
 /**
  * The public page reader against Spotify itself: one of Spotify's own editorial playlists, which is public and
- * always full, read the way the library reads a followed playlist.
+ * always full, read the way the library reads a followed playlist -- and one album, read the way a pasted link is.
  *
- * Off unless asked for, because it needs the network. It reads that one public page and nothing else -- no token is
+ * Off unless asked for, because it needs the network. It reads those two public pages and nothing else -- no token is
  * asked for, nothing is signed in to, and no song's preview is touched:
  *
  * ```
@@ -24,7 +24,8 @@ class SpotifyPublicLiveCheck {
             println("LIVE: skipped; set NOCTORIUM_LIVE_CHECK=1 to run it")
             return@runBlocking
         }
-        val read = SpotifyPublicPages().playlist(TODAYS_TOP_HITS)
+        val pages = SpotifyPublicPages()
+        val read = pages.playlist(TODAYS_TOP_HITS)
         assertTrue(read is SpotifyPublicRead.Ok, "the page did not read: ${read.message}")
         val list = read.list
         println("LIVE: '${list.title}' by ${list.owner}: ${list.tracks.size} songs, ${list.leftOut} left out, may be longer: ${list.mayBeLonger}")
@@ -33,10 +34,19 @@ class SpotifyPublicLiveCheck {
         assertTrue(list.tracks.size >= 10, "only ${list.tracks.size} songs")
         assertTrue(list.tracks.all { it.id.length == 22 && it.artists.single().name.isNotBlank() })
         assertTrue(list.tracks.count { (it.durationMs ?: 0) > 30_000 } >= list.tracks.size / 2, "most songs should say how long they are")
+
+        // And an album's page, which is laid out the same way, a polite gap after the playlist's.
+        val album = pages.album(DISCOVERY)
+        assertTrue(album is SpotifyPublicRead.Ok, "the album did not read: ${album.message}")
+        println("LIVE: album '${album.list.title}' by ${album.list.owner}: ${album.list.tracks.size} songs, first '${album.list.tracks.firstOrNull()?.title}'")
+        assertTrue(album.list.tracks.isNotEmpty() && album.list.tracks.all { it.album?.title == album.list.title })
     }
 
     private companion object {
         /** Spotify's "Today's Top Hits", public and kept full by Spotify. */
         const val TODAYS_TOP_HITS = "37i9dQZF1DXcBWIGoYBM5M"
+
+        /** Daft Punk's "Discovery", an album that has been on Spotify as long as Spotify has. */
+        const val DISCOVERY = "2noRn2Aes5aoNVsU6iWThc"
     }
 }
