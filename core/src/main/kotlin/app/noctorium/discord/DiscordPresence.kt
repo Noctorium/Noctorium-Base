@@ -164,6 +164,9 @@ internal fun ProviderType.presenceAssetKey(): String = when (this) {
     ProviderType.SPOTIFY -> "spotify"
     ProviderType.BANDCAMP -> "bandcamp"
     ProviderType.VK -> "vk"
+    ProviderType.APPLE_MUSIC -> "apple_music"
+    ProviderType.DEEZER -> "deezer"
+    ProviderType.TIDAL -> "tidal"
     ProviderType.LOCAL -> "local"
 }
 

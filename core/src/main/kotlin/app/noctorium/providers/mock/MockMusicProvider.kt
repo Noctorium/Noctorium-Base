@@ -26,6 +26,9 @@ class MockMusicProvider(override val type: ProviderType) : MusicProvider {
                 ProviderType.SOUNDCLOUD -> "https://soundcloud.com/mock/track-$index"
                 ProviderType.BANDCAMP -> "https://mock.bandcamp.com/track/track-$index"
                 ProviderType.VK -> "https://vk.com/audio-1_$index"
+                ProviderType.APPLE_MUSIC -> "https://music.apple.com/us/song/mock-$index/$index"
+                ProviderType.DEEZER -> "https://www.deezer.com/track/$index"
+                ProviderType.TIDAL -> "https://tidal.com/browse/track/$index"
                 ProviderType.SPOTIFY, ProviderType.LOCAL -> "file:///mock/track-$index"
             },
         )

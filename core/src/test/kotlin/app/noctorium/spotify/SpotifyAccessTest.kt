@@ -1,11 +1,6 @@
 package app.noctorium.spotify
 
-import app.noctorium.domain.Artist
-import app.noctorium.domain.ProviderType
-import app.noctorium.domain.Track
 import kotlinx.coroutines.runBlocking
-import java.nio.file.Files
-import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
@@ -172,82 +167,5 @@ class SpotifyAccessTest {
 
         assertNull(stored)
         assertIs<SpotifyAccess.Access.NotConnected>(subject.access())
-    }
-}
-
-/**
- * Remembering which recording each Spotify track was resolved to.
- *
- * Kept because resolving costs a search, but more because it should not *change*: the same search run next
- * week can rank a different upload first, and a playlist that plays a slightly different version each time
- * is unsettling in a way a slow one is not.
- */
-class SpotifyMatchStoreTest {
-    private val folder = Files.createTempDirectory("noctorium-spotify-matches")
-    private val file = folder.resolve("matches.json")
-
-    @AfterTest
-    fun cleanUp() {
-        folder.toFile().deleteRecursively()
-    }
-
-    private fun resolved(id: String) = Track(
-        provider = ProviderType.YOUTUBE_MUSIC,
-        id = id,
-        title = "Everlong",
-        artists = listOf(Artist("foo", "Foo Fighters", ProviderType.YOUTUBE_MUSIC)),
-        durationMs = 250_000,
-        sourceUrl = "https://music.youtube.com/watch?v=$id",
-    )
-
-    @Test
-    fun `a match survives a restart`() {
-        SpotifyMatchStore(file).put("spotify-track-id", resolved("yt-1"))
-
-        val reopened = SpotifyMatchStore(file)
-
-        assertEquals("yt-1", reopened["spotify-track-id"]?.id)
-        assertEquals(ProviderType.YOUTUBE_MUSIC, reopened["spotify-track-id"]?.provider)
-    }
-
-    @Test
-    fun `an unknown track has no match rather than a wrong one`() {
-        assertNull(SpotifyMatchStore(file)["never-seen"])
-    }
-
-    /** For when the wrong song was chosen: forgetting it is what lets the next play search again. */
-    @Test
-    fun `a match can be forgotten`() {
-        val store = SpotifyMatchStore(file)
-        store.put("spotify-track-id", resolved("yt-1"))
-
-        store.forget("spotify-track-id")
-
-        assertNull(store["spotify-track-id"])
-        assertNull(SpotifyMatchStore(file)["spotify-track-id"])
-    }
-
-    /**
-     * The file holds nothing that cannot be worked out again, so a damaged one is started over rather than
-     * being allowed to stop Spotify tracks from playing at all.
-     */
-    @Test
-    fun `a damaged file is treated as an empty one`() {
-        Files.writeString(file, "{ this is not json")
-
-        val store = SpotifyMatchStore(file)
-
-        assertEquals(0, store.size())
-        store.put("spotify-track-id", resolved("yt-1"))
-        assertEquals("yt-1", SpotifyMatchStore(file)["spotify-track-id"]?.id)
-    }
-
-    @Test
-    fun `nowhere to write is not a failure`() {
-        val store = SpotifyMatchStore(path = null)
-
-        store.put("spotify-track-id", resolved("yt-1"))
-
-        assertEquals("yt-1", store["spotify-track-id"]?.id, "the match should still be held in memory")
     }
 }

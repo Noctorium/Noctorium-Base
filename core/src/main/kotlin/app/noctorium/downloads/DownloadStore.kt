@@ -5,9 +5,15 @@ import app.noctorium.platform.TextFiles
 import app.noctorium.domain.Artist
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
+import app.noctorium.domain.decodeEach
 import app.noctorium.settings.AppDirectories
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -86,7 +92,7 @@ class DownloadStore(
     fun all(): List<DownloadedTrack> = runCatching {
         val path = indexPath ?: return@runCatching emptyList()
         if (!Files.isRegularFile(path)) return@runCatching emptyList()
-        json.decodeFromString<List<DownloadedTrack>>(TextFiles.read(path).orEmpty())
+        json.decodeEach(DownloadedTrack.serializer(), TextFiles.read(path).orEmpty())
             .filter { entry -> fileFor(entry)?.let(Files::isRegularFile) == true }
             .sortedByDescending { it.downloadedAtEpochSeconds }
     }.getOrDefault(emptyList())
@@ -142,7 +148,10 @@ class DownloadStore(
     fun sweepOrphans(): Long {
         val root = folder ?: return 0
         if (!Files.isDirectory(root)) return 0
-        val claimed = readRaw().mapTo(HashSet()) { it.fileName }
+        val (readable, unreadable) = readIndex()
+        // An entry this build cannot read still names its file, which is somebody's download all the same.
+        val claimed = readable.mapTo(HashSet()) { it.fileName } +
+            unreadable.mapNotNull { ((it as? JsonObject)?.get("fileName") as? JsonPrimitive)?.contentOrNull }
         var reclaimed = 0L
         runCatching {
             Files.list(root).use { entries ->
@@ -158,18 +167,37 @@ class DownloadStore(
     }
 
     /** The index exactly as stored, including entries whose file has gone; only writing needs that. */
-    private fun readRaw(): List<DownloadedTrack> = runCatching {
-        val path = indexPath ?: return@runCatching emptyList()
-        if (!Files.isRegularFile(path)) emptyList()
-        else json.decodeFromString<List<DownloadedTrack>>(TextFiles.read(path).orEmpty())
-    }.getOrDefault(emptyList())
+    private fun readRaw(): List<DownloadedTrack> = readIndex().first
+
+    /**
+     * The index as stored, in two parts: the entries this build can read, and -- exactly as they were written --
+     * the ones it cannot, such as a download of a song from a service a later version added.
+     *
+     * The second part is written back untouched whenever the index is, and the files it names are not swept up
+     * as orphans: an older Noctorium opening a newer folder neither forgets those downloads nor deletes them.
+     */
+    private fun readIndex(): Pair<List<DownloadedTrack>, List<JsonElement>> {
+        val path = indexPath?.takeIf(Files::isRegularFile) ?: return emptyList<DownloadedTrack>() to emptyList()
+        val listed = runCatching { json.parseToJsonElement(TextFiles.read(path).orEmpty()) as? JsonArray }.getOrNull()
+            ?: return emptyList<DownloadedTrack>() to emptyList()
+        val readable = mutableListOf<DownloadedTrack>()
+        val unreadable = mutableListOf<JsonElement>()
+        listed.forEach { entry ->
+            runCatching { json.decodeFromJsonElement(DownloadedTrack.serializer(), entry) }
+                .onSuccess { readable += it }
+                .onFailure { unreadable += entry }
+        }
+        return readable to unreadable
+    }
 
     private fun write(entries: List<DownloadedTrack>) {
         val path = indexPath ?: return
         runCatching {
+            val kept = readIndex().second
             Files.createDirectories(path.parent)
             val temporary = path.resolveSibling("${path.fileName}.tmp")
-            TextFiles.write(temporary, json.encodeToString(entries))
+            val written = JsonArray(entries.map { json.encodeToJsonElement(DownloadedTrack.serializer(), it) } + kept)
+            TextFiles.write(temporary, json.encodeToString(JsonArray.serializer(), written))
             runCatching {
                 Files.move(temporary, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             }.getOrElse {

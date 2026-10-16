@@ -109,6 +109,12 @@ object PlayerButtonSetSerializer : ForgivingEnumSetSerializer<PlayerButton>(Play
 /** The queue's columns, forgiving a column from a later version. */
 object QueueColumnListSerializer : ForgivingEnumListSerializer<QueueColumn>(QueueColumn.entries)
 
+/** Services, as Hybrid search's choice of them names them, forgiving a service from a later version. */
+object ProviderTypeSetSerializer : ForgivingEnumSetSerializer<app.noctorium.domain.ProviderType>(app.noctorium.domain.ProviderType.entries)
+
+/** The parts of Home put away, forgiving a part -- most often a later service's row -- from a later version. */
+object HomePartSetSerializer : ForgivingEnumSetSerializer<HomePart>(HomePart.entries)
+
 /**
  * The visualiser in the Playlist layout's info bar: what it draws, from the sound itself.
  *

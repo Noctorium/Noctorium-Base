@@ -215,14 +215,16 @@ class AccountProbe(
         fun probeTarget(provider: ProviderType): String = when (provider) {
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/feed/subscriptions"
             ProviderType.SOUNDCLOUD -> "scsearch1:noctorium session check"
-            ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+            ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+            ProviderType.TIDAL, ProviderType.LOCAL ->
                 error("${provider.displayName} has no session for yt-dlp to check")
         }
 
         fun cookieDomain(provider: ProviderType): String = when (provider) {
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "youtube.com"
             ProviderType.SOUNDCLOUD -> "soundcloud.com"
-            ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+            ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+            ProviderType.TIDAL, ProviderType.LOCAL ->
                 error("${provider.displayName} has no session for yt-dlp to check")
         }
 
@@ -233,6 +235,9 @@ class AccountProbe(
             ProviderType.SPOTIFY -> "Spotify"
             ProviderType.BANDCAMP -> "Bandcamp"
             ProviderType.VK -> "VK Music"
+            ProviderType.APPLE_MUSIC -> "Apple Music"
+            ProviderType.DEEZER -> "Deezer"
+            ProviderType.TIDAL -> "Tidal"
             ProviderType.LOCAL -> "Local files"
         }
 

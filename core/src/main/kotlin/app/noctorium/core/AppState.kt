@@ -99,8 +99,8 @@ import app.noctorium.playback.RoutingPlaybackEngine
 import app.noctorium.spotify.SpotifyApplication
 import app.noctorium.spotify.SpotifyAuth
 import app.noctorium.spotify.SpotifyClient
-import app.noctorium.spotify.SpotifyMatch
-import app.noctorium.spotify.SpotifyMatchStore
+import app.noctorium.matching.ReferenceMatch
+import app.noctorium.matching.ReferenceMatchStore
 import app.noctorium.spotify.SpotifyMusicProvider
 import app.noctorium.spotify.SpotifyRead
 import app.noctorium.spotify.usesOwnSpotifyApp
@@ -357,7 +357,10 @@ data class LikeState(
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> youTubeReady
         ProviderType.SPOTIFY -> spotifyReady
         ProviderType.VK -> vkReady
-        ProviderType.BANDCAMP, ProviderType.LOCAL -> false
+        // Noctorium does not like songs on Apple Music, Deezer or Tidal yet. Once one of their songs plays it is
+        // the recording it was matched to, and that recording's heart works as any other does.
+        ProviderType.BANDCAMP, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL,
+        ProviderType.LOCAL -> false
     }
 }
 
@@ -372,6 +375,9 @@ internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.SPOTIFY -> "spotify:${track.id}"
     ProviderType.BANDCAMP -> "bc:${track.id}"
     ProviderType.VK -> "vk:${track.id}"
+    ProviderType.APPLE_MUSIC -> "am:${track.id}"
+    ProviderType.DEEZER -> "dz:${track.id}"
+    ProviderType.TIDAL -> "td:${track.id}"
     ProviderType.LOCAL -> "local:${track.id}"
 }
 
@@ -480,7 +486,8 @@ class AppState(
     private val innertubeKeys: InnertubeKeyProvider = InnertubeKeyProvider(),
     private val accountClient: NoctoriumAccountClient = NoctoriumAccountClient(),
     private val spotifyClient: SpotifyClient = SpotifyClient(),
-    private val spotifyMatches: SpotifyMatchStore = SpotifyMatchStore(),
+    /** Which recording each Spotify, Apple Music, Deezer or Tidal song was matched to. See [ReferenceMatchStore]. */
+    private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
     /** What this device calls itself on the network, when the listener has not renamed it. */
     private val deviceName: () -> String = { "Noctorium" },
     private val deviceKind: DeviceKind = DeviceKind.DESKTOP,
@@ -555,13 +562,14 @@ class AppState(
     }
 
     /**
-     * The Spotify song each matched recording stands for, by the recording's queue key.
+     * The song each matched recording stands for -- a Spotify, Apple Music, Deezer or Tidal song -- by the
+     * recording's queue key.
      *
-     * A matched Spotify song becomes the recording it was matched to -- see [SpotifyMatch.resolved] -- so
-     * nothing in it says Spotify any more. Autoplay needs to know, to carry on from Spotify rather than from
+     * A matched song becomes the recording it was matched to -- see [ReferenceMatch.resolved] -- so nothing in it
+     * says where it came from any more. Autoplay needs to know, to carry on from that service rather than from
      * YouTube. Declared up here because the watchers started in init can reach for it at once.
      */
-    private val spotifyOrigins = ConcurrentHashMap<String, Track>()
+    private val referenceOrigins = ConcurrentHashMap<String, Track>()
 
     /** Where in its song the queue was left last time, to pick up from when that song is next played. */
     @Volatile private var pendingResume: Pair<String, Long>? = null
@@ -1596,23 +1604,24 @@ class AppState(
     }
 
     /**
-     * The recording a Spotify track stands for, found once and then remembered.
+     * The recording a reference -- a Spotify, Apple Music, Deezer or Tidal track -- stands for, found once and
+     * then remembered.
      *
-     * Spotify hands out no audio, so this is the only way one of its tracks can make a sound: search for the
-     * song and decide whether what came back is really it. When nothing is close enough, nothing is played
-     * and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
+     * None of those services hands out its audio, so this is the only way one of their tracks can make a sound:
+     * search for the song and decide whether what came back is really it. When nothing is close enough, nothing
+     * is played and the reason is said out loud — substituting a remix or an hour-long loop for the song somebody
      * chose is worse than telling them it could not be found.
      *
      * Unless [quiet]: a look ahead at a song nobody has asked for yet must not put up a banner saying it could
      * not be played. The failure is not remembered, so asking to play it later looks again, and explains.
      */
-    private suspend fun resolveSpotify(track: Track, quiet: Boolean = false): Track? {
-        spotifyMatches[track.id]?.let { known ->
-            spotifyOrigins[known.queueKey] = track
+    private suspend fun resolveReference(track: Track, quiet: Boolean = false): Track? {
+        referenceMatches[track]?.let { known ->
+            referenceOrigins[known.queueKey] = track
             return known
         }
 
-        val query = SpotifyMatch.searchQuery(track)
+        val query = ReferenceMatch.searchQuery(track)
         val candidates = runCatching { youTubeSongSearch(query, limit = 8) }.getOrDefault(emptyList())
             .ifEmpty {
                 // The innertube search needs the page identifiers; without them, or when it simply finds
@@ -1620,23 +1629,22 @@ class AppState(
                 runCatching { ytDlp.search(ProviderType.YOUTUBE_MUSIC, query, limit = 8) }
                     .getOrDefault(emptyList())
             }
-        val match = SpotifyMatch.choose(track, candidates)
+        val match = ReferenceMatch.choose(track, candidates)
         if (match == null) {
             if (quiet) return null
-            // Said in both places a Spotify track can be played from, because a track that makes no sound
-            // and explains nothing is the worst outcome this path has. Spotify tracks are started from a
-            // playlist in the library far more often than from anywhere else, and the home screen's banner
-            // is not visible there.
-            val explanation = "Could not find \"${track.title}\" by ${track.artistLine} to play. Spotify " +
-                "does not hand out its audio, so every track has to be matched elsewhere first."
+            // Said in both places a track like this can be played from, because a track that makes no sound
+            // and explains nothing is the worst outcome this path has. They are started from a playlist in the
+            // library far more often than from anywhere else, and the home screen's banner is not visible there.
+            val explanation = "Could not find \"${track.title}\" by ${track.artistLine} to play. " +
+                "${track.provider.displayName} does not hand out its audio, so every track has to be matched elsewhere first."
             mutableUi.update { it.copy(errorMessage = explanation) }
             libraryNotice(explanation)
             return null
         }
 
-        val resolved = SpotifyMatch.resolved(track, match)
-        spotifyOrigins[resolved.queueKey] = track
-        withContext(Dispatchers.IO) { spotifyMatches.put(track.id, resolved) }
+        val resolved = ReferenceMatch.resolved(track, match)
+        referenceOrigins[resolved.queueKey] = track
+        withContext(Dispatchers.IO) { referenceMatches.put(track, resolved) }
         return resolved
     }
 
@@ -2045,6 +2053,11 @@ class AppState(
         ProviderType.VK -> vkLike(track, liking)
         ProviderType.BANDCAMP ->
             LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Bandcamp has no likes; its wishlist is kept on Bandcamp.")
+        ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> LikeResult(
+            LikeOutcome.UNSUPPORTED_TRACK,
+            "Noctorium cannot like songs on ${track.provider.displayName} yet. Play it, and the heart likes the " +
+                "recording it plays from instead.",
+        )
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
     }
 
@@ -2905,7 +2918,8 @@ class AppState(
     ) = when (provider) {
         ProviderType.SOUNDCLOUD -> createSoundCloudPlaylist(title, tracks, isPublic)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> createYouTubePlaylist(title, tracks, isPublic)
-        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+        ProviderType.TIDAL, ProviderType.LOCAL ->
             libraryNotice("Playlists cannot be made on ${provider.displayName} from Noctorium.")
     }
 
@@ -2913,7 +2927,8 @@ class AppState(
     fun addTrackToPlaylist(playlist: Playlist, track: Track) = when (playlist.provider) {
         ProviderType.SOUNDCLOUD -> addTrackToSoundCloudPlaylist(playlist.id, track)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> addTrackToYouTubePlaylist(playlist.id, track)
-        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL ->
+        ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+        ProviderType.TIDAL, ProviderType.LOCAL ->
             libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
     }
 
@@ -3978,10 +3993,11 @@ class AppState(
             return
         }
         // Everything plays through here — pressing a track, and the queue moving on by itself — which is why
-        // this is where a Spotify reference becomes a real recording. A track that cannot be matched is not
-        // played at all, and the queue is left holding the Spotify entry so trying again is possible.
-        val playable = if (track.provider == ProviderType.SPOTIFY && !playsOnSpotify(track)) {
-            resolveSpotify(track)?.also { queue.replace(track.queueKey, it) } ?: return
+        // this is where a reference -- a Spotify, Apple Music, Deezer or Tidal song -- becomes a real recording. A
+        // track that cannot be matched is not played at all, and the queue is left holding the entry so trying
+        // again is possible.
+        val playable = if (track.provider.isReference && !playsOnSpotify(track)) {
+            resolveReference(track)?.also { queue.replace(track.queueKey, it) } ?: return
         } else {
             track
         }
@@ -4277,18 +4293,21 @@ class AppState(
      * the service the listener chose: YouTube Music's radio, SoundCloud's related tracks, Bandcamp's
      * more-from-the-artist, VK's suggestions. Spotify gives apps no recommendations any more, so after a
      * Spotify song it is more from the same artists, on Spotify -- or, playing on Spotify itself, Spotify's
-     * own autoplay, which is followed rather than lined up here. Anything that comes back empty falls back
-     * to YouTube Music's radio, because silence is the one outcome nobody asked for.
+     * own autoplay, which is followed rather than lined up here. After an Apple Music, Deezer or Tidal song it is
+     * whatever that service suggests after it. Anything that comes back empty falls back to YouTube Music's
+     * radio, because silence is the one outcome nobody asked for.
      */
     private suspend fun suggestionsAfter(seed: Track, from: AutoplaySource): Pair<List<Track>, String?> {
         val songs: Pair<List<Track>, String?> = try {
             val context = PlaybackContext(seed.provider, PlaybackOrigin.QUEUE, seedTrackId = seed.id)
-            val spotify = spotifyOrigins[seed.queueKey]
+            val origin = referenceOrigins[seed.queueKey]
             when {
                 from == AutoplaySource.YOUTUBE_MUSIC -> youTubeRadioFor(seed) to YOUTUBE_RADIO
-                spotify != null -> spotifyMore(spotify)
+                origin?.provider == ProviderType.SPOTIFY -> spotifyMore(origin)
+                origin != null -> referenceMore(origin)
                 playsOnSpotify(seed) -> return emptyList<Track>() to SPOTIFY_CHOOSES
                 seed.provider == ProviderType.SPOTIFY -> spotifyMore(seed)
+                seed.provider.isReference -> referenceMore(seed)
                 seed.provider == ProviderType.YOUTUBE_MUSIC || seed.provider == ProviderType.YOUTUBE_VIDEO ->
                     youTubeRadio(seed.id) to YOUTUBE_RADIO
                 seed.provider == ProviderType.SOUNDCLOUD ->
@@ -4331,6 +4350,18 @@ class AppState(
             }.awaitAll().flatten()
         }
         return songs.filterNot { it.id == seed.id }.shuffled() to "More from ${artist.name} on Spotify"
+    }
+
+    /**
+     * What Apple Music, Deezer or Tidal suggests after one of its songs, through its provider's recommendations:
+     * songs of its own, matched on YouTube Music in turn as each is played. Empty where the service has nothing to
+     * say, which hands autoplay to YouTube Music's radio.
+     */
+    private suspend fun referenceMore(seed: Track): Pair<List<Track>, String?> {
+        val provider = providers.firstOrNull { it.type == seed.provider } ?: return emptyList<Track>() to null
+        val context = PlaybackContext(seed.provider, PlaybackOrigin.QUEUE, seedTrackId = seed.id)
+        return provider.getRecommendations(context).filterNot { it.id == seed.id } to
+            "Suggested by ${seed.provider.displayName}"
     }
 
     /**
@@ -4478,20 +4509,21 @@ class AppState(
             delay(WARM_UP_AFTER_MS)
             if (system.isConnectionMetered()) return@launch
             val likeliest = rawRecent.firstOrNull() ?: return@launch
-            if (likeliest.provider == ProviderType.SPOTIFY) return@launch
+            if (likeliest.provider.isReference) return@launch
             prefetch(likeliest)
         }
     }
 
     /** The address for [track], looked up now and remembered by the backend. Quiet about failure. */
     private suspend fun prefetch(track: Track) {
-        // A downloaded track needs no address, and a Spotify track needs matching first -- which is done
-        // here too, since the match is remembered and is the slower half of playing one.
+        // A downloaded track needs no address, and a reference -- a Spotify, Apple Music, Deezer or Tidal track --
+        // needs matching first, which is done here too, since the match is remembered and is the slower half of
+        // playing one.
         if (downloads.localFile(track) != null) return
         // Played by Spotify's app, which needs nothing looked up in advance.
         if (playsOnSpotify(track)) return
-        val playable = if (track.provider == ProviderType.SPOTIFY) {
-            runCatching { resolveSpotify(track, quiet = true) }.getOrNull() ?: return
+        val playable = if (track.provider.isReference) {
+            runCatching { resolveReference(track, quiet = true) }.getOrNull() ?: return
         } else {
             track
         }
@@ -5102,25 +5134,25 @@ class AppState(
     /**
      * The track a download or an export really acts on.
      *
-     * A Spotify track has no audio of its own, so what gets kept on the disk is the recording matched to it,
-     * filed under that recording's own key. This is how a Spotify row in a playlist can still show whether
-     * the song behind it is downloaded — without it, the row would offer to download something already
-     * sitting in the folder.
+     * A Spotify, Apple Music, Deezer or Tidal track has no audio of its own, so what gets kept on the disk is the
+     * recording matched to it, filed under that recording's own key. This is how such a row in a playlist can
+     * still show whether the song behind it is downloaded — without it, the row would offer to download
+     * something already sitting in the folder.
      */
     fun downloadableTrack(track: Track): Track =
-        if (track.provider == ProviderType.SPOTIFY) spotifyMatches[track.id] ?: track else track
+        if (track.provider.isReference) referenceMatches[track] ?: track else track
 
     /**
-     * Runs an action against something that has audio, resolving a Spotify reference first if need be.
+     * Runs an action against something that has audio, resolving a reference first if need be.
      *
      * Resolving costs a search, so this is asynchronous where the direct case is not. Nothing happens when
-     * the song cannot be found, and [resolveSpotify] has already said why.
+     * the song cannot be found, and [resolveReference] has already said why.
      */
     private fun onPlayable(track: Track, act: (Track) -> Unit) {
         if (!canKeep(track)) return libraryNotice(keepRefusal(track))
-        if (track.provider != ProviderType.SPOTIFY) return act(track)
-        spotifyMatches[track.id]?.let { return act(it) }
-        scope.launch { resolveSpotify(track)?.let(act) }
+        if (!track.provider.isReference) return act(track)
+        referenceMatches[track]?.let { return act(it) }
+        scope.launch { resolveReference(track)?.let(act) }
     }
 
     /**
@@ -5141,7 +5173,9 @@ class AppState(
      *
      * Not Bandcamp's. What Bandcamp streams to everybody is there to be heard on the way to being bought,
      * and the file is the artist's to sell -- so Noctorium plays it, and points at the purchase instead.
-     * Not VK's either: VK licenses its music for playing in its own apps, and forbids keeping it.
+     * Not VK's either: VK licenses its music for playing in its own apps, and forbids keeping it. A Spotify, Apple
+     * Music, Deezer or Tidal song may, because what is kept is never theirs: it is the recording it was matched
+     * to on YouTube Music ([downloadableTrack]).
      */
     fun canKeep(track: Track): Boolean = track.provider != ProviderType.BANDCAMP && track.provider != ProviderType.VK
 
@@ -5323,7 +5357,8 @@ private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     // No cookie session to keep. Bandcamp needs only a fan's name and VK keeps a token of its own, so a
     // slot here would send them down the cookie paths below -- which fall back to YouTube's session, and
     // disconnecting either would then have signed YouTube out.
-    ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.LOCAL -> null
+    ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+    ProviderType.TIDAL, ProviderType.LOCAL -> null
 }
 
 /**
@@ -5340,6 +5375,7 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.BANDCAMP -> bandcampUsername.isNotBlank()
     // Signed in: the name is kept exactly as long as the session is.
     ProviderType.VK -> vkAccountName.isNotBlank()
+    ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> false
     ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
 }
 

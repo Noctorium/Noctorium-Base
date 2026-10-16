@@ -103,11 +103,16 @@ internal object AppStateHarness {
         override suspend fun getRecommendations(context: PlaybackContext): List<Track> = emptyList()
     }
 
-    private object Backend : MusicBackend {
+    /** A backend that finds nothing unless a test says what a search finds, and keeps what it was asked. */
+    class Backend(private val found: (ProviderType, String) -> List<Track> = { _, _ -> emptyList() }) : MusicBackend {
+        val searched = java.util.concurrent.CopyOnWriteArrayList<String>()
         override fun useSession(provider: ProviderType, source: CookieSource) = Unit
         override fun useSoundCloudProfile(username: String) = Unit
         override val soundCloudProfile: String = ""
-        override suspend fun search(provider: ProviderType, query: String, limit: Int): List<Track> = emptyList()
+        override suspend fun search(provider: ProviderType, query: String, limit: Int): List<Track> {
+            searched += "$provider $query"
+            return found(provider, query)
+        }
         override suspend fun listPlaylists(provider: ProviderType, url: String, limit: Int): List<Playlist> = emptyList()
         override suspend fun listTracks(provider: ProviderType, url: String, limit: Int): List<Track> = emptyList()
         override suspend fun resolveTracks(provider: ProviderType, url: String, from: Int, to: Int): List<Track> = emptyList()
@@ -151,8 +156,12 @@ internal object AppStateHarness {
         system: SystemBridge = Bridge,
         // The scrobblers, for a test that stands in for their services; the application's own otherwise.
         scrobbleManager: app.noctorium.scrobble.ScrobbleManager? = null,
+        // What a search finds, for a test of matching a song from Spotify, Apple Music, Deezer or Tidal.
+        backend: MusicBackend = Backend(),
+        // Kept in memory unless a test says where, for the same reason as the history.
+        referenceMatches: app.noctorium.matching.ReferenceMatchStore = app.noctorium.matching.ReferenceMatchStore(null, null),
     ): AppState = AppState(
-        ytDlp = Backend,
+        ytDlp = backend,
         credentials = credentials,
         system = system,
         scrobbleManager = scrobbleManager ?: app.noctorium.scrobble.ScrobbleManager(credentials),
@@ -166,6 +175,7 @@ internal object AppStateHarness {
         accountClient = accountClient,
         youTubeMusic = youTubeMusic,
         innertubeKeys = innertubeKeys,
+        referenceMatches = referenceMatches,
     )
 
     /** A YouTube that is never there, so a harness not given one of its own can never reach the real one. */

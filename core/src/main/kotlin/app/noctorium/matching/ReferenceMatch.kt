@@ -1,25 +1,29 @@
-package app.noctorium.spotify
+package app.noctorium.matching
 
-import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
+import app.noctorium.domain.isReference
 import java.text.Normalizer
 import kotlin.math.abs
 
 /**
- * Finding the song a Spotify entry refers to, somewhere it can actually be played from.
+ * Finding the song a reference refers to, somewhere it can actually be played from.
  *
  * Spotify hands over a name, an artist and a length, and no audio -- by design, and there is no way around
- * it that does not mean being Spotify's own player. So a Spotify track is a reference, and this is what
- * resolves the reference: search YouTube Music for the artist and title, then decide whether what came back
- * is really the same recording.
+ * it that does not mean being Spotify's own player. Apple Music, Deezer and Tidal are the same: each plays its
+ * audio in its own players and nowhere else. So a track from any of them is a reference
+ * ([app.noctorium.domain.isReference]), and this is what resolves the reference: search YouTube Music for the
+ * artist and title, then decide whether what came back is really the same recording.
  *
  * That decision is the whole difficulty, and the reason it is a scored one rather than "take the first
  * result". Searching for a song returns its remixes, its live versions, its sped-up edits, hour-long loops
  * of it and covers of it, any of which a search engine is happy to rank first. Playing one of those instead
  * of the song asked for is worse than playing nothing, because nothing is at least obvious. So a candidate
  * has to earn the match, and when none does, none is chosen.
+ *
+ * Written against Spotify, which was the only such service for a long while, and the examples below are still
+ * Spotify's; the other three write their titles the same way, edition wording and all.
  */
-object SpotifyMatch {
+object ReferenceMatch {
     /** Below this, the best candidate is not considered the same recording. */
     internal const val ACCEPT_SCORE = 0.62
 
@@ -46,12 +50,13 @@ object SpotifyMatch {
      * The candidate that is the same recording, or null.
      *
      * Null is a real answer here and is handled as one by the caller: a track Spotify has and YouTube Music
-     * does not is a normal thing to run into, and it is reported rather than substituted.
+     * does not is a normal thing to run into, and it is reported rather than substituted. A candidate that is
+     * itself a reference is never chosen, since it has no more audio than the track it would stand in for.
      */
-    fun choose(spotify: Track, candidates: List<Track>): Track? =
+    fun choose(reference: Track, candidates: List<Track>): Track? =
         candidates.asSequence()
-            .filter { it.provider != ProviderType.SPOTIFY }
-            .map { candidate -> candidate to score(spotify, candidate) }
+            .filter { !it.provider.isReference }
+            .map { candidate -> candidate to score(reference, candidate) }
             .filter { (_, score) -> score >= ACCEPT_SCORE }
             .maxByOrNull { (_, score) -> score }
             ?.first
@@ -68,16 +73,16 @@ object SpotifyMatch {
      * album art rather than a video thumbnail. So the playlist row and the player bar go on agreeing with
      * each other, and with the playlist as the listener knows it.
      */
-    fun resolved(spotify: Track, match: Track): Track = match.copy(
-        title = spotify.title,
+    fun resolved(reference: Track, match: Track): Track = match.copy(
+        title = reference.title,
         // The matched provider's artists are preferred where it named any, because those are the ones whose
         // pages can actually be opened. Spotify's names stand in when the match carried none.
-        artists = match.artists.ifEmpty { spotify.artists.map { it.copy(provider = match.provider) } },
-        album = match.album ?: spotify.album?.copy(provider = match.provider),
-        artworkUrl = spotify.artworkUrl ?: match.artworkUrl,
+        artists = match.artists.ifEmpty { reference.artists.map { it.copy(provider = match.provider) } },
+        album = match.album ?: reference.album?.copy(provider = match.provider),
+        artworkUrl = reference.artworkUrl ?: match.artworkUrl,
         // The length of the recording being played, not the one it stands for. The seek bar is drawn from
         // this, and a bar drawn to Spotify's length would be wrong by however far the two differ.
-        durationMs = match.durationMs ?: spotify.durationMs,
+        durationMs = match.durationMs ?: reference.durationMs,
     )
 
     /**
@@ -87,16 +92,16 @@ object SpotifyMatch {
      * the same name, while a title that reads differently is often the same recording under a slightly
      * different upload name.
      */
-    internal fun score(spotify: Track, candidate: Track): Double {
-        val artist = artistScore(spotify, candidate)
+    internal fun score(reference: Track, candidate: Track): Double {
+        val artist = artistScore(reference, candidate)
         // No artist in common at all: a cover, a tribute, or an unrelated song with the same title. None of
         // those is what was asked for, and no title agreement should be able to rescue it.
         if (artist <= 0.0) return 0.0
 
-        val title = titleScore(spotify.title, candidate.title)
+        val title = titleScore(reference.title, candidate.title)
         if (title <= 0.0) return 0.0
 
-        val duration = durationScore(spotify.durationMs, candidate.durationMs)
+        val duration = durationScore(reference.durationMs, candidate.durationMs)
         // A length far off means a different recording of the same song -- extended, live, looped, or a
         // whole album under one title. Certainty about the names does not change that.
         if (duration <= 0.0) return 0.0
@@ -105,8 +110,8 @@ object SpotifyMatch {
     }
 
     /** Whether the recordings share a performer, allowing for how differently credits are written. */
-    internal fun artistScore(spotify: Track, candidate: Track): Double {
-        val wanted = spotify.artists.map { normalize(it.name) }.filter(String::isNotBlank)
+    internal fun artistScore(reference: Track, candidate: Track): Double {
+        val wanted = reference.artists.map { normalize(it.name) }.filter(String::isNotBlank)
         if (wanted.isEmpty()) return 0.0
         // A YouTube upload often credits the artist only in the video title -- "Artist - Title (Official
         // Video)" on a label's channel -- so the title counts as a place the artist can be named.
@@ -127,8 +132,8 @@ object SpotifyMatch {
     }
 
     /** Whether two titles name the same song, once release wording is set aside. */
-    internal fun titleScore(spotifyTitle: String, candidateTitle: String): Double {
-        val wanted = normalize(strippedTitle(spotifyTitle))
+    internal fun titleScore(referenceTitle: String, candidateTitle: String): Double {
+        val wanted = normalize(strippedTitle(referenceTitle))
         val offered = normalize(candidateTitle)
         if (wanted.isBlank() || offered.isBlank()) return 0.0
 

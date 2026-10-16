@@ -110,6 +110,9 @@ object PlaylistShareLink {
         ProviderType.SPOTIFY -> "P"
         ProviderType.BANDCAMP -> "B"
         ProviderType.VK -> "K"
+        ProviderType.APPLE_MUSIC -> "A"
+        ProviderType.DEEZER -> "D"
+        ProviderType.TIDAL -> "T"
         ProviderType.LOCAL -> "L"
     }
 
@@ -120,6 +123,9 @@ object PlaylistShareLink {
         "P" -> ProviderType.SPOTIFY
         "B" -> ProviderType.BANDCAMP
         "K" -> ProviderType.VK
+        "A" -> ProviderType.APPLE_MUSIC
+        "D" -> ProviderType.DEEZER
+        "T" -> ProviderType.TIDAL
         else -> null
     }
 }

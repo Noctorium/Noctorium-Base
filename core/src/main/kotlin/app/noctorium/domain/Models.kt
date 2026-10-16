@@ -22,8 +22,65 @@ enum class ProviderType(val displayName: String) {
 
     /** VK's music, through the API its own apps use, with the listener's VK account. */
     VK("VK Music"),
+
+    /**
+     * Apple Music: a library and a catalogue to read, never a source to play from, as Spotify is.
+     *
+     * Apple's audio is protected with FairPlay and plays only in Apple's own players, so a song from here is
+     * matched to the same recording on YouTube Music when it is played. Everything is read through the interface
+     * Apple's own web player uses; see [app.noctorium.applemusic.AppleMusicClient].
+     */
+    APPLE_MUSIC("Apple Music"),
+
+    /**
+     * Deezer: its catalogue, its charts and a listener's public profile, matched on YouTube Music to be played.
+     * Deezer's audio plays in Deezer's own players and nowhere else.
+     */
+    DEEZER("Deezer"),
+
+    /**
+     * Tidal: its catalogue and the listener's own collection, through Tidal's official interface, matched on
+     * YouTube Music to be played. Tidal's audio plays in Tidal's own players and nowhere else.
+     */
+    TIDAL("Tidal"),
     LOCAL("Local"),
 }
+
+/**
+ * Whether this service is a library to read rather than a source to play from: Spotify, Apple Music, Deezer and
+ * Tidal, none of which lets another program play its audio. A song from one of them is matched to the same
+ * recording on YouTube Music at the moment it is played -- see [app.noctorium.matching.ReferenceMatch] -- unless
+ * it is a Spotify song the listener chose to hear in Spotify's own app.
+ */
+val ProviderType.isReference: Boolean get() = when (this) {
+    ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> true
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.BANDCAMP,
+    ProviderType.VK, ProviderType.LOCAL -> false
+}
+
+/**
+ * Whether connecting this service is still in beta, so that its sign-in or setup in Settings says [BETA_WARNING]
+ * above it.
+ *
+ * YouTube Music, YouTube and SoundCloud are what Noctorium was built around, and a file on the device has no
+ * service to fall out with. Everything else is reached in a way its service did not make for Noctorium -- a web
+ * player's own interface, a session from its sign-in page, an interface that is new and still changing -- and
+ * any of them can stop working, or take a dim view of an account it sees used like this. Decided once, here, so
+ * every player says the same of the same services.
+ */
+val ProviderType.inBeta: Boolean get() = when (this) {
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.LOCAL -> false
+    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
+    ProviderType.TIDAL -> true
+}
+
+/** [BETA_WARNING] for a service in beta and null for one that is not: what goes above its sign-in in Settings. */
+val ProviderType.betaWarning: String? get() = BETA_WARNING.takeIf { inBeta }
+
+/** What every player says above the sign-in or setup of a service in beta. See [inBeta]. */
+const val BETA_WARNING =
+    "In beta: this service may not work as it should, and there is a small chance it gets your account blocked. " +
+        "Use it at your own risk."
 
 @Serializable
 data class Artist(
@@ -180,7 +237,8 @@ fun Playlist.editableOnService(): Boolean = when (provider) {
     ProviderType.SOUNDCLOUD -> id.isNotEmpty() && id.all(Char::isDigit)
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO ->
         (id.startsWith("PL") || id.startsWith("VL")) && ownedByListener != false
-    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL -> false
+    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL, ProviderType.APPLE_MUSIC,
+    ProviderType.DEEZER, ProviderType.TIDAL -> false
 }
 
 @Serializable

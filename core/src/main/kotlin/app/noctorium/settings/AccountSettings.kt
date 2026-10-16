@@ -531,6 +531,7 @@ data class NoctoriumPreferences(
     /** The equaliser, applied by whichever player is playing. */
     val equalizer: EqualizerSettings = EqualizerSettings(),
     /** The parts of Home the listener put away. Empty is Home as it has always been. */
+    @Serializable(with = HomePartSetSerializer::class)
     val hiddenHomeParts: Set<HomePart> = emptySet(),
     /**
      * The theme, and the colours for it when the theme is the listener's own.
@@ -685,7 +686,11 @@ data class NoctoriumPreferences(
      * began. See [app.noctorium.core.AppState.playFromHome] and [app.noctorium.core.AppState.playFromSearch].
      */
     val homePlay: HomePlay = HomePlay.AUTOPLAY,
-    /** The services that answer a Hybrid search. Each still has to be signed in where it needs that. */
+    /**
+     * The services that answer a Hybrid search. Each still has to be signed in where it needs that. Read a service
+     * at a time, so one from a later version is left out rather than costing every setting in the file.
+     */
+    @Serializable(with = ProviderTypeSetSerializer::class)
     val hybridSearch: Set<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH,
     /** The search mode last chosen, by name, so search opens where it was left. */
     val searchMode: String = "HYBRID",
@@ -1184,7 +1189,15 @@ data class SpotifyConnectionState(
     val device: String = "",
 )
 
-/** Every service a Hybrid search can ask, which is where a fresh install starts. */
+/**
+ * The services a fresh install's Hybrid search asks: every one it can ask, but Apple Music, Deezer and Tidal.
+ *
+ * Those three can only ever be matched on YouTube Music to be played, so each of their results would be a slower,
+ * less certain copy of the YouTube Music result beside it -- the reason Spotify answers only while its songs play
+ * on Spotify. They are there to be chosen, in [HYBRID_SEARCH_SERVICES], by anybody who wants them all the same.
+ * Leaving them out of the default also keeps their names out of a settings file until somebody chooses them, so an
+ * older Noctorium reading the file is not handed names it has never heard of.
+ */
 val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
     app.noctorium.domain.ProviderType.YOUTUBE_MUSIC,
     app.noctorium.domain.ProviderType.YOUTUBE_VIDEO,
@@ -1192,6 +1205,13 @@ val DEFAULT_HYBRID_SEARCH: Set<app.noctorium.domain.ProviderType> = setOf(
     app.noctorium.domain.ProviderType.BANDCAMP,
     app.noctorium.domain.ProviderType.SPOTIFY,
     app.noctorium.domain.ProviderType.VK,
+)
+
+/** Every service a Hybrid search can ask, in the order a choice of them is shown. See [DEFAULT_HYBRID_SEARCH]. */
+val HYBRID_SEARCH_SERVICES: List<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH.toList() + listOf(
+    app.noctorium.domain.ProviderType.APPLE_MUSIC,
+    app.noctorium.domain.ProviderType.DEEZER,
+    app.noctorium.domain.ProviderType.TIDAL,
 )
 
 /** Where autoplay finds what comes after the queue. */
