@@ -249,7 +249,10 @@ class AppleMusicClient internal constructor(
                 if (developerToken.isOwn()) "Apple Music refused your developer token. Check it, or remove it to use the web player's."
                 else "Apple Music refused what its web player reads it with. Try again in a while.",
             )
-            // On a request made as the listener, a refusal is a sign-in Apple no longer takes, or never took.
+            // Apple's word for an account it will not read a library for: one without a subscription.
+            reply.status == 403 && asTheListener && said?.contains("subscription", ignoreCase = true) == true ->
+                AppleMusicUnavailable("Apple Music will not read this account's library without an Apple Music subscription. Apple said: \"$said\"")
+            // On a request made as the listener, any other refusal is a sign-in Apple no longer takes, or never took.
             reply.status == 403 && asTheListener ->
                 AppleMusicUnavailable("Apple Music no longer accepts this sign-in. Sign in to Apple Music again in Settings.", signedOut = true)
             reply.status == 429 -> AppleMusicUnavailable("Apple Music is being asked too much at once. Try again in a moment.")

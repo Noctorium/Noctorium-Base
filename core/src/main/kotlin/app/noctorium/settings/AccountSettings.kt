@@ -1309,7 +1309,7 @@ enum class AutoplaySource(val displayName: String, val description: String) {
         "The same service",
         "YouTube Music's radio after a YouTube song, SoundCloud's related tracks after a SoundCloud one, " +
             "more from the artist after a Bandcamp or Spotify song -- or Spotify's own autoplay, while Spotify " +
-            "plays its songs itself -- and VK's suggestions after a VK song.",
+            "plays its songs itself -- VK's suggestions after a VK song, and Deezer's radio after a Deezer one.",
     ),
     YOUTUBE_MUSIC("YouTube Music radio", "YouTube Music's radio after every song, whatever service it came from."),
 }

@@ -1999,7 +1999,7 @@ class AppState(
                 withContext(Dispatchers.IO) { credentials.put(APPLE_MUSIC_USER_TOKEN, token) }
                 appleMusicToken = true to token
                 updatePreferences { copy(appleMusicSignedIn = true, appleMusicStorefront = storefront) }
-                publishAppleMusicState(message = "Signed in to Apple Music. Your library is in the library, and its songs play matched on YouTube Music.")
+                publishAppleMusicState(message = "Signed in to Apple Music. Your playlists and songs are in the library, and play matched on YouTube Music.")
                 mutableLibrary.update { it.withoutProvider(ProviderType.APPLE_MUSIC).copy(loaded = false) }
                 refreshLibrary(force = true)
                 refreshHome()

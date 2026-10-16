@@ -308,6 +308,11 @@ class AppleMusicClientTest {
 
         val missing = ScriptedApple { _, _ -> HttpReply(404, """{"errors":[{"title":"Resource Not Found","status":"404"}]}""") }
         assertNull(client(missing).song("000", "us"))
+
+        // An account with no subscription is not a sign-in to throw away.
+        val unsubscribed = ScriptedApple { _, _ -> HttpReply(403, """{"errors":[{"title":"Forbidden","detail":"An active subscription is required","status":"403"}]}""") }
+        val subscription = assertFailsWith<AppleMusicUnavailable> { client(unsubscribed).librarySongs("token", "us") }
+        assertTrue(!subscription.signedOut && subscription.message!!.contains("subscription"), subscription.message)
     }
 
     @Test

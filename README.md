@@ -6,7 +6,7 @@ both: the domain model, the Spotify library and the matcher that resolves it, pl
 scrobbling, lyrics, the account, Connect between devices, and the update check.
 
 > Noctorium is an independent third-party client. It is not affiliated with Google, YouTube, SoundCloud,
-> Spotify, Last.fm, ListenBrainz or Discord.
+> Spotify, Bandcamp, VK, Apple, Deezer, TIDAL, Last.fm, ListenBrainz or Discord.
 
 ## The repositories
 
