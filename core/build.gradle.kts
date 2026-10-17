@@ -70,3 +70,18 @@ tasks.register<JavaExec>("connectHarness") {
     // Nothing of a real Noctorium's: its own folder, as the tests have.
     systemProperty("noctorium.home", layout.buildDirectory.dir("harness-home").get().asFile.absolutePath)
 }
+
+/**
+ * Every stream widget, served with made-up songs and photographed in headless Chrome: see StreamWidgetLooks in the
+ * tests. --out takes every look with every song, for looking at; --previews makes the pictures Settings shows.
+ *
+ *     ./gradlew :core:widgetLooks --args="--out build/widget-looks"
+ *     ./gradlew :core:widgetLooks --args="--previews ../jvm/src/main/resources/app/noctorium/widgets/previews"
+ */
+tasks.register<JavaExec>("widgetLooks") {
+    description = "Photographs every stream widget, playing made-up songs, in headless Chrome."
+    classpath = sourceSets["test"].runtimeClasspath
+    mainClass.set("app.noctorium.widgets.StreamWidgetLooksKt")
+    workingDir = projectDir
+    systemProperty("noctorium.home", layout.buildDirectory.dir("looks-home").get().asFile.absolutePath)
+}
