@@ -80,6 +80,16 @@ class NowPlayingLayoutTest {
     }
 
     @Test
+    fun `a glow theme's own light takes the wash's place, and a blurred cover chosen on purpose is kept`() {
+        val wash = NoctoriumPreferences(theme = ThemePreset.AFTERGLOW)
+        val cover = wash.copy(desktop = DesktopPreferences(nowPlaying = NowPlayingPreferences(backdrop = NowPlayingBackdrop.COVER)))
+
+        assertEquals(NowPlayingBackdrop.PLAIN, wash.nowPlayingBackdrop, "the glow is the backdrop")
+        assertEquals(NowPlayingBackdrop.COVER, cover.nowPlayingBackdrop)
+        assertEquals(NowPlayingBackdrop.WASH, wash.copy(theme = ThemePreset.NOCTORIUM_NIGHT).nowPlayingBackdrop)
+    }
+
+    @Test
     fun `every option has a name, and every layout and look says what it is`() {
         assertEquals(12, NowPlayingLayout.entries.size)
         NowPlayingLayout.entries.forEach { assertTrue(it.displayName.isNotBlank() && it.description.isNotBlank(), it.name) }

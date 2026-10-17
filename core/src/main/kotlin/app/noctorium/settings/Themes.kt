@@ -71,7 +71,7 @@ enum class ThemePreset(
      * Near-black pages lit by a soft light, after the music players that let the cover's colour spill onto
      * the page around it: plain white controls, panels and cards barely stepping up from the page, and all
      * the colour in the light. Afterglow's is the playing cover's, behind the now playing screen and rising
-     * up beside it, and red until there is a cover to follow; Ember holds it at that red, for the look without
+     * up beside it, and red until there is a cover to follow; Cinder holds it at that red, for the look without
      * it changing every song. Velvet is a flat black under a plum light across the top, gone before the
      * middle, and Smoke is the same in no colour at all.
      *
@@ -84,8 +84,8 @@ enum class ThemePreset(
         "Afterglow", "Glow", ThemeColours(0xFF0B0A0A, 0xFF121111, 0xFF1A1A1A, 0xFFF6F2F1, 0xFFA8A2A0, 0xFFFFF7F4),
         glow = ThemeGlow(0xFFC41E0C, followsArtwork = true, placement = GlowPlacement.ARTWORK, strength = .34f),
     ),
-    EMBER(
-        "Ember", "Glow", ThemeColours(0xFF0B0A0A, 0xFF121111, 0xFF1A1A1A, 0xFFF6F2F1, 0xFFA8A2A0, 0xFFD93826),
+    CINDER(
+        "Cinder", "Glow", ThemeColours(0xFF0B0A0A, 0xFF121111, 0xFF1A1A1A, 0xFFF6F2F1, 0xFFA8A2A0, 0xFFD93826),
         glow = ThemeGlow(0xFFC41E0C, placement = GlowPlacement.ARTWORK, strength = .28f),
     ),
     VELVET(

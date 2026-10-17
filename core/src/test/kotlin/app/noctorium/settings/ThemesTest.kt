@@ -195,20 +195,20 @@ class ThemesTest {
 
     @Test
     fun `the Glow themes come after the palettes and before the Windows ones, each with its light`() {
-        val glow = listOf(ThemePreset.AFTERGLOW, ThemePreset.EMBER, ThemePreset.VELVET, ThemePreset.SMOKE)
+        val glow = listOf(ThemePreset.AFTERGLOW, ThemePreset.CINDER, ThemePreset.VELVET, ThemePreset.SMOKE)
         assertEquals(glow, ThemePreset.entries.filter { it.family == "Glow" })
         assertEquals(ThemePreset.SOLARIZED_LIGHT.ordinal + 1, ThemePreset.AFTERGLOW.ordinal)
         assertEquals(ThemePreset.SMOKE.ordinal + 1, ThemePreset.WINDOWS_98.ordinal)
         assertEquals(ThemePreset.CUSTOM, ThemePreset.entries.last())
-        assertEquals(listOf("Afterglow", "Ember", "Velvet", "Smoke"), glow.map { it.displayName })
+        assertEquals(listOf("Afterglow", "Cinder", "Velvet", "Smoke"), glow.map { it.displayName })
 
         val afterglow = ThemePreset.AFTERGLOW.glow!!
         assertTrue(afterglow.followsArtwork, "Afterglow's light is the cover's")
         assertEquals(GlowPlacement.ARTWORK, afterglow.placement)
-        val ember = ThemePreset.EMBER.glow!!
-        assertEquals(false, ember.followsArtwork, "Ember holds its red still")
-        assertEquals(GlowPlacement.ARTWORK, ember.placement)
-        assertEquals(afterglow.colour, ember.colour, "Ember is Afterglow's fallback, held")
+        val cinder = ThemePreset.CINDER.glow!!
+        assertEquals(false, cinder.followsArtwork, "Cinder holds its red still")
+        assertEquals(GlowPlacement.ARTWORK, cinder.placement)
+        assertEquals(afterglow.colour, cinder.colour, "Cinder is Afterglow's fallback, held")
         listOf(ThemePreset.VELVET, ThemePreset.SMOKE).forEach { preset ->
             assertEquals(GlowPlacement.TOP, preset.glow?.placement, "${preset.name}: a band across the top")
             assertEquals(false, preset.glow?.followsArtwork)
@@ -218,8 +218,8 @@ class ThemesTest {
         assertTrue(((plum shr 16) and 0xFF) > (plum and 0xFF) && (plum and 0xFF) > ((plum shr 8) and 0xFF), "Velvet: ${plum.toHexColour()}")
         val smoke = ThemePreset.SMOKE.glow!!.colour
         assertEquals(setOf(smoke and 0xFF), setOf((smoke shr 16) and 0xFF, (smoke shr 8) and 0xFF, smoke and 0xFF), "Smoke is a grey")
-        // Afterglow and Ember are one page and Velvet and Smoke another; only the light and Ember's accent differ.
-        assertEquals(ThemePreset.AFTERGLOW.colours!!.copy(accent = 0), ThemePreset.EMBER.colours!!.copy(accent = 0))
+        // Afterglow and Cinder are one page and Velvet and Smoke another; only the light and Cinder's accent differ.
+        assertEquals(ThemePreset.AFTERGLOW.colours!!.copy(accent = 0), ThemePreset.CINDER.colours!!.copy(accent = 0))
         assertEquals(ThemePreset.VELVET.colours, ThemePreset.SMOKE.colours)
     }
 
@@ -254,7 +254,7 @@ class ThemesTest {
     @Test
     fun `writing on the accent is dark on a white one and white on a deep one`() {
         assertEquals(0xFF292929, onAccent(0xFFFFFFFF), "a white button's label is near-black")
-        assertEquals(0xFFFFFFFF, onAccent(0xFFD93826), "Ember's red keeps a white label")
+        assertEquals(0xFFFFFFFF, onAccent(0xFFD93826), "Cinder's red keeps a white label")
         assertEquals(0xFFFFFFFF, onAccent(0xFF000080), "98's navy")
         // The sums the players already did, so a theme that was right before is the same now: the accent
         // taken 84% of the way to black on a bright one, white on the rest.

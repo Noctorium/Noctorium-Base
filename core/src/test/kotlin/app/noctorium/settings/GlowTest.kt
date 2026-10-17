@@ -130,8 +130,8 @@ class GlowTest {
         }
 
         // A light that does not follow the artwork is its own colour whatever is playing.
-        val ember = ThemePreset.EMBER.glow!!
-        assertEquals(ember.colour, ember.resolvedColour(0xFF2A7AC8))
+        val cinder = ThemePreset.CINDER.glow!!
+        assertEquals(cinder.colour, cinder.resolvedColour(0xFF2A7AC8))
         assertEquals(ThemePreset.VELVET.glow!!.colour, ThemePreset.VELVET.glow!!.resolvedColour(0xFF2A7AC8))
     }
 

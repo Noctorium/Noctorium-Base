@@ -1126,12 +1126,18 @@ enum class NowPlayingBackdrop(val displayName: String, val description: String) 
  * Plain whenever the ambient backdrop is switched off, which is how settings saved before there was a choice
  * of backdrop said they wanted none; otherwise the chosen one, with a stored Plain read as the wash because
  * the switch says there should be something.
+ *
+ * A theme with a [ThemeGlow] has a light of its own under everything, and on the now playing screen that light
+ * is the point of it -- Afterglow's is the colour of the cover already. The wash laid over it would hide it, so
+ * on such a theme the wash gives way to the page itself, glow and all. A blurred cover, chosen on purpose, is
+ * still drawn.
  */
 val NoctoriumPreferences.nowPlayingBackdrop: NowPlayingBackdrop
     get() = when {
         !ambientBackdrop -> NowPlayingBackdrop.PLAIN
-        desktop.nowPlaying.backdrop == NowPlayingBackdrop.PLAIN -> NowPlayingBackdrop.WASH
-        else -> desktop.nowPlaying.backdrop
+        desktop.nowPlaying.backdrop == NowPlayingBackdrop.COVER -> NowPlayingBackdrop.COVER
+        themeGlow != null -> NowPlayingBackdrop.PLAIN
+        else -> NowPlayingBackdrop.WASH
     }
 
 enum class ScrobbleConnectionStatus { DISCONNECTED, CONNECTING, AWAITING_APPROVAL, CONNECTED, ERROR }
