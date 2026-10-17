@@ -30,6 +30,9 @@ data class ThemeColours(
  * flavours, which SpMp shipped in-app, and a few others of the same standing. The colour values are the
  * published ones; a palette is a set of numbers, and these are the numbers. CUSTOM has no colours of its
  * own -- the listener's are kept in the preferences beside the choice.
+ *
+ * Saved by name, so the order here is only the order they are offered in, and a name an older build has
+ * never heard of costs that build the theme and nothing else: see SettingsRepository's coerceInputValues.
  */
 @Serializable
 enum class ThemePreset(
@@ -38,6 +41,8 @@ enum class ThemePreset(
     val colours: ThemeColours?,
     /** How it is drawn beyond its colours. Nearly every theme is only colours. */
     val skin: ThemeSkin = ThemeSkin.STANDARD,
+    /** The light laid across its page, for the few that have one. See [ThemeGlow]. */
+    val glow: ThemeGlow? = null,
 ) {
     NOCTORIUM_NIGHT("Night", "Noctorium", ThemeColours(0xFF000000, 0xFF07050A, 0xFF15101C, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF)),
     NOCTORIUM_DUSK("Dusk", "Noctorium", ThemeColours(0xFF0D0B12, 0xFF141019, 0xFF1D1826, 0xFFF3F1F8, 0xFFC9C2D6, 0xFFB47CFF)),
@@ -62,6 +67,35 @@ enum class ThemePreset(
     TOKYO_NIGHT("Tokyo Night", "Tokyo Night", ThemeColours(0xFF1A1B26, 0xFF16161E, 0xFF24283B, 0xFFC0CAF5, 0xFFA9B1D6, 0xFF7AA2F7)),
     SOLARIZED_DARK("Solarized Dark", "Solarized", ThemeColours(0xFF002B36, 0xFF073642, 0xFF0D3D49, 0xFFEEE8D5, 0xFF93A1A1, 0xFF268BD2)),
     SOLARIZED_LIGHT("Solarized Light", "Solarized", ThemeColours(0xFFFDF6E3, 0xFFEEE8D5, 0xFFE7E0C9, 0xFF073642, 0xFF586E75, 0xFF268BD2, light = true)),
+    /*
+     * Near-black pages lit by a soft light, after the music players that let the cover's colour spill onto
+     * the page around it: plain white controls, panels and cards barely stepping up from the page, and all
+     * the colour in the light. Afterglow's is the playing cover's, behind the now playing screen and rising
+     * up beside it, and red until there is a cover to follow; Ember holds it at that red, for the look without
+     * it changing every song. Velvet is a flat black under a plum light across the top, gone before the
+     * middle, and Smoke is the same in no colour at all.
+     *
+     * White is the accent of three of them, because white is what those players draw their controls in,
+     * leaving the colour to the light; "Match the artwork" is still there for anybody who wants the controls
+     * in it too. So a button here is white with a dark label on it, which is what [onAccent] is for. The
+     * light itself is a [ThemeGlow].
+     */
+    AFTERGLOW(
+        "Afterglow", "Glow", ThemeColours(0xFF0B0A0A, 0xFF121111, 0xFF1A1A1A, 0xFFF6F2F1, 0xFFA8A2A0, 0xFFFFF7F4),
+        glow = ThemeGlow(0xFFC41E0C, followsArtwork = true, placement = GlowPlacement.ARTWORK, strength = .34f),
+    ),
+    EMBER(
+        "Ember", "Glow", ThemeColours(0xFF0B0A0A, 0xFF121111, 0xFF1A1A1A, 0xFFF6F2F1, 0xFFA8A2A0, 0xFFD93826),
+        glow = ThemeGlow(0xFFC41E0C, placement = GlowPlacement.ARTWORK, strength = .28f),
+    ),
+    VELVET(
+        "Velvet", "Glow", ThemeColours(0xFF0A0A0A, 0xFF0F0F0F, 0xFF141414, 0xFFF7F7F7, 0xFFA7A7A7, 0xFFFFFFFF),
+        glow = ThemeGlow(0xFF7A2450, placement = GlowPlacement.TOP, strength = .2f),
+    ),
+    SMOKE(
+        "Smoke", "Glow", ThemeColours(0xFF0A0A0A, 0xFF0F0F0F, 0xFF141414, 0xFFF7F7F7, 0xFFA7A7A7, 0xFFFFFFFF),
+        glow = ThemeGlow(0xFF8C8C8C, placement = GlowPlacement.TOP, strength = .1f),
+    ),
     /*
      * Two desktops everybody of a certain age can picture. 98 is the grey of its window face with white
      * where a list sat and the navy of a title bar for the accent; XP is Luna's beige page, the pale blue of
@@ -309,7 +343,8 @@ object WindowsXpColours {
  * The accent in force, given what the artwork offered.
  *
  * "Theme's own" takes the theme's accent; "Match the artwork" takes the cover's colour and falls back to
- * the theme's when there is no cover or nothing was sampled from it; a named accent is itself.
+ * the theme's when there is no cover or nothing was sampled from it; a named accent is itself. The cover's
+ * colour is the one [ArtworkColour.of] finds, the same one an artwork glow takes its light from.
  */
 fun NoctoriumPreferences.resolvedAccent(artworkArgb: Long?): Long = when (accent) {
     AccentPreset.THEME -> themeColours().accent
@@ -353,7 +388,34 @@ fun contrastRatio(foreground: Long, background: Long): Double {
     return (lighter + 0.05) / (darker + 0.05)
 }
 
-private fun relativeLuminance(argb: Long): Double {
+/**
+ * The colour of writing and icons laid on [accent]: a button's label, the triangle on a play button, the tick
+ * on a chosen chip, the thumb of a switch that is on.
+ *
+ * Dark on a bright accent and white on a deep one, the dark being the accent itself taken most of the way to
+ * black so that it still belongs to it. These are the sums the desktop and the phone each did for themselves,
+ * brought here once the Glow themes made the accent white, since a white button with a white triangle on it
+ * is a white circle. It is here for every player to take -- Material's onPrimary on the desktop and the phone,
+ * the web's --on-accent, the terminal's -- so that a label is the same colour everywhere, where the web and
+ * the terminal each had their own idea of how bright is bright.
+ */
+fun onAccent(accent: Long): Long =
+    if (relativeLuminance(accent) > .35) mixColours(accent, 0xFF000000, .84) else 0xFFFFFFFF
+
+/** Writing on this theme's own accent. For the accent in force, which may not be the theme's, [onAccent] that. */
+val ThemeColours.onAccent: Long get() = onAccent(accent)
+
+/** [from] taken [ratio] of the way to [to], channel by channel, rounded as Compose rounds a colour. */
+private fun mixColours(from: Long, to: Long, ratio: Double): Long {
+    fun channel(shift: Int): Long {
+        val a = (from shr shift) and 0xFF
+        val b = (to shr shift) and 0xFF
+        return Math.round(a + (b - a) * ratio).coerceIn(0, 255) shl shift
+    }
+    return 0xFF000000L or channel(16) or channel(8) or channel(0)
+}
+
+internal fun relativeLuminance(argb: Long): Double {
     fun channel(shift: Int): Double {
         val c = ((argb shr shift) and 0xFF) / 255.0
         return if (c <= 0.03928) c / 12.92 else Math.pow((c + 0.055) / 1.055, 2.4)
