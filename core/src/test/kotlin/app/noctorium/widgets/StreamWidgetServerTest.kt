@@ -108,6 +108,18 @@ class StreamWidgetServerTest {
     }
 
     @Test
+    fun `starting again on the same port, for the network and back, is never refused it`() {
+        // On Linux the port outlived a stop by a few milliseconds, and the start straight after it was refused the
+        // port as in use. Twenty turns, each with a request answered first, so the moment cannot be missed.
+        val port = (server.start(0, allowNetwork = false) as StreamWidgetStatus.Running).port
+        repeat(20) { turn ->
+            assertEquals(200, RawHttp.request(port, path = "/api/now-playing").status)
+            val again = server.start(port, allowNetwork = turn % 2 == 0)
+            assertTrue(again is StreamWidgetStatus.Running && again.port == port, "turn $turn: $again")
+        }
+    }
+
+    @Test
     fun `allowing the network listens on every address and says where to find it`() {
         val status = server.start(0, allowNetwork = true) as StreamWidgetStatus.Running
         assertTrue(server.listeningOn!!.isAnyLocalAddress, "listening on ${server.listeningOn}")

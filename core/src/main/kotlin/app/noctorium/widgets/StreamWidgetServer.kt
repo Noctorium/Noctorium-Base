@@ -83,6 +83,7 @@ class StreamWidgetServer(
 ) : AutoCloseable {
     @Volatile private var server: ServerSocket? = null
     @Volatile private var workers: ThreadPoolExecutor? = null
+    @Volatile private var acceptor: Thread? = null
     @Volatile private var closed = false
 
     /** The covers of the songs lately reported, by the key a page asks for them with. */
@@ -124,7 +125,7 @@ class StreamWidgetServer(
         }
         server = socket
         workers = pool
-        Thread({ accept(socket, pool) }, "noctorium-stream-widgets-accept").apply { isDaemon = true }.start()
+        acceptor = Thread({ accept(socket, pool) }, "noctorium-stream-widgets-accept").apply { isDaemon = true }.also(Thread::start)
         log("Stream widgets listening on ${socket.localPort}${if (allowNetwork) " for the network" else ""}")
         return StreamWidgetStatus.Running(
             port = socket.localPort,
@@ -133,10 +134,21 @@ class StreamWidgetServer(
         )
     }
 
+    /**
+     * Stops listening, and returns once the port is free again.
+     *
+     * On Linux, closing a socket that another thread is waiting on leaves the last of the close to that thread: the
+     * port went on taking connections for some 25 ms, and a [start] straight after -- the network allowed or taken
+     * back, on the same port -- was refused it as in use. Waiting for the thread that accepts makes stopping mean
+     * stopped there as it already does on Windows and macOS. That thread takes no lock of this server, so waiting for
+     * it here cannot hold it up.
+     */
     @Synchronized
     fun stop() {
         runCatching { server?.close() }
         server = null
+        acceptor?.takeIf { it !== Thread.currentThread() }?.join(STOP_WAIT_MS)
+        acceptor = null
         workers?.shutdownNow()
         workers = null
     }
@@ -348,6 +360,8 @@ class StreamWidgetServer(
         private const val READ_TIMEOUT_MS = 5_000
         private const val DISCARD_FOR_MS = 300
         private const val BACKLOG = 32
+        /** How long [stop] waits for the port to be let go of; it is gone in a few milliseconds. */
+        private const val STOP_WAIT_MS = 1_000L
 
         /** One or two widgets on a stream ask once a second each; sixteen at once is a page gone wrong. */
         private const val MAX_WORKERS = 16
