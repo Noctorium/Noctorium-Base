@@ -1,6 +1,7 @@
 package app.noctorium.settings
 
 import kotlinx.serialization.json.Json
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -189,6 +190,106 @@ class ThemesTest {
             WindowsXpColours.GROUP_TITLE to WindowsXpColours.FACE,
         ).forEach { (text, behind) ->
             assertTrue(contrastRatio(text, behind) >= 3.0, "%08X on %08X".format(text, behind))
+        }
+    }
+
+    @Test
+    fun `the Glow themes come after the palettes and before the Windows ones, each with its light`() {
+        val glow = listOf(ThemePreset.AFTERGLOW, ThemePreset.CINDER, ThemePreset.VELVET, ThemePreset.SMOKE)
+        assertEquals(glow, ThemePreset.entries.filter { it.family == "Glow" })
+        assertEquals(ThemePreset.SOLARIZED_LIGHT.ordinal + 1, ThemePreset.AFTERGLOW.ordinal)
+        assertEquals(ThemePreset.SMOKE.ordinal + 1, ThemePreset.WINDOWS_98.ordinal)
+        assertEquals(ThemePreset.CUSTOM, ThemePreset.entries.last())
+        assertEquals(listOf("Afterglow", "Cinder", "Velvet", "Smoke"), glow.map { it.displayName })
+
+        val afterglow = ThemePreset.AFTERGLOW.glow!!
+        assertTrue(afterglow.followsArtwork, "Afterglow's light is the cover's")
+        assertEquals(GlowPlacement.ARTWORK, afterglow.placement)
+        val cinder = ThemePreset.CINDER.glow!!
+        assertEquals(false, cinder.followsArtwork, "Cinder holds its red still")
+        assertEquals(GlowPlacement.ARTWORK, cinder.placement)
+        assertEquals(afterglow.colour, cinder.colour, "Cinder is Afterglow's fallback, held")
+        listOf(ThemePreset.VELVET, ThemePreset.SMOKE).forEach { preset ->
+            assertEquals(GlowPlacement.TOP, preset.glow?.placement, "${preset.name}: a band across the top")
+            assertEquals(false, preset.glow?.followsArtwork)
+        }
+        // Velvet's light is plum and Smoke's has no colour in it at all.
+        val plum = ThemePreset.VELVET.glow!!.colour
+        assertTrue(((plum shr 16) and 0xFF) > (plum and 0xFF) && (plum and 0xFF) > ((plum shr 8) and 0xFF), "Velvet: ${plum.toHexColour()}")
+        val smoke = ThemePreset.SMOKE.glow!!.colour
+        assertEquals(setOf(smoke and 0xFF), setOf((smoke shr 16) and 0xFF, (smoke shr 8) and 0xFF, smoke and 0xFF), "Smoke is a grey")
+        // Afterglow and Cinder are one page and Velvet and Smoke another; only the light and Cinder's accent differ.
+        assertEquals(ThemePreset.AFTERGLOW.colours!!.copy(accent = 0), ThemePreset.CINDER.colours!!.copy(accent = 0))
+        assertEquals(ThemePreset.VELVET.colours, ThemePreset.SMOKE.colours)
+    }
+
+    @Test
+    fun `no theme but the Glow ones has a light, and the listener's own colours have none`() {
+        assertEquals(
+            ThemePreset.entries.filter { it.family == "Glow" },
+            ThemePreset.entries.filter { it.glow != null },
+        )
+        assertNull(NoctoriumPreferences(theme = ThemePreset.CUSTOM).themeGlow)
+        assertNull(NoctoriumPreferences().themeGlow, "Night, the default, is as it was")
+        assertEquals(ThemePreset.VELVET.glow, NoctoriumPreferences(theme = ThemePreset.VELVET).themeGlow)
+    }
+
+    @Test
+    fun `the Glow themes' writing reads on the page, on a card and on the accent`() {
+        ThemePreset.entries.filter { it.family == "Glow" }.forEach { preset ->
+            val colours = preset.colours!!
+            listOf(
+                "text on the page" to contrastRatio(colours.text, colours.background),
+                "text on a card" to contrastRatio(colours.text, colours.card),
+                "text on a panel" to contrastRatio(colours.text, colours.panel),
+                "subtext on the page" to contrastRatio(colours.subtext, colours.background),
+                "subtext on a card" to contrastRatio(colours.subtext, colours.card),
+                "writing on the accent" to contrastRatio(colours.onAccent, colours.accent),
+            ).forEach { (what, ratio) -> assertTrue(ratio >= 4.5, "${preset.name}: $what is ${"%.2f".format(ratio)}") }
+            // The accent is a slider's fill and a chosen tab's colour on the page as well as a button's face.
+            assertTrue(contrastRatio(colours.accent, colours.background) >= 4.0, "${preset.name}: the accent on the page")
+        }
+    }
+
+    @Test
+    fun `writing on the accent is dark on a white one and white on a deep one`() {
+        assertEquals(0xFF292929, onAccent(0xFFFFFFFF), "a white button's label is near-black")
+        assertEquals(0xFFFFFFFF, onAccent(0xFFD93826), "Cinder's red keeps a white label")
+        assertEquals(0xFFFFFFFF, onAccent(0xFF000080), "98's navy")
+        // The sums the players already did, so a theme that was right before is the same now: the accent
+        // taken 84% of the way to black on a bright one, white on the rest.
+        assertEquals(0xFF0F241C, onAccent(AccentPreset.MINT.argb!!))
+        assertEquals(0xFFFFFFFF, onAccent(ThemePreset.NOCTORIUM_NIGHT.colours!!.accent))
+        assertEquals(onAccent(ThemePreset.VELVET.colours!!.accent), ThemePreset.VELVET.colours!!.onAccent)
+        listOf(ThemePreset.AFTERGLOW, ThemePreset.VELVET, ThemePreset.SMOKE).forEach { preset ->
+            val colours = preset.colours!!
+            assertTrue(contrastRatio(colours.onAccent, colours.accent) >= 12.0, "${preset.name}: dark on white, plainly")
+        }
+    }
+
+    @Test
+    fun `a Glow theme is kept by name, and a theme from a later version costs that choice and nothing else`() {
+        val directory = Files.createTempDirectory("noctorium-glow-themes")
+        try {
+            val file = directory.resolve("settings.json")
+            val repository = SettingsRepository(file)
+            ThemePreset.entries.filter { it.family == "Glow" }.forEach { preset ->
+                repository.save(NoctoriumPreferences(profileName = "Kept", theme = preset, accent = AccentPreset.ARTWORK))
+                assertTrue("\"${preset.name}\"" in Files.readString(file), "${preset.name} is written by its name")
+                val reread = repository.load()
+                assertEquals(preset, reread.theme)
+                assertEquals(AccentPreset.ARTWORK, reread.accent)
+            }
+
+            // What an older build finds when a newer one has saved a theme it has never heard of.
+            Files.writeString(file, """{"profileName":"Kept","theme":"AURORA","accent":"MINT","cardSize":"LARGE"}""")
+            val older = repository.load()
+            assertEquals("Kept", older.profileName, "the rest of the file was thrown away")
+            assertEquals(ThemePreset.NOCTORIUM_NIGHT, older.theme)
+            assertEquals(AccentPreset.MINT, older.accent)
+            assertEquals(CardSize.LARGE, older.cardSize)
+        } finally {
+            directory.toFile().deleteRecursively()
         }
     }
 
