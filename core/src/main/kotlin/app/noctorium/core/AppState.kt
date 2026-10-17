@@ -158,6 +158,12 @@ import app.noctorium.update.fetchAndInstall
 import app.noctorium.update.shouldPromptAbout
 import app.noctorium.account.NoctoriumUser
 import app.noctorium.settings.*
+import app.noctorium.widgets.StreamWidgetPreferences
+import app.noctorium.widgets.StreamWidgetServer
+import app.noctorium.widgets.StreamWidgetStatus
+import app.noctorium.widgets.StreamWidgetTheme
+import app.noctorium.widgets.WidgetAccent
+import app.noctorium.widgets.WidgetPlayback
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.NonCancellable
@@ -997,6 +1003,27 @@ class AppState(
     /** The artist of the YouTube song that is playing, and whether the account follows them. Null until known. */
     val artistFollow: StateFlow<YouTubeArtist?> = mutableArtistFollow.asStateFlow()
 
+    /**
+     * The stream widgets' server, which follows their setting: see [streamWidgets]. Declared up here with the rest of
+     * what the watchers started in init reach for.
+     */
+    private val widgetServer = StreamWidgetServer(
+        playback = ::widgetPlayback,
+        preferences = { mutableSettings.value.preferences.streamWidgets },
+        accent = ::widgetAccent,
+        log = { PlaybackLog.event("stream_widgets", mapOf("message" to it)) },
+    )
+    private val mutableStreamWidgets = MutableStateFlow<StreamWidgetStatus>(StreamWidgetStatus.Off)
+
+    /**
+     * Whether the stream widgets are being served, and at what addresses, or why they could not be: what their part
+     * of Settings says. Off whenever they are switched off, which is how they start.
+     */
+    val streamWidgets: StateFlow<StreamWidgetStatus> = mutableStreamWidgets.asStateFlow()
+
+    /** Counts the times the widgets were asked to try their port again, so asking is a change even when nothing else is. */
+    private val widgetRetries = MutableStateFlow(0)
+
     private val accountJobs = ConcurrentHashMap<ProviderType, Job>()
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -1029,6 +1056,7 @@ class AppState(
         observeNonMusicSegments()
         if (refreshAtLaunch) warmUpForTheLikeliestPlay()
         observeDiscordPresence()
+        observeStreamWidgets()
         observePlayingHereWhileDriving()
         observeYouTubeSignIn()
         observeYouTubeHistory()
@@ -5608,6 +5636,93 @@ class AppState(
         }
     }
 
+    // --- Stream widgets ---
+
+    /**
+     * Every stream widget option goes through here, as Discord's do. The server follows what is saved: it starts when
+     * the widgets are switched on, stops when they are switched off, and starts again on the new port or the new
+     * choice about the network. Every other option is read by the widgets themselves within a second.
+     */
+    fun updateStreamWidgets(transform: (StreamWidgetPreferences) -> StreamWidgetPreferences) =
+        updatePreferences { copy(streamWidgets = transform(streamWidgets)) }
+
+    fun setStreamWidgetsEnabled(enabled: Boolean) = updateStreamWidgets { it.copy(enabled = enabled) }
+
+    /**
+     * Moves the widgets to [port], and says false without saving anything for one no program could listen on: see
+     * [StreamWidgetPreferences.PORTS]. Whether the port is free is only known by trying, which [streamWidgets] reports.
+     */
+    fun setStreamWidgetPort(port: Int): Boolean {
+        if (port !in StreamWidgetPreferences.PORTS) return false
+        updateStreamWidgets { it.copy(port = port) }
+        return true
+    }
+
+    fun setStreamWidgetTheme(theme: StreamWidgetTheme) = updateStreamWidgets { it.copy(theme = theme) }
+
+    fun setStreamWidgetCover(shown: Boolean) = updateStreamWidgets { it.copy(showCover = shown) }
+
+    fun setStreamWidgetProgress(shown: Boolean) = updateStreamWidgets { it.copy(showProgress = shown) }
+
+    fun setStreamWidgetServiceLogo(shown: Boolean) = updateStreamWidgets { it.copy(showServiceLogo = shown) }
+
+    fun setStreamWidgetHideWhenPaused(hide: Boolean) = updateStreamWidgets { it.copy(hideWhenPaused = hide) }
+
+    fun setStreamWidgetHideAfterSeconds(seconds: Int) =
+        updateStreamWidgets { it.copy(hideAfterSeconds = seconds.coerceIn(StreamWidgetPreferences.HIDE_AFTER_SECONDS)) }
+
+    fun setStreamWidgetAllowNetwork(allowed: Boolean) = updateStreamWidgets { it.copy(allowNetwork = allowed) }
+
+    /** Tries the same port again: for after Settings said another program had it, and that program has let it go. */
+    fun retryStreamWidgets() = widgetRetries.update { it + 1 }
+
+    /** The part of the widgets' setting that decides where the server listens, and so when it has to start again. */
+    private data class WidgetListening(val enabled: Boolean, val port: Int, val network: Boolean)
+
+    /**
+     * Starts, stops and restarts the widgets' server as their setting changes, on a thread of its own: binding a port
+     * is a call into the system, and nothing about it is allowed near launch or the window. Switched off -- as it is
+     * unless somebody switched it on -- this does nothing but say so. Whatever goes wrong is said in [streamWidgets]
+     * and goes no further: a widget that cannot start is never a reason for the player not to.
+     */
+    private fun observeStreamWidgets() {
+        scope.launch(Dispatchers.IO) {
+            combine(
+                mutableSettings
+                    .map { it.preferences.streamWidgets.let { widgets -> WidgetListening(widgets.enabled, widgets.portInUse, widgets.allowNetwork) } }
+                    .distinctUntilChanged(),
+                widgetRetries,
+            ) { listening, _ -> listening }.collect { listening ->
+                if (!listening.enabled) {
+                    widgetServer.stop()
+                    mutableStreamWidgets.value = StreamWidgetStatus.Off
+                    return@collect
+                }
+                mutableStreamWidgets.value = StreamWidgetStatus.Starting(listening.port)
+                mutableStreamWidgets.value = runCatching { widgetServer.start(listening.port, listening.network) }
+                    .getOrElse { StreamWidgetStatus.Failed(listening.port, StreamWidgetServer.failureReason(listening.port, it)) }
+            }
+        }
+    }
+
+    /** What is playing, for the widgets: what the player shows, with a matched song shown as from where it was picked. */
+    private fun widgetPlayback(): WidgetPlayback {
+        val now = shownPlayback.value
+        val track = now.track
+        return WidgetPlayback(
+            track = track,
+            service = track?.let { referenceOrigins[it.queueKey]?.provider ?: it.provider },
+            status = now.status,
+            positionMs = now.positionMs,
+            durationMs = now.durationMs,
+        )
+    }
+
+    /** The listener's accent, so the widgets match the player; "Match the artwork" is left to the page, which has the cover. */
+    private fun widgetAccent(): WidgetAccent = mutableSettings.value.preferences.let { preferences ->
+        WidgetAccent(preferences.resolvedAccent(null), fromArtwork = preferences.accent == AccentPreset.ARTWORK)
+    }
+
     // --- Pasted links ---
 
     private val mutableLink = MutableStateFlow(LinkState())
@@ -6008,6 +6123,7 @@ class AppState(
         player.close()
         connectManager.close()
         discordPresence.close()
+        widgetServer.close()
         downloads.close()
         scope.cancel()
     }

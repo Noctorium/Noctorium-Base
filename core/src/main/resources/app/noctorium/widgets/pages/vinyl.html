@@ -1,0 +1,126 @@
+<!doctype html>
+<!--
+  Vinyl: a record that turns while the music plays and stands still when it is paused, with the cover as its label,
+  and the song on a dark panel beside it.
+
+  The grooves are rings, which look the same at any angle, so only the label shows the record turning; the light
+  across it is a layer of its own that does not turn, as light on a real record does not. A full turn takes 1.8
+  seconds, which is 33 1/3 revolutions a minute.
+-->
+<html lang="en" data-width="640" data-height="220" data-accent="#b47cff">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium stream widget: Vinyl</title>
+<style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    * { box-sizing: border-box; }
+
+    .widget {
+        position: absolute; inset: 0;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+        color: #fff;
+        transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1);
+    }
+    .is-hidden .widget { opacity: 0; transform: translateX(-16px); }
+
+    .panel {
+        position: absolute; left: 104px; right: 10px; top: 34px; bottom: 34px; border-radius: 22px;
+        background: linear-gradient(100deg, rgba(14, 11, 20, .95), rgba(14, 11, 20, .91));
+        box-shadow: 0 10px 28px rgba(0, 0, 0, .40), inset 0 0 0 1px rgba(255, 255, 255, .10), inset 0 1px 0 rgba(255, 255, 255, .12);
+        overflow: hidden;
+    }
+    .panel::before {
+        content: ""; position: absolute; inset: 0;
+        background: radial-gradient(90% 160% at 0% 50%, rgba(var(--accent-rgb), .22), transparent 70%);
+    }
+
+    .record { position: absolute; left: 10px; top: 10px; width: 200px; height: 200px; border-radius: 50%; }
+    .record .shadow { position: absolute; inset: 0; border-radius: 50%; box-shadow: 0 10px 26px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .4); }
+    .disc {
+        position: absolute; inset: 0; border-radius: 50%;
+        background:
+            radial-gradient(circle, transparent 0 33%, rgba(255, 255, 255, .06) 33.5% 34.5%, transparent 35%),
+            repeating-radial-gradient(circle, rgba(255, 255, 255, .045) 0 1px, rgba(0, 0, 0, 0) 1px 3px),
+            radial-gradient(circle, #1a1a1d 0 40%, #0d0d0f 41% 96%, #2a2a2e 97% 100%);
+        animation: turn 1.8s linear infinite;
+        animation-play-state: paused;
+    }
+    .is-playing .disc { animation-play-state: running; }
+    @keyframes turn { to { transform: rotate(360deg); } }
+
+    .label {
+        position: absolute; left: 50%; top: 50%; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 50%; overflow: hidden;
+        background: radial-gradient(circle, rgba(var(--accent-rgb), 1) 0 30%, rgba(var(--accent-rgb), .55) 100%);
+        box-shadow: 0 0 0 2px rgba(0, 0, 0, .55), 0 0 0 3px rgba(255, 255, 255, .06);
+        transition: opacity .3s ease;
+    }
+    .label img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .no-art .label img, .no-cover .label img { display: none; }
+    /* A mark printed across the label, so a label without a cover still reads as one turning. */
+    .label::after { content: ""; position: absolute; left: 50%; top: 8px; width: 3px; height: 12px; margin-left: -1.5px; border-radius: 2px; background: rgba(255, 255, 255, .55); display: none; }
+    .no-art .label::after, .no-cover .label::after { display: block; }
+    .is-leaving .label { opacity: 0; }
+
+    .hole { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #050506; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
+    .sheen {
+        position: absolute; inset: 0; border-radius: 50%; pointer-events: none;
+        background: conic-gradient(from 20deg, rgba(255, 255, 255, 0) 0deg, rgba(255, 255, 255, .13) 30deg, rgba(255, 255, 255, 0) 70deg,
+            rgba(255, 255, 255, 0) 180deg, rgba(255, 255, 255, .09) 210deg, rgba(255, 255, 255, 0) 250deg);
+        -webkit-mask: radial-gradient(circle, transparent 0 42%, #000 43%);
+        mask: radial-gradient(circle, transparent 0 42%, #000 43%);
+    }
+
+    .text {
+        position: absolute; left: 230px; right: 34px; top: 34px; bottom: 34px; display: flex; flex-direction: column; justify-content: center;
+        transition: opacity .3s ease, transform .3s ease;
+    }
+    .is-leaving .text { opacity: 0; transform: translateX(-8px); }
+    .is-arriving .text { animation: arrive .65s cubic-bezier(.2, .8, .2, 1); }
+    .is-arriving .label { animation: fade .65s ease; }
+    @keyframes arrive { from { opacity: 0; transform: translateX(14px); } to { opacity: 1; transform: none; } }
+    @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+    .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .meta { display: flex; align-items: center; gap: 8px; height: 18px; font-size: 11.5px; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; color: rgba(255, 255, 255, .7); }
+    .chip { flex: none; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; background: var(--service); }
+    .service-dark .chip { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .4); }
+    .chip svg { width: 12px; height: 12px; fill: #fff; }
+    .no-logo .chip { display: none; }
+    .title { margin-top: 6px; font-size: 26px; line-height: 1.2; font-weight: 750; letter-spacing: -.01em; }
+    .artist { font-size: 17px; line-height: 1.3; font-weight: 500; color: rgba(255, 255, 255, .78); }
+    .album { font-size: 13px; line-height: 1.35; color: rgba(255, 255, 255, .5); }
+    .no-album .album { display: none; }
+
+    .bar { position: relative; margin-top: 10px; height: 3px; border-radius: 2px; background: rgba(255, 255, 255, .16); overflow: hidden; }
+    .bar i { position: absolute; inset: 0; transform-origin: 0 50%; transform: scaleX(0); background: var(--accent); box-shadow: 0 0 8px rgba(var(--accent-rgb), .8); }
+    .is-paused .bar i { background: rgba(255, 255, 255, .6); box-shadow: none; }
+    .no-progress .bar { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+    <div class="widget">
+        <div class="panel"></div>
+        <div class="record">
+            <div class="shadow"></div>
+            <div class="disc"><div class="label"><img data-cover alt=""></div></div>
+            <div class="sheen"></div>
+            <div class="hole"></div>
+        </div>
+        <div class="text">
+            <div class="meta">
+                <span class="chip"><svg data-mark viewBox="0 0 24 24"><path d=""/></svg></span>
+                <span class="line" data-text="status">Now playing</span>
+            </div>
+            <div class="line title" data-text="title"></div>
+            <div class="line artist" data-text="artist"></div>
+            <div class="line album" data-text="album"></div>
+            <div class="bar"><i data-progress></i></div>
+        </div>
+    </div>
+</div>
+<!-- noctorium:widget-script -->
+</body>
+</html>

@@ -1,0 +1,129 @@
+<!doctype html>
+<!--
+  Ticker: a slim bar for an edge of the screen, "♪ Artist — Title" on one line over a hairline of progress, and the
+  time at its end. It is as tall as the browser source and as wide, whatever width that is; a line too long for it
+  scrolls, slowly, resting at its start each time round so it can be read.
+-->
+<html lang="en" data-width="1280" data-height="44" data-fit="width" data-accent="#b47cff">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium stream widget: Ticker</title>
+<style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    * { box-sizing: border-box; }
+
+    .widget {
+        position: absolute; inset: 0; display: flex; align-items: stretch;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+        color: #fff;
+        background: linear-gradient(180deg, rgba(16, 13, 22, .93), rgba(9, 8, 14, .95));
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, .09), 0 0 18px rgba(0, 0, 0, .35);
+        transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1);
+    }
+    .is-hidden .widget { opacity: 0; transform: translateY(100%); }
+
+    .note {
+        flex: none; width: 44px; display: grid; place-items: center;
+        background: var(--accent); color: #fff; font-size: 22px; line-height: 1;
+        text-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+    }
+
+    .track {
+        position: relative; flex: 1; min-width: 0; overflow: hidden;
+        -webkit-mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 28px), transparent 100%);
+        mask-image: linear-gradient(90deg, transparent 0, #000 14px, #000 calc(100% - 28px), transparent 100%);
+    }
+    .run { position: absolute; left: 0; top: 0; bottom: 0; display: flex; align-items: center; white-space: nowrap; padding-left: 16px; will-change: transform; }
+    .copy { display: inline-flex; align-items: center; font-size: 19px; line-height: 1; }
+    .copy + .copy { padding-left: 72px; }
+    .copy .artist { font-weight: 750; }
+    .copy .dash { padding: 0 .45em; color: rgba(255, 255, 255, .5); }
+    .copy .title { font-weight: 450; color: rgba(255, 255, 255, .92); }
+    .twin { display: none; }
+    .scrolling .twin { display: inline-flex; }
+
+    .swap { position: absolute; inset: 0; transition: opacity .3s ease, transform .3s ease; }
+    .is-leaving .swap { opacity: 0; transform: translateY(-10px); }
+    .is-arriving .swap { animation: arrive .6s cubic-bezier(.2, .8, .2, 1); }
+    @keyframes arrive { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+    .end { flex: none; display: flex; align-items: center; gap: 10px; padding: 0 16px 0 8px; font-size: 14px; font-weight: 600; color: rgba(255, 255, 255, .66); font-variant-numeric: tabular-nums; }
+    .end svg { width: 17px; height: 17px; fill: rgba(255, 255, 255, .8); }
+    .no-logo .end svg { display: none; }
+    .no-duration .end .time { display: none; }
+    .paused { display: none; padding: 2px 8px; border-radius: 99px; background: rgba(255, 255, 255, .14); color: rgba(255, 255, 255, .85); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; }
+    .is-paused .paused { display: inline-block; }
+
+    .hairline { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: rgba(255, 255, 255, .08); }
+    .hairline i { position: absolute; inset: 0; transform-origin: 0 50%; transform: scaleX(0); background: var(--accent); box-shadow: 0 0 6px rgba(var(--accent-rgb), .9); }
+    .is-paused .hairline i { background: rgba(255, 255, 255, .55); box-shadow: none; }
+    .no-progress .hairline { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+    <div class="widget">
+        <div class="note">&#9834;</div>
+        <div class="track">
+            <div class="swap"><div class="run">
+                <span class="copy"><span class="artist" data-text="artist"></span><span class="dash">&mdash;</span><span class="title" data-text="title"></span></span>
+                <span class="copy twin" aria-hidden="true"><span class="artist" data-text="artist"></span><span class="dash">&mdash;</span><span class="title" data-text="title"></span></span>
+            </div></div>
+        </div>
+        <div class="end">
+            <span class="paused">Paused</span>
+            <svg data-mark viewBox="0 0 24 24"><path d=""/></svg>
+            <span class="time"><span data-text="elapsed">0:00</span> / <span data-text="duration">0:00</span></span>
+        </div>
+        <div class="hairline"><i data-progress></i></div>
+    </div>
+</div>
+<script>
+    /*
+     * The scrolling: when the line is wider than its space, a second copy follows the first, and the two move left
+     * together at a reading pace until the second stands where the first began -- which looks the same, so it starts
+     * over. It rests for a moment at the start of each round.
+     */
+    (function () {
+        var SPEED = 46; // pixels a second
+        var REST_MS = 2200;
+        var started = 0;
+        var distance = 0;
+
+        function measure() {
+            var track = document.querySelector('.track');
+            var run = document.querySelector('.run');
+            var first = run.querySelector('.copy');
+            var twin = run.querySelector('.twin');
+            run.classList.remove('scrolling');
+            run.style.transform = '';
+            var needed = first.offsetWidth + 16;
+            if (needed > track.clientWidth - 12) {
+                run.classList.add('scrolling');
+                distance = twin.offsetLeft - first.offsetLeft;
+                started = performance.now();
+            } else {
+                distance = 0;
+            }
+        }
+
+        window.widget = {
+            track: function () { setTimeout(measure, 0); },
+            resize: function () { setTimeout(measure, 0); },
+            progress: function () {
+                if (!distance) return;
+                var run = document.querySelector('.run');
+                if (document.documentElement.classList.contains('is-leaving')) return;
+                var travel = distance / SPEED * 1000;
+                var at = (performance.now() - started) % (travel + REST_MS);
+                var moved = at < REST_MS ? 0 : (at - REST_MS) / travel * distance;
+                run.style.transform = 'translateX(' + (-moved).toFixed(2) + 'px)';
+            }
+        };
+    })();
+</script>
+<!-- noctorium:widget-script -->
+</body>
+</html>

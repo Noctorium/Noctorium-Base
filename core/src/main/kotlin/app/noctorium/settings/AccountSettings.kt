@@ -5,6 +5,7 @@ import app.noctorium.platform.TextFiles
 import app.noctorium.core.Destination
 import app.noctorium.discord.DiscordPresenceSettings
 import app.noctorium.lyrics.LyricsProviderId
+import app.noctorium.widgets.StreamWidgetPreferences
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.nio.file.Files
@@ -753,6 +754,11 @@ data class NoctoriumPreferences(
     val connect: ConnectPreferences = ConnectPreferences(),
     val updates: UpdatePreferences = UpdatePreferences(),
     val discord: DiscordPresenceSettings = DiscordPresenceSettings(),
+    /**
+     * The stream widgets: what Noctorium is playing, as pages a streaming program lays over a stream. Off unless
+     * switched on, and missing from every file written before there were any, which therefore reads as off.
+     */
+    val streamWidgets: StreamWidgetPreferences = StreamWidgetPreferences(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
     val lastFmUsername: String = "",

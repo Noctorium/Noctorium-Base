@@ -1,0 +1,136 @@
+<!doctype html>
+<!--
+  Windows 98: a tiny Now Playing window, drawn in the colours of the Windows Standard scheme exactly as Noctorium's
+  98 skin has them (Windows98Colours): a navy title bar, a grey face lit and shadowed along its edges, the song, and
+  a progress bar that fills in whole blocks, as 98's did.
+
+  Drawn at 98's own size -- 11-pixel type, one-pixel bevels -- and meant to be shown at twice that, 600 by 224, where
+  every pixel of it is two and still sharp. A pause makes it the window not in use, with the grey title bar of one.
+-->
+<html lang="en" data-width="300" data-height="112" data-leave="160" data-arrive="300">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium stream widget: Windows 98</title>
+<style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    * { box-sizing: border-box; }
+
+    .window {
+        position: absolute; inset: 0; padding: 3px;
+        background: #C0C0C0;
+        /* A window's frame: light, then highlight, along the top and left; dark shadow, then shadow, along the rest. */
+        box-shadow: inset -1px -1px #000000, inset 1px 1px #DFDFDF, inset -2px -2px #808080, inset 2px 2px #FFFFFF;
+        font-family: Tahoma, "MS Sans Serif", "Microsoft Sans Serif", Geneva, Verdana, sans-serif;
+        font-size: 11px; line-height: 13px; color: #000000;
+        transition: opacity .25s steps(3);
+    }
+    .is-hidden .window { opacity: 0; }
+
+    .titlebar {
+        display: flex; align-items: center; gap: 3px; height: 18px; padding: 0 2px 0 3px;
+        background: linear-gradient(90deg, #000080, #1084D0);
+        color: #FFFFFF; font-weight: bold;
+    }
+    .is-paused .titlebar { background: linear-gradient(90deg, #808080, #B5B5B5); color: #C0C0C0; }
+    .titlebar .icon { flex: none; width: 16px; height: 16px; display: grid; place-items: center; }
+    .titlebar .icon svg { width: 14px; height: 14px; fill: #FFFFFF; }
+    .is-paused .titlebar .icon svg { fill: #C0C0C0; }
+    .titlebar .icon .note { display: none; font-size: 13px; line-height: 1; }
+    .no-logo .titlebar .icon svg { display: none; }
+    .no-logo .titlebar .icon .note { display: block; }
+    .titlebar .caption { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+    .button {
+        flex: none; position: relative; width: 16px; height: 14px; background: #C0C0C0;
+        box-shadow: inset -1px -1px #000000, inset 1px 1px #FFFFFF, inset -2px -2px #808080, inset 2px 2px #DFDFDF;
+    }
+    .button.close { margin-left: 2px; }
+    .button svg { position: absolute; left: 4px; top: 3px; width: 8px; height: 7px; fill: #000000; shape-rendering: crispEdges; }
+
+    .body { display: flex; gap: 8px; padding: 5px 5px 0 5px; height: 52px; }
+    .art {
+        flex: none; position: relative; width: 46px; height: 46px; padding: 2px; background: #FFFFFF;
+        /* Sunken: shadow, then dark shadow, along the top and left; highlight, then light, along the rest. */
+        box-shadow: inset 1px 1px #808080, inset -1px -1px #FFFFFF, inset 2px 2px #000000, inset -2px -2px #DFDFDF;
+    }
+    .art img { display: block; width: 42px; height: 42px; object-fit: cover; }
+    .art .cd { position: absolute; inset: 2px; display: none; }
+    .no-art .art img { display: none; }
+    .no-art .art .cd { display: block; }
+    .no-cover .art { display: none; }
+    .cd i { position: absolute; inset: 3px; border-radius: 50%; background: conic-gradient(#DFDFDF, #FFFFFF, #808080, #C0C0C0, #FFFFFF, #DFDFDF); box-shadow: 0 0 0 1px #808080; }
+    .cd b { position: absolute; left: 50%; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: #FFFFFF; box-shadow: 0 0 0 1px #808080; }
+
+    .words { flex: 1; min-width: 0; padding-top: 2px; transition: opacity .15s steps(2); }
+    .is-leaving .words, .is-leaving .art img { opacity: 0; }
+    .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .title { font-weight: bold; }
+    .artist { margin-top: 2px; }
+    .album { margin-top: 2px; }
+    .no-album .album { display: none; }
+
+    .well {
+        margin: 4px 5px 0 5px; height: 14px; padding: 2px;
+        box-shadow: inset 1px 1px #808080, inset -1px -1px #FFFFFF;
+    }
+    .blocks { height: 100%; width: 0; background: repeating-linear-gradient(90deg, #000080 0 8px, transparent 8px 10px); }
+    .no-progress .well { visibility: hidden; }
+
+    .status { display: flex; gap: 2px; margin: 3px 5px 0 5px; height: 15px; }
+    .status > span {
+        padding: 1px 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        box-shadow: inset 1px 1px #808080, inset -1px -1px #FFFFFF;
+    }
+    .status .state { flex: 1; min-width: 0; }
+    .status .clock { flex: none; font-variant-numeric: tabular-nums; }
+    .no-duration .status .clock .of { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+    <div class="window">
+        <div class="titlebar">
+            <span class="icon"><svg data-mark viewBox="0 0 24 24"><path d=""/></svg><span class="note">&#9834;</span></span>
+            <span class="caption">Now Playing - Noctorium</span>
+            <span class="button"><svg viewBox="0 0 8 7"><rect x="1" y="5" width="6" height="2"/></svg></span>
+            <span class="button"><svg viewBox="0 0 8 7"><path d="M0 0h8v7H0zM1 2v4h6V2z" fill-rule="evenodd"/></svg></span>
+            <span class="button close"><svg viewBox="0 0 8 7"><path d="M0 0h2v1h1v1h2V1h1V0h2v1H7v1H6v1H5v1h1v1h1v1h1v1H6V6H5V5H3v1H2v1H0V6h1V5h1V4h1V3H2V2H1V1H0z"/></svg></span>
+        </div>
+        <div class="body">
+            <div class="art"><img data-cover alt=""><div class="cd"><i></i><b></b></div></div>
+            <div class="words">
+                <div class="line title" data-text="title"></div>
+                <div class="line artist" data-text="artist"></div>
+                <div class="line album" data-text="album"></div>
+            </div>
+        </div>
+        <div class="well"><div class="blocks"></div></div>
+        <div class="status">
+            <span class="state"><span data-text="status">Now playing</span><span class="from"> on <span data-text="service"></span></span></span>
+            <span class="clock"><span data-text="elapsed">0:00</span><span class="of"> / <span data-text="duration">0:00</span></span></span>
+        </div>
+    </div>
+</div>
+<script>
+    // 98's progress bar filled in whole blocks, never part of one: eight pixels and a gap of two.
+    window.widget = {
+        progress: function (fraction) {
+            var blocks = document.querySelector('.blocks');
+            var well = document.querySelector('.well');
+            if (!blocks || !well) return;
+            var room = well.clientWidth - 4;
+            var whole = Math.floor((room + 2) / 10);
+            var lit = Math.round(fraction * whole);
+            blocks.style.width = Math.max(0, lit * 10 - 2) + 'px';
+        },
+        state: function (reply, options) {
+            var from = document.querySelector('.status .from');
+            if (from) from.style.display = options.logo ? '' : 'none';
+        }
+    };
+</script>
+<!-- noctorium:widget-script -->
+</body>
+</html>

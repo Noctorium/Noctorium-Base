@@ -1,0 +1,68 @@
+<!doctype html>
+<!--
+  Minimal: only words. A small "Now playing", the title and the artist, white with a soft shadow, so that they read over
+  any game without a box round them. No cover and no bar, whatever Settings says about those; the service's mark sits
+  beside "Now playing" unless the logo is turned off.
+-->
+<html lang="en" data-width="640" data-height="140" data-accent="#ffffff">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium stream widget: Minimal</title>
+<style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    * { box-sizing: border-box; }
+
+    .widget {
+        position: absolute; inset: 0; padding: 14px 18px; display: flex; flex-direction: column; justify-content: center;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+        color: #fff;
+        /* A tight shadow that keeps the edge of every letter off a bright background, a close halo, and a wide soft one. */
+        text-shadow: 0 1px 2px rgba(0, 0, 0, .85), 0 0 5px rgba(0, 0, 0, .45), 0 2px 14px rgba(0, 0, 0, .45);
+        transition: opacity .6s ease, transform .6s cubic-bezier(.2, .8, .2, 1);
+    }
+    .is-hidden .widget { opacity: 0; transform: translateX(-12px); }
+
+    .label {
+        display: flex; align-items: center; gap: 9px; height: 18px;
+        font-size: 13px; font-weight: 750; letter-spacing: .2em; text-transform: uppercase; color: rgba(255, 255, 255, .9);
+    }
+    .label svg { width: 15px; height: 15px; fill: #fff; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .7)); flex: none; }
+    .no-logo .label svg { display: none; }
+
+    /* Three bars that bob while the music plays and lie down when it stops. */
+    .bars { display: flex; align-items: flex-end; gap: 2px; width: 14px; height: 13px; flex: none; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .7)); }
+    .bars i { display: block; width: 3px; height: 30%; border-radius: 1px; background: #fff; }
+    .is-playing .bars i { animation: bob 1s ease-in-out infinite; }
+    .is-playing .bars i:nth-child(2) { animation-delay: -.35s; animation-duration: .8s; }
+    .is-playing .bars i:nth-child(3) { animation-delay: -.6s; animation-duration: 1.15s; }
+    @keyframes bob { 0%, 100% { height: 25%; } 50% { height: 100%; } }
+
+    .swap { transition: opacity .3s ease, transform .3s ease; }
+    .is-leaving .swap { opacity: 0; transform: translateY(-6px); }
+    .is-arriving .swap { animation: arrive .65s cubic-bezier(.2, .8, .2, 1); }
+    @keyframes arrive { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+    .line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .title { margin-top: 6px; font-size: 38px; line-height: 1.15; font-weight: 800; letter-spacing: -.015em; }
+    .artist { margin-top: 2px; font-size: 23px; line-height: 1.25; font-weight: 600; color: rgba(255, 255, 255, .92); }
+</style>
+</head>
+<body>
+<div id="stage">
+    <div class="widget">
+        <div class="label">
+            <span class="bars"><i></i><i></i><i></i></span>
+            <span data-text="status">Now playing</span>
+            <svg data-mark viewBox="0 0 24 24"><path d=""/></svg>
+        </div>
+        <div class="swap">
+            <div class="line title" data-text="title"></div>
+            <div class="line artist" data-text="artist"></div>
+        </div>
+    </div>
+</div>
+<!-- noctorium:widget-script -->
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!doctype html>
+<!--
+  Afterglow: the tall one, for a corner of the stream. A large cover over a soft glow in its own colours, with the
+  title and the artist beneath it.
+
+  The glow is the cover again, blurred far past recognition, so it is always in the cover's colours without anything
+  having to work them out; the two colours the page does work out from it light the card's edge and its shadow. A
+  song with no cover glows in the accent instead.
+-->
+<html lang="en" data-width="360" data-height="500" data-accent="#b47cff" data-leave="380" data-arrive="800">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium stream widget: Afterglow</title>
+<style>
+    html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: transparent; }
+    #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+    * { box-sizing: border-box; }
+    :root { --art1-rgb: var(--accent-rgb); --art2-rgb: var(--accent-rgb); }
+
+    .widget {
+        position: absolute; inset: 12px;
+        font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+        color: #fff; text-align: center;
+        transition: opacity .7s ease, transform .7s cubic-bezier(.2, .8, .2, 1);
+    }
+    .is-hidden .widget { opacity: 0; transform: scale(.96); }
+
+    .card {
+        position: absolute; inset: 0; border-radius: 30px; overflow: hidden;
+        background: rgb(14, 11, 20);
+        box-shadow: 0 0 46px rgba(var(--art1-rgb), .42), 0 14px 34px rgba(0, 0, 0, .45);
+        transition: box-shadow 1.2s ease;
+    }
+    .glow { position: absolute; inset: -18%; transition: opacity .5s ease; }
+    .glow img { width: 100%; height: 100%; object-fit: cover; filter: blur(42px) saturate(1.7) brightness(1.08); }
+    .glow .fallback {
+        position: absolute; inset: 0; display: none;
+        background:
+            radial-gradient(60% 50% at 30% 25%, rgba(var(--accent-rgb), 1), transparent 70%),
+            radial-gradient(70% 60% at 75% 60%, rgba(var(--accent-rgb), .7), transparent 75%);
+        filter: blur(20px);
+    }
+    .no-art .glow img, .no-cover .glow img { display: none; }
+    .no-art .glow .fallback, .no-cover .glow .fallback { display: block; }
+    .is-leaving .glow { opacity: .35; }
+
+    /* Darker towards the foot, where the words are. */
+    .shade {
+        position: absolute; inset: 0;
+        background: linear-gradient(180deg, rgba(10, 8, 16, .10) 0%, rgba(10, 8, 16, .20) 48%, rgba(10, 8, 16, .66) 72%, rgba(10, 8, 16, .82) 100%);
+    }
+    .edge {
+        position: absolute; inset: 0; border-radius: 30px; pointer-events: none;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .14), inset 0 1px 0 rgba(255, 255, 255, .2);
+    }
+
+    .cover {
+        position: absolute; left: 50%; top: 26px; width: 248px; height: 248px; margin-left: -124px; border-radius: 22px; overflow: hidden;
+        background: linear-gradient(135deg, rgba(var(--accent-rgb), .95), rgba(var(--accent-rgb), .4));
+        box-shadow: 0 18px 40px rgba(0, 0, 0, .5), 0 0 0 1px rgba(255, 255, 255, .1);
+        transition: opacity .35s ease, transform .35s ease;
+    }
+    .cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .cover .note { position: absolute; inset: 0; display: none; place-items: center; font-size: 96px; color: rgba(255, 255, 255, .9); }
+    .no-art .cover img { display: none; }
+    .no-art .cover .note { display: grid; }
+    .no-cover .cover { display: none; }
+
+    .text { position: absolute; left: 22px; right: 22px; top: 292px; bottom: 22px; display: flex; flex-direction: column; justify-content: flex-start; transition: opacity .35s ease, transform .35s ease; }
+    .no-cover .text { top: 0; bottom: 0; justify-content: center; }
+    .is-leaving .text { opacity: 0; transform: translateY(8px); }
+    .is-leaving .cover { opacity: 0; transform: scale(.94); }
+    .is-arriving .cover { animation: rise .8s cubic-bezier(.2, .8, .2, 1); }
+    .is-arriving .text { animation: rise-text .8s cubic-bezier(.2, .8, .2, 1); }
+    @keyframes rise { from { opacity: 0; transform: scale(.92) translateY(10px); } to { opacity: 1; transform: none; } }
+    @keyframes rise-text { 0%, 20% { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+    .title {
+        font-size: 25px; line-height: 1.18; font-weight: 800; letter-spacing: -.01em;
+        text-shadow: 0 1px 3px rgba(0, 0, 0, .5), 0 0 16px rgba(0, 0, 0, .3);
+        /* Two lines for a long title in a narrow card, and an ellipsis after that. */
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; overflow-wrap: anywhere;
+    }
+    .artist {
+        margin-top: 4px; font-size: 16.5px; line-height: 1.3; font-weight: 600; color: rgba(255, 255, 255, .84);
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+    }
+
+    .foot { margin-top: auto; }
+    /* Without the cover the words are the whole card, and sit in its middle rather than at its head. */
+    .no-cover .foot { margin-top: 22px; }
+    .no-cover .title { font-size: 30px; -webkit-line-clamp: 4; }
+    .meta { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 11px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; color: rgba(255, 255, 255, .72); }
+    .chip { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; background: var(--service); flex: none; }
+    .service-dark .chip { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .4); }
+    .chip svg { width: 12px; height: 12px; fill: #fff; }
+    .no-logo .chip, .no-logo .service { display: none; }
+    .service { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .paused { display: none; }
+    .is-paused .paused { display: inline; }
+    .is-paused .service, .is-paused .chip { display: none; }
+
+    .progress { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 11.5px; font-weight: 600; color: rgba(255, 255, 255, .7); font-variant-numeric: tabular-nums; }
+    .bar { position: relative; flex: 1; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, .2); overflow: hidden; }
+    .bar i { position: absolute; inset: 0; transform-origin: 0 50%; transform: scaleX(0); background: #fff; box-shadow: 0 0 8px rgba(255, 255, 255, .7); }
+    .is-paused .bar i { background: rgba(255, 255, 255, .55); box-shadow: none; }
+    .no-progress .progress { display: none; }
+</style>
+</head>
+<body>
+<div id="stage">
+    <div class="widget">
+        <div class="card">
+            <div class="glow"><img data-cover alt=""><div class="fallback"></div></div>
+            <div class="shade"></div>
+            <div class="edge"></div>
+        </div>
+        <div class="cover"><img data-cover alt=""><div class="note">&#9834;</div></div>
+        <div class="text">
+            <div class="title" data-text="title"></div>
+            <div class="artist" data-text="artist"></div>
+            <div class="foot">
+                <div class="meta">
+                    <span class="chip"><svg data-mark viewBox="0 0 24 24"><path d=""/></svg></span>
+                    <span class="service" data-text="service"></span>
+                    <span class="paused">Paused</span>
+                </div>
+                <div class="progress">
+                    <span data-text="elapsed">0:00</span>
+                    <div class="bar"><i data-progress></i></div>
+                    <span data-text="duration">0:00</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!-- noctorium:widget-script -->
+</body>
+</html>
