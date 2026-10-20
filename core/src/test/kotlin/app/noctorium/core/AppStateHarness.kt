@@ -176,6 +176,8 @@ internal object AppStateHarness {
             { _, _ -> app.noctorium.spotify.SpotifyAuth.Result.Failure("no Spotify in this harness") },
         // The application's own file under the test folder unless a test says where, as it always was here.
         playlists: app.noctorium.playlists.LocalPlaylistRepository = app.noctorium.playlists.LocalPlaylistRepository(),
+        // The queue between launches: none unless a test says where, so no state opens on a queue another one kept.
+        queueStore: QueueStore = QueueStore(null),
     ): AppState = AppState(
         ytDlp = backend,
         credentials = credentials,
@@ -184,7 +186,7 @@ internal object AppStateHarness {
         playbackEngine = engine,
         injectedProviders = providers,
         settingsRepository = SettingsRepository(settings),
-        queueStore = QueueStore(null),
+        queueStore = queueStore,
         playHistory = history,
         checkForUpdatesAtLaunch = false,
         refreshAtLaunch = false,

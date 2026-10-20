@@ -950,6 +950,14 @@ data class PhonePreferences(
      * the choice is theirs, and Settings keeps the way to change it.
      */
     val askedAboutBackground: Boolean = false,
+    /**
+     * Keeps Noctorium running in the background, with a quiet notification, and brings it back when the phone stops
+     * it anyway: after a restart, and after its power manager closes it, picking up a song that was playing.
+     *
+     * Off by default. Most phones leave a music app alone; this is for the ones whose power managers do not, and a
+     * notification that is always there is not something to hand everybody else.
+     */
+    val keepAlive: Boolean = false,
 )
 
 /**
