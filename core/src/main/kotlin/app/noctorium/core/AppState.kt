@@ -1910,8 +1910,9 @@ class AppState(
                 val imported = export.into(mutableLibrary.value.localPlaylists, Instant.now().epochSecond)
                 persistPlaylists(imported.playlists)
                 val summary = imported.summary
-                publishSpotifyImport { SpotifyDataImportState(message = summary.message, summary = summary) }
+                // The library's notice first: whoever waits on the summary may take it as the sign that all is said.
                 libraryNotice(summary.message)
+                publishSpotifyImport { SpotifyDataImportState(message = summary.message, summary = summary) }
             } catch (cancellation: CancellationException) {
                 throw cancellation
             } catch (error: SpotifyExportUnreadable) {
