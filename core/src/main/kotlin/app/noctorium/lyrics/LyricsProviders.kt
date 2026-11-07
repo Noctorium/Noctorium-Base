@@ -138,7 +138,7 @@ internal class LrclibProvider(http: LyricsHttpClient) : JsonLyricsProvider(Lyric
         ) ?: exactOutcome
     }
 
-    private fun outcomeFrom(root: JsonObject): LyricsProviderOutcome {
+    internal fun outcomeFrom(root: JsonObject): LyricsProviderOutcome {
         if (root.boolean("instrumental") == true) {
             return result(
                 listOf(LyricLine("♪ Instrumental track ♪")),
@@ -318,18 +318,18 @@ private fun exactParameters(query: LyricsQuery) = linkedMapOf(
     query.durationSeconds?.let { put("duration", it.toString()) }
 }
 
-private fun buildQuery(base: String, parameters: Map<String, String>): String =
+internal fun buildQuery(base: String, parameters: Map<String, String>): String =
     base + parameters.entries.joinToString(prefix = "?", separator = "&") { (key, value) -> "${encode(key)}=${encode(value)}" }
 
 private fun encode(value: String): String = URLEncoder.encode(value, StandardCharsets.UTF_8)
 private fun pathEncode(value: String): String = encode(value).replace("+", "%20")
 private fun musixmatchSearchUrl(query: LyricsQuery) = "https://www.musixmatch.com/search/${pathEncode("${query.artist} ${query.title}")}"
 
-private fun JsonObject.string(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
+internal fun JsonObject.string(name: String): String? = this[name]?.jsonPrimitive?.contentOrNull
 private fun JsonObject.boolean(name: String): Boolean? = this[name]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
-private fun JsonObject.long(name: String): Long? = this[name]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
-private fun JsonObject.double(name: String): Double? = this[name]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
-private fun normalizeMatchText(value: String?): String = value.orEmpty()
+internal fun JsonObject.long(name: String): Long? = this[name]?.jsonPrimitive?.contentOrNull?.toLongOrNull()
+internal fun JsonObject.double(name: String): Double? = this[name]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+internal fun normalizeMatchText(value: String?): String = value.orEmpty()
     .lowercase()
     .replace(Regex("[^\\p{L}\\p{N}]+"), " ")
     .trim()

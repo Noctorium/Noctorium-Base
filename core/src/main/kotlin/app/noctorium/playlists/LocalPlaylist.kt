@@ -29,15 +29,28 @@ data class LocalPlaylist(
      * playlist in a file from before imports, which therefore reads as it always did.
      */
     val importedFrom: PlaylistImport? = null,
+    /**
+     * A Noctorium playlist: on every Noctorium the listener uses, kept in their own storage -- see
+     * [NoctoriumPlaylistSync]. False for a local playlist, which stays on this device, as every playlist from
+     * before Noctorium playlists does.
+     */
+    val synced: Boolean = false,
+    /** When it was last changed, in milliseconds, for telling which of two copies is newer. 0 before this was kept. */
+    val updatedAtMillis: Long = 0,
 ) {
     val trackCount: Int get() = tracks.size
 
+    /** When it was last changed, in milliseconds, from the seconds a playlist from before was kept with. */
+    fun updatedAtMillisOrSeconds(): Long = if (updatedAtMillis > 0) updatedAtMillis else updatedAtEpochSeconds * 1000
+
     companion object {
-        fun create(title: String, now: Long = Instant.now().epochSecond) = LocalPlaylist(
+        fun create(title: String, now: Long = Instant.now().epochSecond, synced: Boolean = false) = LocalPlaylist(
             id = UUID.randomUUID().toString(),
             title = title,
             createdAtEpochSeconds = now,
             updatedAtEpochSeconds = now,
+            synced = synced,
+            updatedAtMillis = System.currentTimeMillis(),
         )
     }
 }

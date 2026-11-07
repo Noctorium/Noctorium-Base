@@ -39,7 +39,16 @@ data class LyricsResult(
     val sourceUrl: String? = null,
     val attribution: String? = null,
     val message: String? = null,
+    /**
+     * Set when these are not the song's own lyrics as asked for, but the closest a looser search found: a song
+     * uploaded under someone else's name, or with "slowed + reverb" in its title, which no source knows by the
+     * name it was given. What the lyrics were found under, so the warning above them can say so.
+     */
+    val closeMatch: CloseMatch? = null,
 )
+
+/** The song a close match's lyrics belong to, as the source names it. */
+data class CloseMatch(val title: String, val artist: String)
 
 data class LyricsProviderOutcome(
     val provider: LyricsProviderId,

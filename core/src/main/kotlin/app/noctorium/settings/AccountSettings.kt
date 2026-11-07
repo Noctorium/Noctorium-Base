@@ -576,6 +576,13 @@ data class NoctoriumPreferences(
      */
     val lyricsProvider: LyricsProviderId? = null,
     /**
+     * The small note above lyrics found by a close match -- a song uploaded under somebody else's name -- that
+     * they may not be the song's. Off hides the note; the close match is still looked for and shown.
+     */
+    val lyricsCloseMatchWarning: Boolean = true,
+    /** Where Noctorium playlists are kept, so every Noctorium the listener uses has them. */
+    val playlistCloud: app.noctorium.playlists.PlaylistCloudPreferences = app.noctorium.playlists.PlaylistCloudPreferences(),
+    /**
      * How long the sleep timer ran last time, in minutes.
      *
      * Remembered rather than configured: the picker on either player is where it is chosen, and this

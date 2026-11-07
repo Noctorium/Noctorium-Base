@@ -575,6 +575,12 @@ class AppState(
      * programs holding one session would sign each other out. The terminal player passes `cli`.
      */
     private val sessionNamespace: String = "",
+    /**
+     * The phone's way into a folder its own file picker chose, for keeping Noctorium playlists there: the folder's
+     * address in, a [app.noctorium.playlists.PlaylistCloud] out. Null where there is no such picker, as on a computer,
+     * which reaches a folder by its path.
+     */
+    private val phonePlaylistFolder: ((String) -> app.noctorium.playlists.PlaylistCloud)? = null,
 ) : AutoCloseable {
     /**
      * Spotify's tokens, read from and written to where the rest of Noctorium keeps such things.
@@ -847,6 +853,24 @@ class AppState(
     private val mutableSettings = MutableStateFlow(SettingsState(storedPreferences))
     val settings: StateFlow<SettingsState> = mutableSettings.asStateFlow()
     private val mutableLibrary = MutableStateFlow(LibraryState(localPlaylists = playlistRepository.load()))
+
+    /** Keeps Noctorium playlists in step with the listener's storage. See [app.noctorium.playlists.PlaylistSyncController]. */
+    private val playlistSync = app.noctorium.playlists.PlaylistSyncController(
+        scope = scope,
+        credentials = credentials,
+        openBrowser = system::openUrl,
+        // The name the listener gave this device for Connect, else what the platform calls it -- "Xiaomi 22101316G" on a
+        // phone -- and only then the machine's own host name.
+        device = {
+            mutableSettings.value.preferences.connect.deviceName.ifBlank {
+                deviceName().takeUnless { it.isBlank() || it == "Noctorium" } ?: thisDeviceName()
+            }
+        },
+        current = { mutableLibrary.value.localPlaylists },
+        version = { playlistVersion.get() },
+        apply = { playlistsFromSync(it) },
+        phoneFolder = phonePlaylistFolder,
+    )
     val library: StateFlow<LibraryState> = mutableLibrary.asStateFlow()
     private val mutableLikes = MutableStateFlow(LikeState())
     val likes: StateFlow<LikeState> = mutableLikes.asStateFlow()
@@ -3761,13 +3785,17 @@ class AppState(
 
     // --- Playlists the listener builds inside Noctorium ---
 
-    fun createPlaylist(title: String, firstTrack: Track? = null): LocalPlaylist? {
+    /**
+     * Makes a playlist: a local one, on this device only, or with [noctorium] a Noctorium playlist, on every
+     * Noctorium the listener uses, through the place chosen in Settings › Noctorium playlists.
+     */
+    fun createPlaylist(title: String, firstTrack: Track? = null, noctorium: Boolean = false): LocalPlaylist? {
         val cleanTitle = title.trim().take(120)
         if (cleanTitle.isBlank()) {
             libraryNotice("Give the playlist a name first.")
             return null
         }
-        val created = LocalPlaylist.create(cleanTitle).let { playlist ->
+        val created = LocalPlaylist.create(cleanTitle, synced = noctorium).let { playlist ->
             if (firstTrack == null) playlist else playlist.copy(tracks = listOf(firstTrack))
         }
         persistPlaylists(mutableLibrary.value.localPlaylists + created)
@@ -3787,6 +3815,8 @@ class AppState(
     fun deletePlaylist(id: String) {
         val removed = mutableLibrary.value.localPlaylists.firstOrNull { it.id == id } ?: return
         persistPlaylists(mutableLibrary.value.localPlaylists.filterNot { it.id == id })
+        // Gone from every device, not only this one.
+        if (removed.synced) playlistSync.deleted(id, removed.updatedAtMillisOrSeconds())
         mutableLibrary.update { state ->
             if (state.openLocalPlaylist?.id == id) state.copy(openLocalPlaylist = null) else state
         }
@@ -3885,12 +3915,61 @@ class AppState(
     private fun editPlaylist(id: String, transform: (LocalPlaylist) -> LocalPlaylist) {
         val now = Instant.now().epochSecond
         val updated = mutableLibrary.value.localPlaylists.map { playlist ->
-            if (playlist.id == id) transform(playlist).copy(updatedAtEpochSeconds = now) else playlist
+            // Always later than the copy it changes, even where another device's clock ran ahead of this one's,
+            // so an edit made here is never lost to the copy it was made to.
+            val nowMillis = maxOf(System.currentTimeMillis(), playlist.updatedAtMillisOrSeconds() + 1)
+            if (playlist.id == id) transform(playlist).copy(updatedAtEpochSeconds = now, updatedAtMillis = nowMillis) else playlist
         }
         persistPlaylists(updated)
     }
 
-    private fun persistPlaylists(playlists: List<LocalPlaylist>) {
+    // --- Noctorium playlists: on every Noctorium the listener uses ---
+
+    /** How syncing Noctorium playlists stands, for Settings and the library. */
+    val playlistSyncState: StateFlow<app.noctorium.playlists.PlaylistSyncState> get() = playlistSync.state
+
+    /**
+     * Turns a local playlist into a Noctorium playlist, so every Noctorium has it -- or, with [noctorium] false,
+     * back into a local one, which takes it off the other devices and leaves it on this one.
+     */
+    fun setPlaylistNoctorium(id: String, noctorium: Boolean) {
+        val playlist = mutableLibrary.value.localPlaylists.firstOrNull { it.id == id } ?: return
+        if (playlist.synced == noctorium) return
+        editPlaylist(id) { it.copy(synced = noctorium) }
+        if (!noctorium) playlistSync.deleted(id, playlist.updatedAtMillisOrSeconds())
+        libraryNotice(
+            if (noctorium) "\"${playlist.title}\" is a Noctorium playlist now: on every device you use Noctorium on."
+            else "\"${playlist.title}\" is a local playlist now, on this device only.",
+        )
+    }
+
+    /** Where Noctorium playlists are kept: [kind], and the folder for a folder. */
+    fun setPlaylistCloud(kind: app.noctorium.playlists.PlaylistCloudKind, folder: String = "") {
+        updatePreferences { copy(playlistCloud = playlistCloud.copy(kind = kind, folder = folder.trim())) }
+        playlistSync.configure(mutableSettings.value.preferences.playlistCloud)
+    }
+
+    /** The listener's own Google OAuth client, for keeping Noctorium playlists in their Google Drive. */
+    fun setGoogleDriveApp(clientId: String, clientSecret: String) {
+        if (clientSecret.isNotBlank()) playlistSync.setGoogleSecret(clientSecret)
+        updatePreferences { copy(playlistCloud = playlistCloud.copy(googleClientId = clientId.trim())) }
+        playlistSync.configure(mutableSettings.value.preferences.playlistCloud)
+    }
+
+    fun signInToGoogleDrive() = playlistSync.signInToGoogle()
+
+    fun signOutOfGoogleDrive() = playlistSync.signOutOfGoogle()
+
+    /** Syncs Noctorium playlists now, rather than at the next chance. */
+    fun syncPlaylistsNow() {
+        scope.launch(Dispatchers.IO) { playlistSync.syncNow() }
+    }
+
+    /** What another device changed, put in place here: the same as an edit, but not synced back out again. */
+    private fun playlistsFromSync(playlists: List<LocalPlaylist>) = persistPlaylists(playlists, fromSync = true)
+
+    private fun persistPlaylists(playlists: List<LocalPlaylist>, fromSync: Boolean = false) {
+        val before = mutableLibrary.value.localPlaylists
         mutableLibrary.update { state ->
             state.copy(
                 localPlaylists = playlists,
@@ -3901,6 +3980,10 @@ class AppState(
         }
         playlistVersion.incrementAndGet()
         scope.launch(Dispatchers.IO) { writePlaylists() }
+        // A Noctorium playlist made, changed or taken away here goes out to the others a moment later.
+        if (!fromSync && (before.any { it.synced } || playlists.any { it.synced }) && before.filter { it.synced } != playlists.filter { it.synced }) {
+            playlistSync.changedSoon()
+        }
     }
 
     /** Writes the playlists as they stand now, unless that much has been written already. See [playlistWrites]. */
@@ -4785,6 +4868,9 @@ class AppState(
 
     /** Whether the queue running out carries on with similar songs or stops. */
     fun setAutoplay(enabled: Boolean) = updatePreferences { copy(autoplay = enabled) }
+
+    /** Whether lyrics found by a close match say so above them. See [NoctoriumPreferences.lyricsCloseMatchWarning]. */
+    fun setLyricsCloseMatchWarning(enabled: Boolean) = updatePreferences { copy(lyricsCloseMatchWarning = enabled) }
 
     /** Includes a service in Hybrid search, or leaves it out. At least one always stays. */
     fun setHybridSearchService(provider: ProviderType, included: Boolean) {
@@ -6128,6 +6214,15 @@ class AppState(
         downloads.close()
         scope.cancel()
     }
+
+    init {
+        // Last of all, so everything it reads is there: syncs Noctorium playlists now, and every few minutes after.
+        playlistSync.configure(mutableSettings.value.preferences.playlistCloud)
+    }
+
+    /** What this computer or phone is called, for the playlists it changed. */
+    private fun thisDeviceName(): String = runCatching { java.net.InetAddress.getLocalHost().hostName }.getOrNull()
+        ?.takeIf { it.isNotBlank() && it != "localhost" } ?: (System.getProperty("os.name") ?: "Noctorium")
 }
 
 /** YouTube Music and YouTube videos share one session, so both map to a single stored slot. */

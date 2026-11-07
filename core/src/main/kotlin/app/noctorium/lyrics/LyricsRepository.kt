@@ -26,6 +26,7 @@ class LyricsRepository internal constructor(
         HappiProvider(http),
         GeniusProvider(http),
     )
+    private val closeMatches = CloseMatchFinder(http)
     private val cache = ConcurrentHashMap<String, List<LyricsProviderOutcome>>()
 
     val providerIds: List<LyricsProviderId> get() = providers.map(LyricsProvider::id)
@@ -47,7 +48,7 @@ class LyricsRepository internal constructor(
                 "forceRefresh" to forceRefresh,
             ),
         )
-        val outcomes = supervisorScope {
+        val exact = supervisorScope {
             providers.map { provider ->
                 async {
                     val startedAt = System.nanoTime()
@@ -74,6 +75,7 @@ class LyricsRepository internal constructor(
                 }
             }.awaitAll()
         }
+        val outcomes = withCloseMatch(track, exact)
         cache[cacheKey] = outcomes
         LyricsLog.event(
             "search_finished",
@@ -85,6 +87,20 @@ class LyricsRepository internal constructor(
             ),
         )
         return outcomes
+    }
+
+    /**
+     * [outcomes], with a close match in LRCLIB's place when no source found the song by its own name: the
+     * lyrics of a song uploaded under somebody else's, marked as a close match. Asked for only then, so a song
+     * with lyrics of its own never waits for it, and a failure here leaves the outcomes as they were.
+     */
+    private suspend fun withCloseMatch(track: Track, outcomes: List<LyricsProviderOutcome>): List<LyricsProviderOutcome> {
+        if (outcomes.any { it.status == LyricsProviderStatus.FOUND }) return outcomes
+        val found = runCatching { withTimeout(12_000) { closeMatches.find(track) } }
+            .onFailure { if (it is CancellationException && it !is TimeoutCancellationException) throw it }
+            .getOrNull() ?: return outcomes
+        LyricsLog.event("close_match", mapOf("track" to track.queueKey, "detail" to found.detail))
+        return outcomes.map { if (it.provider == found.provider) found else it }
     }
 
     private suspend fun fetchWithRetry(provider: LyricsProvider, query: LyricsQuery): LyricsProviderOutcome {
