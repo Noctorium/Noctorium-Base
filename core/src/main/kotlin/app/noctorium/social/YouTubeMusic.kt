@@ -120,16 +120,33 @@ class YouTubeMusicClient internal constructor(
         }
     }
 
-    /** The account's own playlists, read from the library shelf the web player shows. */
+    /**
+     * The account's own playlists, read from the library shelf the web player shows, page after page.
+     *
+     * YouTube answers that shelf a couple of dozen playlists at a time, with a token for the next lot. Only the
+     * first page was ever read, so a listener with more playlists than that saw some of them and not the rest.
+     */
     suspend fun playlists(session: YouTubeSession): List<Playlist> {
-        val sapisid = session.sapisid ?: return emptyList()
-        val body = buildJsonObject {
-            put("context", context(session))
-            put("browseId", "FEmusic_liked_playlists")
+        session.sapisid ?: return emptyList()
+        val found = LinkedHashMap<String, Playlist>()
+        var continuation: String? = null
+        repeat(MAX_PLAYLIST_PAGES) {
+            val token = continuation
+            val body = buildJsonObject {
+                put("context", context(session))
+                if (token == null) put("browseId", "FEmusic_liked_playlists") else put("continuation", token)
+            }
+            val response = post("browse", body.toString(), session) ?: return found.values.toList()
+            // A refusal part way through keeps what came before it; a refusal of the first page is none at all.
+            if (response.status !in 200..299) return found.values.toList()
+            val page = parsePlaylists(response.body)
+            val before = found.size
+            page.forEach { found.putIfAbsent(it.id, it) }
+            // A page that adds nothing, or no way onward, or a token come back unchanged, is the end of the shelf.
+            if (found.size == before) return found.values.toList()
+            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return found.values.toList()
         }
-        val response = post("browse", body.toString(), session) ?: return emptyList()
-        if (response.status !in 200..299) return emptyList()
-        return parsePlaylists(response.body)
+        return found.values.toList()
     }
 
     /**
@@ -867,6 +884,10 @@ class YouTubeMusicClient internal constructor(
             (element["continuationCommand"] as? JsonObject)
                 ?.get("token")?.jsonPrimitive?.contentOrNull
                 ?.takeIf(String::isNotBlank)
+                // The older shape, which a library grid's pages have been sent in as well.
+                ?: (element["nextContinuationData"] as? JsonObject)
+                    ?.get("continuation")?.jsonPrimitive?.contentOrNull
+                    ?.takeIf(String::isNotBlank)
                 ?: element.values.firstNotNullOfOrNull { findContinuation(it) }
         is JsonArray -> element.firstNotNullOfOrNull { findContinuation(it) }
         else -> null
@@ -1391,6 +1412,9 @@ class YouTubeMusicClient internal constructor(
          * five thousand YouTube lets a playlist hold.
          */
         const val MAX_LIKED_PAGES = 100
+
+        /** The pages of playlists read at most: a couple of dozen to a page, so a thousand playlists and more. */
+        const val MAX_PLAYLIST_PAGES = 50
 
         /** How much of an unexpected reply to keep so the reason shows up in the log. */
         const val SAMPLE_LENGTH = 300
