@@ -123,6 +123,10 @@ enum class ThemePreset(
      */
     SHADOW("Shadow", "Secret", ThemeColours(0xFF070506, 0xFF0E0A0B, 0xFF181012, 0xFFF5EFEF, 0xFFB3A2A4, 0xFFE3262F),
         glow = ThemeGlow(0xFFC8102E, placement = GlowPlacement.TOP, strength = .24f), hidden = true),
+    /** Bundled Shadow artwork and a separate Chaos Control design, unlocked only by sh@d0w2. */
+    SHADOW_CHAOS("Shadow · Chaos Control", "Secret",
+        ThemeColours(0xFF050608, 0xFF0C0E12, 0xFF17191F, 0xFFFFF8EE, 0xFFBDB5B0, 0xFFFF3546),
+        glow = ThemeGlow(0xFFB50922, placement = GlowPlacement.TOP, strength = .18f), hidden = true),
     CUSTOM("Custom", "Yours", null),
 }
 

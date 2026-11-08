@@ -4872,6 +4872,9 @@ class AppState(
     /** The code "sh@d0w": the secret Shadow theme, kept like any theme until another is chosen. */
     fun unlockShadowTheme() = setTheme(ThemePreset.SHADOW)
 
+    /** The second Experimental secret; uses the same saved-theme and takeover flow. */
+    fun unlockShadowChaosTheme() = setTheme(ThemePreset.SHADOW_CHAOS)
+
     /** The listener's own picture behind the Shadow theme, as this device's copy of it; blank for none. */
     fun setShadowPicture(path: String) = updatePreferences { copy(shadowPicture = path) }
 

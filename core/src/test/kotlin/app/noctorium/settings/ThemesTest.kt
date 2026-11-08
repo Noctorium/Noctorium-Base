@@ -306,17 +306,18 @@ class ThemesTest {
     @Test
     fun `the secret theme is in no list of themes, but is kept like any once it is chosen`() {
         assertTrue(ThemePreset.SHADOW.hidden)
-        assertEquals(listOf(ThemePreset.SHADOW), ThemePreset.entries.filter { it.hidden })
+        assertEquals(listOf(ThemePreset.SHADOW, ThemePreset.SHADOW_CHAOS), ThemePreset.entries.filter { it.hidden })
         assertTrue(ThemePreset.SHADOW !in offeredThemes)
-        assertEquals(ThemePreset.entries.size - 1, offeredThemes.size)
+        assertTrue(ThemePreset.SHADOW_CHAOS !in offeredThemes)
+        assertEquals(ThemePreset.entries.size - 2, offeredThemes.size)
         assertEquals(ThemePreset.CUSTOM, offeredThemes.last())
 
         val directory = Files.createTempDirectory("noctorium-secret-theme")
         try {
             val repository = SettingsRepository(directory.resolve("settings.json"))
-            repository.save(NoctoriumPreferences(theme = ThemePreset.SHADOW, shadowPicture = "C:/somewhere/mine.png"))
+            repository.save(NoctoriumPreferences(theme = ThemePreset.SHADOW_CHAOS, shadowPicture = "C:/somewhere/mine.png"))
             val reread = repository.load()
-            assertEquals(ThemePreset.SHADOW, reread.theme)
+            assertEquals(ThemePreset.SHADOW_CHAOS, reread.theme)
             assertEquals("C:/somewhere/mine.png", reread.shadowPicture)
         } finally {
             directory.toFile().deleteRecursively()
