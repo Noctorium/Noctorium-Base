@@ -61,6 +61,29 @@ class ThemesTest {
     }
 
     @Test
+    fun `Glass is an ordinary theme, offered with the others, and the only see-through one`() {
+        assertTrue(ThemePreset.GLASS in offeredThemes, "Glass is in the list, not behind a code")
+        assertEquals(false, ThemePreset.GLASS.hidden)
+        assertEquals("Glass", ThemePreset.GLASS.family)
+        assertEquals(ThemeSkin.STANDARD, ThemePreset.GLASS.skin)
+        assertEquals(listOf(ThemePreset.GLASS), ThemePreset.entries.filter { it.seeThrough })
+        // Where a window cannot be see-through it is these colours, so they make a whole dark theme of their own.
+        val colours = ThemePreset.GLASS.colours!!
+        assertEquals(false, colours.light)
+        assertTrue(contrastRatio(colours.accent, colours.background) >= 4.5, "accent on the page")
+        listOf(colours.background, colours.panel, colours.card).forEach { assertEquals(0xFF, (it ushr 24).toInt(), "opaque: the players glaze it") }
+        assertTrue(NoctoriumPreferences(theme = ThemePreset.GLASS).seeThrough)
+        assertEquals(false, NoctoriumPreferences(theme = ThemePreset.NOCTORIUM_NIGHT).seeThrough)
+        assertEquals(false, NoctoriumPreferences(theme = ThemePreset.CUSTOM).seeThrough)
+    }
+
+    @Test
+    fun `a saved Glass choice reads back as Glass`() {
+        val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
+        assertEquals(ThemePreset.GLASS, json.decodeFromString<NoctoriumPreferences>("""{"theme":"GLASS"}""").theme)
+    }
+
+    @Test
     fun `the accent in force follows the choice`() {
         val mocha = NoctoriumPreferences(theme = ThemePreset.CATPPUCCIN_MOCHA)
         assertEquals(0xFFCBA6F7, mocha.resolvedAccent(artworkArgb = null))

@@ -48,6 +48,12 @@ enum class ThemePreset(
      * like any theme, until another is chosen.
      */
     val hidden: Boolean = false,
+    /**
+     * The window is see-through: whatever is behind it on the desktop shows through its pages, blurred where the
+     * system can blur it. The colours are the ones it is drawn in where it cannot -- a phone, a terminal, a desktop
+     * with nothing to show through -- and the tint laid over the desktop where it can. See [seeThrough].
+     */
+    val seeThrough: Boolean = false,
 ) {
     NOCTORIUM_NIGHT("Night", "Noctorium", ThemeColours(0xFF000000, 0xFF07050A, 0xFF15101C, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF)),
     NOCTORIUM_DUSK("Dusk", "Noctorium", ThemeColours(0xFF0D0B12, 0xFF141019, 0xFF1D1826, 0xFFF3F1F8, 0xFFC9C2D6, 0xFFB47CFF)),
@@ -117,6 +123,13 @@ enum class ThemePreset(
     WINDOWS_98_NOCTORIUM("Noctorium 98", "Windows", ThemeColours(0xFF231B2E, 0xFF1B1524, 0xFF0B0810, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF), ThemeSkin.WINDOWS_98),
     WINDOWS_XP("XP", "Windows",ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true), ThemeSkin.WINDOWS_XP),
     /*
+     * The window as a pane of smoked glass, after the browsers that let the desktop show through their chrome:
+     * the page is the desktop behind it, blurred and darkened by the system, with the panels and cards a little
+     * more frosted so the writing on them stays readable whatever the wallpaper is. An ice-blue accent, since
+     * glass has no colour of its own. Where a window cannot be see-through these are a cool, dark slate.
+     */
+    GLASS("Glass", "Glass", ThemeColours(0xFF0E1218, 0xFF141921, 0xFF1C232D, 0xFFF4F7FB, 0xFFB9C3D0, 0xFF8FD3FF), seeThrough = true),
+    /*
      * A secret: near-black, with crimson in everything that is noticed and the players' own streaks and gold ring
      * drawn over the page, and the listener's own picture behind it if they give one. Reached only by the code
      * "sh@d0w" in Settings › Experimental -- see [hidden].
@@ -135,6 +148,9 @@ const val SHADOW_GOLD: Long = 0xFFF2C14E
 
 /** The themes a list of them offers: all but the secret ones, which only a code reaches. */
 val offeredThemes: List<ThemePreset> get() = ThemePreset.entries.filterNot { it.hidden }
+
+/** Whether the window is see-through: the theme in force asks for it. The listener's own colours are opaque. */
+val NoctoriumPreferences.seeThrough: Boolean get() = theme.seeThrough
 
 /** The colours in force: the preset's, or the listener's own when the preset is CUSTOM. */
 fun NoctoriumPreferences.themeColours(): ThemeColours = theme.colours ?: customTheme
