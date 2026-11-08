@@ -43,6 +43,11 @@ enum class ThemePreset(
     val skin: ThemeSkin = ThemeSkin.STANDARD,
     /** The light laid across its page, for the few that have one. See [ThemeGlow]. */
     val glow: ThemeGlow? = null,
+    /**
+     * Left out of every list of themes: reached only by a code in Settings › Experimental, and kept from then on
+     * like any theme, until another is chosen.
+     */
+    val hidden: Boolean = false,
 ) {
     NOCTORIUM_NIGHT("Night", "Noctorium", ThemeColours(0xFF000000, 0xFF07050A, 0xFF15101C, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF)),
     NOCTORIUM_DUSK("Dusk", "Noctorium", ThemeColours(0xFF0D0B12, 0xFF141019, 0xFF1D1826, 0xFFF3F1F8, 0xFFC9C2D6, 0xFFB47CFF)),
@@ -111,8 +116,21 @@ enum class ThemePreset(
      */
     WINDOWS_98_NOCTORIUM("Noctorium 98", "Windows", ThemeColours(0xFF231B2E, 0xFF1B1524, 0xFF0B0810, 0xFFF8F4FF, 0xFFCFC5DA, 0xFFB47CFF), ThemeSkin.WINDOWS_98),
     WINDOWS_XP("XP", "Windows",ThemeColours(0xFFECE9D8, 0xFFD6DFF7, 0xFFFFFFFF, 0xFF000000, 0xFF4D4D4D, 0xFF245EDC, light = true), ThemeSkin.WINDOWS_XP),
+    /*
+     * A secret: near-black, with crimson in everything that is noticed and the players' own streaks and gold ring
+     * drawn over the page, and the listener's own picture behind it if they give one. Reached only by the code
+     * "sh@d0w" in Settings › Experimental -- see [hidden].
+     */
+    SHADOW("Shadow", "Secret", ThemeColours(0xFF070506, 0xFF0E0A0B, 0xFF181012, 0xFFF5EFEF, 0xFFB3A2A4, 0xFFE3262F),
+        glow = ThemeGlow(0xFFC8102E, placement = GlowPlacement.TOP, strength = .24f), hidden = true),
     CUSTOM("Custom", "Yours", null),
 }
+
+/** The gold of the Shadow theme's ring and trim, beside its crimson accent. */
+const val SHADOW_GOLD: Long = 0xFFF2C14E
+
+/** The themes a list of them offers: all but the secret ones, which only a code reaches. */
+val offeredThemes: List<ThemePreset> get() = ThemePreset.entries.filterNot { it.hidden }
 
 /** The colours in force: the preset's, or the listener's own when the preset is CUSTOM. */
 fun NoctoriumPreferences.themeColours(): ThemeColours = theme.colours ?: customTheme

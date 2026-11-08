@@ -227,7 +227,7 @@ class ThemesTest {
     fun `no theme but the Glow ones has a light, and the listener's own colours have none`() {
         assertEquals(
             ThemePreset.entries.filter { it.family == "Glow" },
-            ThemePreset.entries.filter { it.glow != null },
+            ThemePreset.entries.filter { it.glow != null && !it.hidden },
         )
         assertNull(NoctoriumPreferences(theme = ThemePreset.CUSTOM).themeGlow)
         assertNull(NoctoriumPreferences().themeGlow, "Night, the default, is as it was")
@@ -301,5 +301,26 @@ class ThemesTest {
         assertEquals(AccentPreset.MAGENTA, preferences.accent)
         val again = json.decodeFromString<NoctoriumPreferences>(json.encodeToString(preferences.copy(theme = ThemePreset.ROSE_PINE)))
         assertEquals(ThemePreset.ROSE_PINE, again.theme)
+    }
+
+    @Test
+    fun `the secret theme is in no list of themes, but is kept like any once it is chosen`() {
+        assertTrue(ThemePreset.SHADOW.hidden)
+        assertEquals(listOf(ThemePreset.SHADOW), ThemePreset.entries.filter { it.hidden })
+        assertTrue(ThemePreset.SHADOW !in offeredThemes)
+        assertEquals(ThemePreset.entries.size - 1, offeredThemes.size)
+        assertEquals(ThemePreset.CUSTOM, offeredThemes.last())
+
+        val directory = Files.createTempDirectory("noctorium-secret-theme")
+        try {
+            val repository = SettingsRepository(directory.resolve("settings.json"))
+            repository.save(NoctoriumPreferences(theme = ThemePreset.SHADOW, shadowPicture = "C:/somewhere/mine.png"))
+            val reread = repository.load()
+            assertEquals(ThemePreset.SHADOW, reread.theme)
+            assertEquals("C:/somewhere/mine.png", reread.shadowPicture)
+        } finally {
+            directory.toFile().deleteRecursively()
+        }
+        assertEquals("", NoctoriumPreferences().shadowPicture, "no picture until one is given")
     }
 }

@@ -4869,6 +4869,12 @@ class AppState(
     /** Whether the queue running out carries on with similar songs or stops. */
     fun setAutoplay(enabled: Boolean) = updatePreferences { copy(autoplay = enabled) }
 
+    /** The code "sh@d0w": the secret Shadow theme, kept like any theme until another is chosen. */
+    fun unlockShadowTheme() = setTheme(ThemePreset.SHADOW)
+
+    /** The listener's own picture behind the Shadow theme, as this device's copy of it; blank for none. */
+    fun setShadowPicture(path: String) = updatePreferences { copy(shadowPicture = path) }
+
     /** Whether lyrics found by a close match say so above them. See [NoctoriumPreferences.lyricsCloseMatchWarning]. */
     fun setLyricsCloseMatchWarning(enabled: Boolean) = updatePreferences { copy(lyricsCloseMatchWarning = enabled) }
 
