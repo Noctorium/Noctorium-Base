@@ -44,6 +44,13 @@ enum class ProviderType(val displayName: String) {
      */
     TIDAL("Tidal"),
     LOCAL("Local"),
+
+    /**
+     * Internet radio: a station from anywhere in the world, from Radio Browser's open list of them -- see
+     * [app.noctorium.radio.RadioBrowser]. Its stream plays as it is, with no end, nothing to like and nothing
+     * to download.
+     */
+    RADIO("Radio"),
 }
 
 /**
@@ -55,7 +62,7 @@ enum class ProviderType(val displayName: String) {
 val ProviderType.isReference: Boolean get() = when (this) {
     ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> true
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.BANDCAMP,
-    ProviderType.VK, ProviderType.LOCAL -> false
+    ProviderType.VK, ProviderType.LOCAL, ProviderType.RADIO -> false
 }
 
 /**
@@ -69,7 +76,8 @@ val ProviderType.isReference: Boolean get() = when (this) {
  * every player says the same of the same services.
  */
 val ProviderType.inBeta: Boolean get() = when (this) {
-    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.LOCAL -> false
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.LOCAL,
+    ProviderType.RADIO -> false
     ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
     ProviderType.TIDAL -> true
 }
@@ -237,7 +245,7 @@ fun Playlist.editableOnService(): Boolean = when (provider) {
     ProviderType.SOUNDCLOUD -> id.isNotEmpty() && id.all(Char::isDigit)
     ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO ->
         (id.startsWith("PL") || id.startsWith("VL")) && ownedByListener != false
-    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL, ProviderType.APPLE_MUSIC,
+    ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.LOCAL, ProviderType.RADIO, ProviderType.APPLE_MUSIC,
     ProviderType.DEEZER, ProviderType.TIDAL -> false
 }
 

@@ -68,6 +68,7 @@ class YtDlpService(
             ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL ->
                 throw BackendException("${provider.displayName} is not searched through yt-dlp")
             ProviderType.LOCAL -> throw BackendException("Local search is not supported by yt-dlp")
+            ProviderType.RADIO -> throw BackendException("Radio is searched through Radio Browser, not yt-dlp")
         }
         val arguments = mutableListOf(
             "--flat-playlist", "--dump-single-json", "--no-warnings", "--no-playlist",
@@ -430,7 +431,7 @@ class YtDlpService(
                 ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/watch?v=$raw"
                 ProviderType.SOUNDCLOUD -> null
                 ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC,
-                ProviderType.DEEZER, ProviderType.TIDAL, ProviderType.LOCAL -> null
+                ProviderType.DEEZER, ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO -> null
             }
         } ?: return null
         // Playlist stubs can arrive without a title; the page slug keeps the track playable and named until

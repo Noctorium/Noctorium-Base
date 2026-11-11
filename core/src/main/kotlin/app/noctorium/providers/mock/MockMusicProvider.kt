@@ -30,6 +30,7 @@ class MockMusicProvider(override val type: ProviderType) : MusicProvider {
                 ProviderType.DEEZER -> "https://www.deezer.com/track/$index"
                 ProviderType.TIDAL -> "https://tidal.com/browse/track/$index"
                 ProviderType.SPOTIFY, ProviderType.LOCAL -> "file:///mock/track-$index"
+                ProviderType.RADIO -> "https://stream.example/mock-$index"
             },
         )
     }

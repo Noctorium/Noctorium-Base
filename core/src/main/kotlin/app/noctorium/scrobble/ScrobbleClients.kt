@@ -113,6 +113,7 @@ internal class ListenBrainzClient(
                         ProviderType.DEEZER -> "deezer.com"
                         ProviderType.TIDAL -> "tidal.com"
                         ProviderType.LOCAL -> "local"
+                        ProviderType.RADIO -> "radio"
                     },
                 )
                 track.durationSeconds?.let { put("duration_ms", it * 1_000) }

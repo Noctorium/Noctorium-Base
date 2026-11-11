@@ -8,14 +8,16 @@ package app.noctorium.domain
 fun Playlist.isArtistPage(): Boolean = when (provider) {
     ProviderType.BANDCAMP -> app.noctorium.bandcamp.BandcampMusicProvider.isArtist(this)
     ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL -> id.startsWith(ARTIST)
-    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.VK, ProviderType.LOCAL -> false
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.VK, ProviderType.LOCAL,
+    ProviderType.RADIO -> false
 }
 
 /** Whether this "playlist" is really an album, opened as its songs in order. See [isArtistPage]. */
 fun Playlist.isAlbumPage(): Boolean = when (provider) {
     ProviderType.BANDCAMP, ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL ->
         id.startsWith(ALBUM)
-    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.VK, ProviderType.LOCAL -> false
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO, ProviderType.SOUNDCLOUD, ProviderType.VK, ProviderType.LOCAL,
+    ProviderType.RADIO -> false
 }
 
 /** The prefixes every one of those services gives an album's and an artist's id, opened as a playlist. */

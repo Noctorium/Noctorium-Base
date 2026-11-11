@@ -2,6 +2,7 @@ package app.noctorium.playback
 
 import app.noctorium.settings.AppDirectories
 import app.noctorium.settings.EqualizerSettings
+import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
 import app.noctorium.platform.isMacOs
 import kotlinx.coroutines.Dispatchers
@@ -433,7 +434,9 @@ class MpvPlaybackEngine(
      * network for nothing, which cannot be observed from the outside once it is playing.
      */
     internal suspend fun mediaAddress(track: Track): String =
-        downloadedFile(track)?.toString() ?: resolver.resolveAudio(track.sourceUrl)
+        downloadedFile(track)?.toString()
+            // A station's address is its stream already; yt-dlp has nothing to add, and would only be slower.
+            ?: if (track.provider == ProviderType.RADIO) track.sourceUrl else resolver.resolveAudio(track.sourceUrl)
 
     /**
      * Starts a track, and guarantees it does not leave the interface on the spinner.

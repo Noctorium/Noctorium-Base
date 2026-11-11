@@ -248,6 +248,16 @@ enum class ProviderFilter(val displayName: String) {
     }
 }
 
+/**
+ * What a search looks for: songs from the music services, or radio stations from anywhere in the world. Music
+ * unless the listener picks Radio, and Music again each time Noctorium starts -- a search box that had quietly
+ * stayed on radio would read as every service having gone quiet.
+ */
+enum class SearchKind(val displayName: String) {
+    MUSIC("Music"),
+    RADIO("Radio"),
+}
+
 enum class SearchMode(val displayName: String) {
     HYBRID("Hybrid"),
     SOUNDCLOUD("SoundCloud"),
@@ -404,7 +414,7 @@ data class LikeState(
         // Noctorium does not like songs on Apple Music, Deezer or Tidal yet. Once one of their songs plays it is
         // the recording it was matched to, and that recording's heart works as any other does.
         ProviderType.BANDCAMP, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL,
-        ProviderType.LOCAL -> false
+        ProviderType.LOCAL, ProviderType.RADIO -> false
     }
 }
 
@@ -423,6 +433,7 @@ internal fun likeKey(track: Track): String = when (track.provider) {
     ProviderType.DEEZER -> "dz:${track.id}"
     ProviderType.TIDAL -> "td:${track.id}"
     ProviderType.LOCAL -> "local:${track.id}"
+    ProviderType.RADIO -> "radio:${track.id}"
 }
 
 /**
@@ -474,6 +485,14 @@ data class AppUiState(
     val searchResults: SearchResults = SearchResults(),
     val searchLoading: Boolean = false,
     val errorMessage: String? = null,
+    /** Songs or radio stations. See [SearchKind]. */
+    val searchKind: SearchKind = SearchKind.MUSIC,
+    /** The country radio stations are looked for in, as an ISO code; null for the whole world. */
+    val radioCountry: String? = null,
+    /** Every country with stations, for the country picker; empty until Radio is first chosen. */
+    val radioCountries: List<app.noctorium.radio.RadioCountry> = emptyList(),
+    /** What the radio search found: stations, as tracks of [ProviderType.RADIO], most listened-to first. */
+    val radioStations: List<Track> = emptyList(),
 ) {
     /** Where the search shown is from: the bang's service when there is one, the search page's choice otherwise. */
     val activeSearchMode: SearchMode get() = searchBang?.mode ?: searchMode
@@ -543,6 +562,8 @@ class AppState(
     private val referenceMatches: ReferenceMatchStore = ReferenceMatchStore(),
     private val deezerClient: app.noctorium.deezer.DeezerClient = app.noctorium.deezer.DeezerClient(),
     private val tidalClient: TidalClient = TidalClient(),
+    /** Radio stations from every country. See [app.noctorium.radio.RadioBrowser]. */
+    private val radioBrowser: app.noctorium.radio.RadioBrowser = app.noctorium.radio.RadioBrowser(),
     /** Apple Music's catalogue and library; null for the one reading with the web player's token, or the listener's own. */
     appleMusicClient: AppleMusicClient? = null,
     /** What this device calls itself on the network, when the listener has not renamed it. */
@@ -1133,6 +1154,36 @@ class AppState(
 
     fun navigate(destination: Destination) = mutableUi.update { it.copy(destination = destination) }
     fun setFilter(filter: ProviderFilter) = mutableUi.update { it.copy(providerFilter = filter) }
+    /**
+     * Music or Radio, from the search box's own menu. The words typed stay, and are searched again as the other
+     * kind; radio's countries are fetched the first time Radio is chosen.
+     */
+    fun setSearchKind(kind: SearchKind) {
+        if (mutableUi.value.searchKind == kind) return
+        mutableUi.update { it.copy(searchKind = kind, errorMessage = null) }
+        if (kind == SearchKind.RADIO && mutableUi.value.radioCountries.isEmpty()) {
+            scope.launch {
+                runCatching { radioBrowser.countries() }.onSuccess { countries ->
+                    mutableUi.update { it.copy(radioCountries = countries) }
+                }
+            }
+        }
+        search(mutableUi.value.searchQuery)
+    }
+
+    /** Music to Radio and back: what Ctrl+F does a second time, so the switch is there without the mouse. */
+    fun toggleSearchKind() = setSearchKind(if (mutableUi.value.searchKind == SearchKind.MUSIC) SearchKind.RADIO else SearchKind.MUSIC)
+
+    /** The country radio is looked for in, by its ISO code; null for the whole world. */
+    fun setRadioCountry(code: String?) {
+        if (mutableUi.value.radioCountry == code) return
+        mutableUi.update { it.copy(radioCountry = code) }
+        if (mutableUi.value.searchKind == SearchKind.RADIO) search(mutableUi.value.searchQuery)
+    }
+
+    /** A station picked from the radio search: played on its own, with nothing queued after a stream that does not end. */
+    fun playStation(station: Track) = play(station, PlaybackOrigin.SEARCH, listOf(station))
+
     fun setSearchMode(mode: SearchMode) {
         if (mutableUi.value.searchMode == mode) return
         updatePreferences { copy(searchMode = mode.name) }
@@ -2547,6 +2598,7 @@ class AppState(
         val key = likeKey(track)
         if (key in mutableLikes.value.busyKeys) return
         if (track.provider == ProviderType.LOCAL) return likeMessage("Local files cannot be liked on a service.")
+        if (track.provider == ProviderType.RADIO) return likeMessage("Radio stations cannot be liked on a service.")
         val liking = !mutableLikes.value.isLiked(track)
         scope.launch {
             mutableLikes.update { state ->
@@ -2721,6 +2773,7 @@ class AppState(
                 "recording it plays from instead.",
         )
         ProviderType.LOCAL -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Local files cannot be liked.")
+        ProviderType.RADIO -> LikeResult(LikeOutcome.UNSUPPORTED_TRACK, "Radio stations cannot be liked.")
     }
 
     /**
@@ -3581,7 +3634,7 @@ class AppState(
         ProviderType.SOUNDCLOUD -> createSoundCloudPlaylist(title, tracks, isPublic)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> createYouTubePlaylist(title, tracks, isPublic)
         ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
-        ProviderType.TIDAL, ProviderType.LOCAL ->
+        ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO ->
             libraryNotice("Playlists cannot be made on ${provider.displayName} from Noctorium.")
     }
 
@@ -3590,7 +3643,7 @@ class AppState(
         ProviderType.SOUNDCLOUD -> addTrackToSoundCloudPlaylist(playlist.id, track)
         ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> addTrackToYouTubePlaylist(playlist.id, track)
         ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
-        ProviderType.TIDAL, ProviderType.LOCAL ->
+        ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO ->
             libraryNotice("${playlist.provider.displayName} playlists are read-only in Noctorium.")
     }
 
@@ -4604,6 +4657,10 @@ class AppState(
          * state exactly as it reads: "Nothing found", flashing it on every keystroke before a single
          * request had been made.
          */
+        if (mutableUi.value.searchKind == SearchKind.RADIO) {
+            searchRadio(text)
+            return
+        }
         mutableUi.update { it.copy(searchQuery = text, searchBang = parsed.bang, searchLoading = query.isNotBlank()) }
         searchJob?.cancel()
         searchJob = scope.launch {
@@ -4653,6 +4710,30 @@ class AppState(
         }
     }
 
+    /**
+     * Radio stations for what was typed, in the country chosen. Nothing typed is still a search: the country's --
+     * or the world's -- most listened-to stations, so Radio is something to browse as well as to look things up in.
+     * Bangs belong to the music services and mean nothing here; they are searched as the words they are.
+     */
+    private fun searchRadio(text: String) {
+        mutableUi.update { it.copy(searchQuery = text, searchBang = null, searchLoading = true, errorMessage = null) }
+        searchJob?.cancel()
+        searchJob = scope.launch {
+            if (text.isNotBlank()) kotlinx.coroutines.delay(350)
+            val country = mutableUi.value.radioCountry
+            val found = runCatching { radioBrowser.search(text, country) }
+            mutableUi.update {
+                it.copy(
+                    searchLoading = false,
+                    radioStations = found.getOrDefault(emptyList()),
+                    errorMessage = found.exceptionOrNull()?.let { why ->
+                        why.message?.takeIf { why is app.noctorium.radio.RadioUnavailable } ?: "Radio Browser could not be reached."
+                    },
+                )
+            }
+        }
+    }
+
     private fun <T> interleave(groups: List<List<T>>): List<T> {
         val largestGroup = groups.maxOfOrNull(List<T>::size) ?: return emptyList()
         return buildList {
@@ -4696,12 +4777,15 @@ class AppState(
         sourceQueue: List<Track> = listOf(track),
     ) {
         val index = sourceQueue.indexOfFirst { it.queueKey == track.queueKey }.coerceAtLeast(0)
+        val station = track.provider == ProviderType.RADIO
         queue.playQueue(
             sourceQueue.ifEmpty { listOf(track) },
             index,
-            PlaybackContext(track.provider, origin, seedTrackId = track.id, autoplayEnabled = true),
+            PlaybackContext(track.provider, origin, seedTrackId = track.id, autoplayEnabled = !station),
         )
         startPlay { track }
+        // Radio Browser orders stations by how often they are played, and asks to be told.
+        if (station) scope.launch { radioBrowser.played(track) }
     }
 
     private suspend fun playEnriched(track: Track) {
@@ -4946,7 +5030,8 @@ class AppState(
      * the song itself where it is YouTube's, or its match there where it is not.
      */
     private fun carryOn(after: Track?) {
-        val seed = after ?: return
+        // A station has no songs like it to find; whatever it was playing, the station chose.
+        val seed = after?.takeUnless { it.provider == ProviderType.RADIO } ?: return
         val preferences = mutableSettings.value.preferences
         if (!preferences.autoplay) return
         // Spotify playing on Spotify carries on by itself, and is followed; see followSpotify.
@@ -4991,7 +5076,13 @@ class AppState(
             ) { state, (autoplay, from, avoidRecent), asked ->
                 val nearEnd = state.repeatMode == RepeatMode.OFF && state.tracks.isNotEmpty() &&
                     state.currentIndex >= state.tracks.lastIndex - 1
-                SuggestionRequest(autoplay, state.tracks.lastOrNull()?.takeIf { autoplay && nearEnd }, from, avoidRecent, asked)
+                SuggestionRequest(
+                    autoplay,
+                    state.tracks.lastOrNull()?.takeIf { autoplay && nearEnd && it.provider != ProviderType.RADIO },
+                    from,
+                    avoidRecent,
+                    asked,
+                )
             }
                 .distinctUntilChanged()
                 .collectLatest { request ->
@@ -6242,7 +6333,7 @@ private fun ProviderType.accountSlot(): ProviderType? = when (this) {
     // slot here would send them down the cookie paths below -- which fall back to YouTube's session, and
     // disconnecting either would then have signed YouTube out.
     ProviderType.BANDCAMP, ProviderType.VK, ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
-    ProviderType.TIDAL, ProviderType.LOCAL -> null
+    ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO -> null
 }
 
 /**
@@ -6265,7 +6356,7 @@ internal fun NoctoriumPreferences.canListLibrary(provider: ProviderType): Boolea
     ProviderType.TIDAL -> tidalUserId.isNotBlank()
     // Signed in, which is kept exactly as long as the sign-in is.
     ProviderType.APPLE_MUSIC -> appleMusicSignedIn
-    ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL -> false
+    ProviderType.YOUTUBE_VIDEO, ProviderType.LOCAL, ProviderType.RADIO -> false
 }
 
 /**

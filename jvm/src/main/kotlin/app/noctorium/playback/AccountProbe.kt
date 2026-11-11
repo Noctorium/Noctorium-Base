@@ -216,7 +216,7 @@ class AccountProbe(
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/feed/subscriptions"
             ProviderType.SOUNDCLOUD -> "scsearch1:noctorium session check"
             ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
-            ProviderType.TIDAL, ProviderType.LOCAL ->
+            ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO ->
                 error("${provider.displayName} has no session for yt-dlp to check")
         }
 
@@ -224,7 +224,7 @@ class AccountProbe(
             ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> "youtube.com"
             ProviderType.SOUNDCLOUD -> "soundcloud.com"
             ProviderType.SPOTIFY, ProviderType.BANDCAMP, ProviderType.VK, ProviderType.APPLE_MUSIC, ProviderType.DEEZER,
-            ProviderType.TIDAL, ProviderType.LOCAL ->
+            ProviderType.TIDAL, ProviderType.LOCAL, ProviderType.RADIO ->
                 error("${provider.displayName} has no session for yt-dlp to check")
         }
 
@@ -239,6 +239,7 @@ class AccountProbe(
             ProviderType.DEEZER -> "Deezer"
             ProviderType.TIDAL -> "Tidal"
             ProviderType.LOCAL -> "Local files"
+            ProviderType.RADIO -> "Radio"
         }
 
         fun cookieSuffix(cookieCount: Int?): String = cookieCount?.let { " ($it cookies)" }.orEmpty()

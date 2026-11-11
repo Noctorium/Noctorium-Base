@@ -168,6 +168,7 @@ internal fun ProviderType.presenceAssetKey(): String = when (this) {
     ProviderType.DEEZER -> "deezer"
     ProviderType.TIDAL -> "tidal"
     ProviderType.LOCAL -> "local"
+    ProviderType.RADIO -> "radio"
 }
 
 /**

@@ -300,7 +300,8 @@ class ScrobbleManager internal constructor(
             var previousTick = nanoTime()
             playback.collect { current ->
                 val tick = nanoTime()
-                val track = current.track
+                // A station's name is not a song, and nobody's listens should say they heard "Radio Paradise".
+                val track = current.track?.takeUnless { it.provider == app.noctorium.domain.ProviderType.RADIO }
                 // A track looping round is playing it again, which it is. Repeat-one used to reload the
                 // track and arrive here as a fresh RESOLVING; now the player loops in place and counts.
                 val newPlayback = track != null && (

@@ -114,6 +114,7 @@ object PlaylistShareLink {
         ProviderType.DEEZER -> "D"
         ProviderType.TIDAL -> "T"
         ProviderType.LOCAL -> "L"
+        ProviderType.RADIO -> "R"
     }
 
     private fun String.toProvider(): ProviderType? = when (this) {
@@ -126,6 +127,7 @@ object PlaylistShareLink {
         "A" -> ProviderType.APPLE_MUSIC
         "D" -> ProviderType.DEEZER
         "T" -> ProviderType.TIDAL
+        "R" -> ProviderType.RADIO
         else -> null
     }
 }

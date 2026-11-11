@@ -31,6 +31,7 @@ object ServiceMarks {
         ProviderType.DEEZER -> DEEZER
         ProviderType.TIDAL -> TIDAL
         ProviderType.LOCAL -> FOLDER
+        ProviderType.RADIO -> RADIO
     }
 
     /**
@@ -49,6 +50,7 @@ object ServiceMarks {
         ProviderType.DEEZER -> "DZ"
         ProviderType.TIDAL -> "TD"
         ProviderType.LOCAL -> "LOCAL"
+        ProviderType.RADIO -> "FM"
     }
 
     /**
@@ -69,7 +71,11 @@ object ServiceMarks {
         ProviderType.DEEZER -> 0xFFA238FF
         ProviderType.TIDAL -> 0xFF000000
         ProviderType.LOCAL -> 0xFF4F46E5
+        ProviderType.RADIO -> 0xFF0F8A7E
     }
+
+    // Material Icons' filled "radio", under the Apache License 2.0: a set with its dial and aerial.
+    private const val RADIO = "M3.24 6.15C2.51 6.43 2 7.17 2 8v12c0 1.1.89 2 2 2h16c1.11 0 2-.9 2-2V8c0-1.11-.89-2-2-2H8.3l8.26-3.34L15.88 1 3.24 6.15zM7 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 3-3 3zm13-8h-2v-2h-2v2H4V8h16v4z"
 
     // Simple Icons' youtubemusic: the play button in a ring.
     private const val YOUTUBE_MUSIC = "M12 0C5.376 0 0 5.376 0 12s5.376 12 12 12 12-5.376 12-12S18.624 0 12 0zm0 19.104c-3.924 0-7.104-3.18-7.104-7.104S8.076 4.896 12 4.896s7.104 3.18 7.104 7.104-3.18 7.104-7.104 7.104zm0-13.332c-3.432 0-6.228 2.796-6.228 6.228S8.568 18.228 12 18.228s6.228-2.796 6.228-6.228S15.432 5.772 12 5.772zM9.684 15.54V8.46L15.816 12l-6.132 3.54z"
