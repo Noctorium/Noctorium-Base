@@ -1069,6 +1069,19 @@ class AppState(
     /** Counts the times the widgets were asked to try their port again, so asking is a change even when nothing else is. */
     private val widgetRetries = MutableStateFlow(0)
 
+    /** The remote control's server, which follows its setting: see [remoteControl]. Built at first use. */
+    private val remoteServer by lazy {
+        app.noctorium.remote.RemoteControlServer(
+            app.noctorium.remote.RemoteControlApi(this),
+            log = { PlaybackLog.event("remote_control", mapOf("message" to it)) },
+        )
+    }
+    private val mutableRemoteControl = MutableStateFlow<app.noctorium.remote.RemoteControlStatus>(app.noctorium.remote.RemoteControlStatus.Off)
+
+    /** Whether the remote control is being served, and where, or why it could not be. Off unless switched on. */
+    val remoteControl: StateFlow<app.noctorium.remote.RemoteControlStatus> = mutableRemoteControl.asStateFlow()
+    private val remoteRetries = MutableStateFlow(0)
+
     private val accountJobs = ConcurrentHashMap<ProviderType, Job>()
     private val closed = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -1102,6 +1115,7 @@ class AppState(
         if (refreshAtLaunch) warmUpForTheLikeliestPlay()
         observeDiscordPresence()
         observeStreamWidgets()
+        observeRemoteControl()
         observePlayingHereWhileDriving()
         observeYouTubeSignIn()
         observeYouTubeHistory()
@@ -5863,6 +5877,41 @@ class AppState(
     /** Tries the same port again: for after Settings said another program had it, and that program has let it go. */
     fun retryStreamWidgets() = widgetRetries.update { it + 1 }
 
+    // --- Remote control ---
+
+    fun setRemoteControlEnabled(enabled: Boolean) = updatePreferences { copy(remoteControl = remoteControl.copy(enabled = enabled)) }
+
+    /** Moves the remote control to [port]; false, and nothing saved, for one no program could listen on. */
+    fun setRemoteControlPort(port: Int): Boolean {
+        if (port !in app.noctorium.remote.RemoteControlPreferences.PORTS) return false
+        updatePreferences { copy(remoteControl = remoteControl.copy(port = port)) }
+        return true
+    }
+
+    /** Tries the same port again, for after another program has let it go. */
+    fun retryRemoteControl() = remoteRetries.update { it + 1 }
+
+    /** Starts, stops and restarts the remote control's server as its setting changes, off the main thread. */
+    private fun observeRemoteControl() {
+        scope.launch(Dispatchers.IO) {
+            combine(
+                mutableSettings
+                    .map { it.preferences.remoteControl.let { remote -> remote.enabled to remote.portInUse } }
+                    .distinctUntilChanged(),
+                remoteRetries,
+            ) { listening, _ -> listening }.collect { (enabled, port) ->
+                if (!enabled) {
+                    if (mutableRemoteControl.value != app.noctorium.remote.RemoteControlStatus.Off) remoteServer.stop()
+                    mutableRemoteControl.value = app.noctorium.remote.RemoteControlStatus.Off
+                    return@collect
+                }
+                mutableRemoteControl.value = app.noctorium.remote.RemoteControlStatus.Starting(port)
+                mutableRemoteControl.value = runCatching { remoteServer.start(port) }
+                    .getOrElse { app.noctorium.remote.RemoteControlStatus.Failed(port, app.noctorium.remote.RemoteControlServer.failureReason(port, it)) }
+            }
+        }
+    }
+
     /** The part of the widgets' setting that decides where the server listens, and so when it has to start again. */
     private data class WidgetListening(val enabled: Boolean, val port: Int, val network: Boolean)
 
@@ -6311,6 +6360,7 @@ class AppState(
         connectManager.close()
         discordPresence.close()
         widgetServer.close()
+        remoteServer.close()
         downloads.close()
         scope.cancel()
     }

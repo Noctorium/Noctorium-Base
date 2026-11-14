@@ -771,6 +771,11 @@ data class NoctoriumPreferences(
      * switched on, and missing from every file written before there were any, which therefore reads as off.
      */
     val streamWidgets: StreamWidgetPreferences = StreamWidgetPreferences(),
+    /**
+     * The remote control: a page and an API at http://localhost:6932 that drive this Noctorium from a browser or a
+     * script. Off unless switched on, and missing from every file written before there was one.
+     */
+    val remoteControl: app.noctorium.remote.RemoteControlPreferences = app.noctorium.remote.RemoteControlPreferences(),
     /** Replaced by [discord]; read once so settings written by older builds keep their choice. */
     val discordPresenceEnabled: Boolean = false,
     val lastFmUsername: String = "",

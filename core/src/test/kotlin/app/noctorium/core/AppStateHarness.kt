@@ -178,7 +178,10 @@ internal object AppStateHarness {
         playlists: app.noctorium.playlists.LocalPlaylistRepository = app.noctorium.playlists.LocalPlaylistRepository(),
         // The queue between launches: none unless a test says where, so no state opens on a queue another one kept.
         queueStore: QueueStore = QueueStore(null),
+        // The lyrics sources: the real ones unless a test scripts them.
+        lyrics: app.noctorium.lyrics.LyricsRepository = app.noctorium.lyrics.LyricsRepository(),
     ): AppState = AppState(
+        lyricsRepository = lyrics,
         ytDlp = backend,
         credentials = credentials,
         system = system,

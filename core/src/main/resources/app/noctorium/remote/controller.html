@@ -1,0 +1,580 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Noctorium Remote</title>
+<style>
+  :root {
+    --bg: #0e0c14; --card: #17141f; --raised: #211d2c; --line: #2d2839; --text: #f1edf8; --muted: #a49cb5;
+    --accent: #b47cff; --accent-ink: #1a0f2a; --danger: #ff6b81;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  body { min-height: 100vh; }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  button:disabled { opacity: .4; cursor: default; }
+  input, select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; outline: none; }
+  input:focus, select:focus { border-color: var(--accent); }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
+  header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
+  header .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), #6b3fd1); display: grid; place-items: center; font-weight: 800; color: #fff; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
+  header .conn { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; }
+  header .conn.off .dot { background: var(--danger); }
+
+  .player { position: relative; overflow: hidden; border-radius: 20px; background: var(--card); border: 1px solid var(--line); padding: 20px; display: grid; grid-template-columns: 168px 1fr; gap: 22px; }
+  .backdrop { position: absolute; inset: -40px; background-size: cover; background-position: center; filter: blur(48px) saturate(1.3); opacity: .28; pointer-events: none; }
+  .player > :not(.backdrop) { position: relative; }
+  .cover { width: 168px; height: 168px; border-radius: 14px; background: var(--raised) center/cover no-repeat; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+  .meta { min-width: 0; display: flex; flex-direction: column; }
+  .service { font-size: 11px; text-transform: uppercase; letter-spacing: .9px; color: var(--accent); font-weight: 700; }
+  .title { font-size: 22px; font-weight: 750; margin: 2px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .artist { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .progress { margin-top: auto; padding-top: 14px; }
+  .bar { position: relative; height: 6px; border-radius: 3px; background: var(--line); cursor: pointer; }
+  .bar .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+  .bar .knob { position: absolute; top: 50%; width: 14px; height: 14px; margin: -7px 0 0 -7px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.5); }
+  .times { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .live { display: none; font-size: 11px; font-weight: 800; color: #fff; background: var(--danger); border-radius: 5px; padding: 1px 7px; letter-spacing: .6px; }
+  .controls { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
+  .icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
+  .icon:hover:not(:disabled) { background: var(--raised); color: var(--text); }
+  .icon.on { color: var(--accent); }
+  .icon svg { width: 21px; height: 21px; fill: currentColor; }
+  .main-btn { width: 52px; height: 52px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; }
+  .main-btn svg { width: 26px; height: 26px; fill: currentColor; }
+  .main-btn:hover { filter: brightness(1.08); }
+  .spacer { flex: 1; }
+  .volume { display: flex; align-items: center; gap: 4px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; padding: 0; border: 0; background: transparent; width: 110px; height: 22px; }
+  input[type=range]::-webkit-slider-runnable-track { height: 5px; border-radius: 3px; background: var(--line); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; margin-top: -4.5px; }
+  input[type=range]::-moz-range-track { height: 5px; border-radius: 3px; background: var(--line); }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+  .extras { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+  .extras select { padding: 5px 8px; font-size: 12px; border-radius: 8px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; font-size: 12px; color: var(--muted); background: var(--raised); }
+  .chip.on { border-color: var(--accent); color: var(--accent); }
+  .error { color: var(--danger); font-size: 12px; margin-top: 6px; }
+
+  nav { display: flex; gap: 4px; margin: 22px 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+  nav::-webkit-scrollbar { display: none; }
+  nav button { padding: 10px 14px; color: var(--muted); font-weight: 600; border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
+  nav button.active { color: var(--text); border-bottom-color: var(--accent); }
+  .panel { display: none; }
+  .panel.active { display: block; }
+  .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
+  .toolbar .grow { flex: 1; min-width: 160px; }
+  .list { display: flex; flex-direction: column; gap: 2px; }
+  .row { display: grid; grid-template-columns: 26px 44px 1fr auto; gap: 12px; align-items: center; padding: 7px 10px; border-radius: 12px; }
+  .row:hover { background: var(--card); }
+  .row.current { background: var(--raised); }
+  .row.current .num { color: var(--accent); }
+  .row .num { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
+  .row .art { width: 44px; height: 44px; border-radius: 8px; background: var(--raised) center/cover no-repeat; }
+  .row .text { min-width: 0; cursor: pointer; }
+  .row .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .a { color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row .acts { display: flex; gap: 2px; align-items: center; }
+  .row .acts .icon { width: 32px; height: 32px; }
+  .row .acts .icon svg { width: 17px; height: 17px; }
+  .row .dur { color: var(--muted); font-size: 12px; margin-right: 4px; font-variant-numeric: tabular-nums; }
+  .section-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; margin: 18px 10px 6px; font-weight: 700; }
+  .empty { color: var(--muted); padding: 26px 10px; text-align: center; }
+  .btn { padding: 8px 14px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); font-weight: 600; font-size: 13px; }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .seg { display: inline-flex; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
+  .seg button { padding: 6px 12px; border-radius: 7px; font-size: 13px; color: var(--muted); font-weight: 600; }
+  .seg button.active { background: var(--accent); color: var(--accent-ink); }
+
+  .lyrics { position: relative; max-height: 62vh; overflow-y: auto; padding: 10px 6px 30vh; scroll-behavior: smooth; }
+  .lyrics p { margin: 0; padding: 7px 10px; font-size: 22px; font-weight: 700; color: var(--muted); opacity: .5; border-radius: 10px; transform-origin: left center; transition: opacity .25s, color .25s, transform .25s; }
+  .lyrics.synced p { cursor: pointer; }
+  .lyrics.synced p:hover { background: var(--card); }
+  .lyrics p.now { color: #fff; opacity: 1; transform: scale(1.06); text-shadow: 0 0 18px rgba(180, 124, 255, .55); }
+  .lyrics p.past { opacity: .28; }
+  .lyrics.plain p { opacity: .9; color: var(--text); font-size: 18px; font-weight: 600; }
+  .lyrics-info { color: var(--muted); font-size: 12px; }
+  .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--raised); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
+  .toast.show { opacity: 1; }
+  code { background: var(--raised); padding: 1px 6px; border-radius: 6px; font-size: 12px; }
+  .api { color: var(--muted); font-size: 13px; }
+  .api ul { padding-left: 18px; }
+
+  @media (max-width: 640px) {
+    .player { grid-template-columns: 1fr; gap: 14px; }
+    .cover { width: 100%; height: auto; aspect-ratio: 1; max-width: 300px; margin: 0 auto; }
+    .title { font-size: 19px; }
+    .row { grid-template-columns: 44px 1fr auto; }
+    .row .num { display: none; }
+    .row .dur { display: none; }
+    input[type=range] { width: 90px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">N</div>
+    <h1>Noctorium Remote</h1>
+    <div class="conn" id="conn"><span class="dot"></span><span id="connText">Connected</span></div>
+  </header>
+
+  <section class="player">
+    <div class="backdrop" id="backdrop"></div>
+    <div class="cover" id="cover"></div>
+    <div class="meta">
+      <div><span class="service" id="service"></span> <span class="live" id="live">LIVE</span></div>
+      <div class="title" id="title">Nothing playing</div>
+      <div class="artist" id="artist">Search for something, or play from the queue.</div>
+      <div class="progress">
+        <div class="bar" id="bar"><div class="fill" id="fill"></div><div class="knob" id="knob"></div></div>
+        <div class="times"><span id="pos">0:00</span><span id="dur">0:00</span></div>
+      </div>
+      <div class="controls">
+        <button class="icon" id="shuffle" title="Shuffle"><svg viewBox="0 0 24 24"><path d="M10.6 9.2 5.4 4 4 5.4l5.2 5.2 1.4-1.4ZM14.5 4l2 2L4 18.6 5.4 20 18 7.5l2 2V4h-5.5Zm.3 9.4-1.4 1.4 3.1 3.1-2 2.1H20v-5.5l-2 2-3.2-3.1Z"/></svg></button>
+        <button class="icon" id="prev" title="Previous"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6 8.5 6V6z"/></svg></button>
+        <button class="main-btn" id="play" title="Play or pause"><svg viewBox="0 0 24 24" id="playIcon"><path d="M8 5v14l11-7z"/></svg></button>
+        <button class="icon" id="next" title="Next"><svg viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+        <button class="icon" id="repeat" title="Repeat"><svg viewBox="0 0 24 24" id="repeatIcon"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg></button>
+        <div class="spacer"></div>
+        <button class="icon" id="like" title="Like"><svg viewBox="0 0 24 24"><path id="likePath" d="M16.5 3c-1.7 0-3.4.8-4.5 2.1C10.9 3.8 9.2 3 7.5 3 4.4 3 2 5.4 2 8.5c0 3.8 3.4 6.9 8.6 11.5l1.4 1.3 1.4-1.3C18.6 15.4 22 12.3 22 8.5 22 5.4 19.6 3 16.5 3zm-4.4 15.6-.1.1-.1-.1C7.1 14.2 4 11.4 4 8.5 4 6.5 5.5 5 7.5 5c1.5 0 3 1 3.6 2.4h1.9C13.5 6 15 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.9-3.1 5.7-7.9 10.1z"/></svg></button>
+        <div class="volume">
+          <button class="icon" id="mute" title="Mute"><svg viewBox="0 0 24 24"><path id="volPath" d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z"/></svg></button>
+          <input type="range" id="volume" min="0" max="100" step="1" title="Volume">
+        </div>
+      </div>
+      <div class="extras">
+        <label>Speed <select id="speed"></select></label>
+        <label>Sleep <select id="sleep">
+          <option value="">Off</option><option value="15">15 min</option><option value="30">30 min</option>
+          <option value="45">45 min</option><option value="60">1 hour</option><option value="90">90 min</option><option value="end">End of song</option>
+        </select></label>
+        <span id="sleepLeft"></span>
+        <button class="chip" id="stopAfter">Stop after this song</button>
+        <button class="chip" id="autoplay">Autoplay</button>
+      </div>
+      <div class="error" id="error" hidden></div>
+    </div>
+  </section>
+
+  <nav id="tabs">
+    <button data-tab="queue" class="active">Queue</button>
+    <button data-tab="lyrics">Lyrics</button>
+    <button data-tab="search">Search</button>
+    <button data-tab="playlists">Playlists</button>
+    <button data-tab="recent">Recently played</button>
+    <button data-tab="api">API</button>
+  </nav>
+
+  <section class="panel active" id="panel-queue">
+    <div class="toolbar">
+      <button class="btn" data-post="/api/queue/shuffle-upcoming">Shuffle what's next</button>
+      <button class="btn" data-post="/api/queue/clear-upcoming">Clear what's next</button>
+      <button class="btn" data-post="/api/queue/clear-all-but-current">Clear all but this song</button>
+      <button class="btn" data-post="/api/queue/clear" data-confirm="Clear the whole queue and stop the music?">Clear queue</button>
+    </div>
+    <div class="list" id="queueList"></div>
+    <div id="suggestBlock" hidden>
+      <div class="section-label" id="suggestLabel">Autoplay</div>
+      <div class="list" id="suggestList"></div>
+      <div class="toolbar" style="margin:8px 10px"><button class="btn" data-post="/api/queue/suggestions/refresh">Find others</button></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-lyrics">
+    <div class="toolbar">
+      <span class="lyrics-info grow" id="lyricsInfo"></span>
+      <select id="lyricsSource" title="Lyrics source"></select>
+      <button class="btn" data-post="/api/lyrics/refresh">Look again</button>
+    </div>
+    <div class="lyrics" id="lyrics"></div>
+  </section>
+
+  <section class="panel" id="panel-search">
+    <form class="toolbar" id="searchForm">
+      <div class="seg" id="kind"><button type="button" data-kind="music" class="active">Music</button><button type="button" data-kind="radio">Radio</button></div>
+      <input class="grow" id="q" placeholder="Songs, artists, or !sc / !ytm for one service" autocomplete="off">
+      <button class="btn primary" type="submit">Search</button>
+    </form>
+    <form class="toolbar" id="linkForm">
+      <input class="grow" id="link" placeholder="Or paste a link: YouTube, SoundCloud, Spotify…" autocomplete="off">
+      <button class="btn" type="submit">Play link</button>
+      <button class="btn" type="button" id="queueLink">Queue link</button>
+    </form>
+    <div class="list" id="searchList"><div class="empty">Search, and play anything from here.</div></div>
+  </section>
+
+  <section class="panel" id="panel-playlists">
+    <div class="list" id="playlistList"></div>
+    <div id="playlistOpen" hidden>
+      <div class="toolbar" style="margin-top:14px"><button class="btn" id="playlistBack">← Playlists</button><strong id="playlistTitle" class="grow"></strong><button class="btn primary" id="playlistPlay">Play</button></div>
+      <div class="list" id="playlistTracks"></div>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-recent"><div class="list" id="recentList"></div></section>
+
+  <section class="panel api" id="panel-api">
+    <p>Everything on this page goes through an API anything on this computer can use: a script, a Stream Deck, a hotkey tool. GET reads; POST does, with a JSON body.</p>
+    <p><code>curl -X POST http://localhost:<span class="port"></span>/api/next</code><br>
+       <code>curl -X POST http://localhost:<span class="port"></span>/api/volume -d '{"volume":0.5}'</code><br>
+       <code>curl "http://localhost:<span class="port"></span>/api/search?q=daft%20punk"</code></p>
+    <div id="apiList"></div>
+  </section>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const ICON = {
+  play: "M8 5v14l11-7z",
+  pause: "M6 19h4V5H6v14zm8-14v14h4V5h-4z",
+  spin: "M12 4V1L8 5l4 4V6a6 6 0 1 1-6 6H4a8 8 0 1 0 8-8z",
+  repeat: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z",
+  repeatOne: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 1v1h1.5v4H13z",
+  heart: "M16.5 3c-1.7 0-3.4.8-4.5 2.1C10.9 3.8 9.2 3 7.5 3 4.4 3 2 5.4 2 8.5c0 3.8 3.4 6.9 8.6 11.5l1.4 1.3 1.4-1.3C18.6 15.4 22 12.3 22 8.5 22 5.4 19.6 3 16.5 3z",
+  heartOutline: "M16.5 3c-1.7 0-3.4.8-4.5 2.1C10.9 3.8 9.2 3 7.5 3 4.4 3 2 5.4 2 8.5c0 3.8 3.4 6.9 8.6 11.5l1.4 1.3 1.4-1.3C18.6 15.4 22 12.3 22 8.5 22 5.4 19.6 3 16.5 3zm-4.4 15.6-.1.1-.1-.1C7.1 14.2 4 11.4 4 8.5 4 6.5 5.5 5 7.5 5c1.5 0 3 1 3.6 2.4h1.9C13.5 6 15 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 2.9-3.1 5.7-7.9 10.1z",
+  vol: "M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0 0 14 8v8a4.5 4.5 0 0 0 2.5-4zM14 3.2v2.1a7 7 0 0 1 0 13.4v2.1a9 9 0 0 0 0-17.6z",
+  muted: "M16.5 12A4.5 4.5 0 0 0 14 8v2.2l2.5 2.5V12zm2.5 0c0 .9-.2 1.8-.5 2.6l1.5 1.5A8.8 8.8 0 0 0 21 12a9 9 0 0 0-7-8.8v2.1c2.9.9 5 3.5 5 6.7zM4.3 3 3 4.3 7.7 9H3v6h4l5 5v-6.7l4.3 4.3c-.7.5-1.4.9-2.3 1.2v2.1c1.4-.3 2.7-1 3.7-1.8l2 2 1.3-1.3-9-9L4.3 3zM12 4 9.9 6.1 12 8.2V4z",
+  up: "M7 14l5-5 5 5z", down: "M7 10l5 5 5-5z", close: "M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z",
+  next: "M4 6h12v2H4zm0 4h12v2H4zm0 4h8v2H4zm14 0v-3h-2v3h-3v2h3v3h2v-3h3v-2z",
+  add: "M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z", keep: "M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z",
+  playSmall: "M8 5v14l11-7z",
+};
+const svg = (path) => `<svg viewBox="0 0 24 24"><path d="${path}"/></svg>`;
+let state = null, lastAt = 0, seekingUntil = 0, volumeHeldUntil = 0, tab = "queue";
+let lyricsData = null, lyricsKey = null, searchKind = "music", openPlaylist = null;
+document.querySelectorAll(".port").forEach((e) => (e.textContent = location.port || "80"));
+
+function toast(text) {
+  const t = $("toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+async function get(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  const body = await r.json();
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+async function post(path, body) {
+  try {
+    const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    const answer = await r.json().catch(() => ({}));
+    if (!r.ok) { toast(answer.error || "That did not work."); return false; }
+    setTimeout(refresh, 120); setTimeout(refresh, 600);
+    return true;
+  } catch (e) { toast("Noctorium is not answering."); return false; }
+}
+const fmt = (ms) => {
+  if (!ms || ms < 0) ms = 0;
+  const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), r = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(r).padStart(2, "0");
+};
+function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+function iconButton(path, title, onClick) { const b = el("button", "icon"); b.title = title; b.innerHTML = svg(path); b.addEventListener("click", (e) => { e.stopPropagation(); onClick(); }); return b; }
+function art(url) { const a = el("div", "art"); if (url) a.style.backgroundImage = `url("${String(url).replace(/"/g, "%22")}")`; return a; }
+
+/** One song as a row: its number, cover, title and artist (pressing it does [onPick]), and its buttons. */
+function trackRow(track, index, opts) {
+  const row = el("div", "row" + (opts.current ? " current" : ""));
+  row.appendChild(el("div", "num", opts.current ? "▶" : String(index + 1)));
+  row.appendChild(art(track.artworkUrl));
+  const text = el("div", "text");
+  text.appendChild(el("div", "t", track.title));
+  text.appendChild(el("div", "a", [track.artist, track.service].filter(Boolean).join(" · ")));
+  if (opts.onPick) text.addEventListener("click", opts.onPick);
+  text.title = opts.pickTitle || "";
+  row.appendChild(text);
+  const acts = el("div", "acts");
+  if (track.durationMs && track.provider !== "radio") acts.appendChild(el("span", "dur", fmt(track.durationMs)));
+  (opts.buttons || []).forEach((b) => acts.appendChild(iconButton(b[0], b[1], b[2])));
+  row.appendChild(acts);
+  return row;
+}
+
+function render() {
+  const now = state.nowPlaying, q = state.queue, t = now.track;
+  $("title").textContent = t ? t.title : "Nothing playing";
+  $("artist").textContent = t ? t.artist : "Search for something, or play from the queue.";
+  $("service").textContent = t ? t.service : "";
+  $("live").style.display = now.live ? "inline-block" : "none";
+  const cover = t && t.artworkUrl ? `url("${t.artworkUrl.replace(/"/g, "%22")}")` : "";
+  if ($("cover").dataset.src !== cover) { $("cover").style.backgroundImage = cover; $("backdrop").style.backgroundImage = cover; $("cover").dataset.src = cover; }
+  document.title = t ? `${now.playing ? "▶ " : ""}${t.title} · Noctorium Remote` : "Noctorium Remote";
+  $("playIcon").innerHTML = `<path d="${now.status === "resolving" ? ICON.spin : now.playing ? ICON.pause : ICON.play}"/>`;
+  $("shuffle").classList.toggle("on", q.shuffle);
+  $("repeat").classList.toggle("on", q.repeat !== "off");
+  $("repeat").title = "Repeat: " + q.repeat;
+  $("repeatIcon").innerHTML = `<path d="${q.repeat === "one" ? ICON.repeatOne : ICON.repeat}"/>`;
+  $("likePath").setAttribute("d", now.liked ? ICON.heart : ICON.heartOutline);
+  $("like").classList.toggle("on", now.liked);
+  $("like").disabled = !t || now.live;
+  $("volPath").setAttribute("d", now.muted ? ICON.muted : ICON.vol);
+  $("mute").classList.toggle("on", now.muted);
+  if (Date.now() > volumeHeldUntil) $("volume").value = Math.round(now.volume * 100);
+  $("speed").value = now.speed.toFixed(2);
+  $("stopAfter").classList.toggle("on", now.stopAfterCurrent);
+  $("autoplay").classList.toggle("on", now.autoplay);
+  const sleep = now.sleepTimer;
+  $("sleep").value = sleep ? (sleep.endOfTrack ? "end" : $("sleep").value || "") : "";
+  $("sleepLeft").textContent = sleep && !sleep.endOfTrack ? fmt(sleep.remainingMs) + " left" : "";
+  $("error").hidden = !now.error; $("error").textContent = now.error || "";
+  if (now.likeMessage && now.likeMessage !== render.likeMessage && render.likeAsked) toast(now.likeMessage);
+  render.likeMessage = now.likeMessage;
+  renderProgress();
+  renderQueue();
+}
+
+function position() {
+  const now = state.nowPlaying;
+  if (!now.playing || Date.now() < seekingUntil) return now.positionMs;
+  const moved = now.positionMs + (Date.now() - lastAt) * now.speed;
+  return now.durationMs > 0 ? Math.min(moved, now.durationMs) : moved;
+}
+function renderProgress() {
+  if (!state) return;
+  const now = state.nowPlaying, pos = position(), dur = now.durationMs;
+  const pct = !now.live && dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
+  $("fill").style.width = pct + "%"; $("knob").style.left = pct + "%";
+  $("knob").style.display = now.live || !dur ? "none" : "block";
+  $("pos").textContent = fmt(pos);
+  $("dur").textContent = now.live ? "LIVE" : fmt(dur);
+}
+
+let queueSignature = "";
+function renderQueue() {
+  const q = state.queue;
+  const sig = JSON.stringify([q.currentIndex, q.tracks.map((t) => t.key), q.suggestions.map((t) => t.key)]);
+  if (sig === queueSignature) return;
+  queueSignature = sig;
+  const list = $("queueList"); list.replaceChildren();
+  if (!q.tracks.length) list.appendChild(el("div", "empty", "The queue is empty. Search for something to play."));
+  q.tracks.forEach((track, i) => {
+    list.appendChild(trackRow(track, i, {
+      current: i === q.currentIndex,
+      onPick: () => post("/api/queue/jump", { index: i }), pickTitle: "Play this",
+      buttons: [
+        [ICON.up, "Move up", () => i > 0 && post("/api/queue/move", { from: i, to: i - 1 })],
+        [ICON.down, "Move down", () => i < q.tracks.length - 1 && post("/api/queue/move", { from: i, to: i + 1 })],
+        [ICON.close, "Remove", () => post("/api/queue/remove", { index: i })],
+      ],
+    }));
+  });
+  $("suggestBlock").hidden = !q.suggestions.length;
+  $("suggestLabel").textContent = q.suggestionsFrom ? "Autoplay · " + q.suggestionsFrom : "Autoplay";
+  const sl = $("suggestList"); sl.replaceChildren();
+  q.suggestions.forEach((track, i) => {
+    sl.appendChild(trackRow(track, i, {
+      onPick: () => post("/api/queue/suggestions/play", { index: i }), pickTitle: "Play this",
+      buttons: [
+        [ICON.keep, "Keep in the queue", () => post("/api/queue/suggestions/keep", { index: i })],
+        [ICON.close, "Drop", () => post("/api/queue/suggestions/remove", { index: i })],
+      ],
+    }));
+  });
+}
+
+async function refresh() {
+  try {
+    state = await get("/api/state"); lastAt = Date.now();
+    $("conn").classList.remove("off"); $("connText").textContent = "Connected";
+    render();
+    if (tab === "lyrics") loadLyrics();
+  } catch (e) {
+    $("conn").classList.add("off"); $("connText").textContent = "Not connected";
+  }
+}
+
+// --- Lyrics ---
+async function loadLyrics() {
+  try { lyricsData = await get("/api/lyrics"); } catch (e) { return; }
+  renderLyrics();
+}
+function renderLyrics() {
+  const d = lyricsData, box = $("lyrics");
+  const key = d.track ? d.track.key + "|" + d.provider + "|" + d.lines.length : "none";
+  const sel = $("lyricsSource");
+  if (key !== lyricsKey) {
+    lyricsKey = key; box.replaceChildren();
+    box.className = "lyrics " + (d.synced ? "synced" : "plain");
+    if (!d.track) box.appendChild(el("div", "empty", "Nothing is playing."));
+    else if (d.loading && !d.lines.length) box.appendChild(el("div", "empty", "Looking for the lyrics…"));
+    else if (!d.lines.length) box.appendChild(el("div", "empty", d.error || "No lyrics found for this song."));
+    d.lines.forEach((line, i) => {
+      const p = el("p", "", line.text || "♪");
+      if (d.synced && line.timeMs != null) p.addEventListener("click", () => post("/api/seek", { positionMs: line.timeMs }));
+      p.dataset.i = i; box.appendChild(p);
+    });
+    sel.replaceChildren();
+    d.providers.filter((p) => p.status === "found").forEach((p) => {
+      const o = el("option", "", p.name + (p.synced ? " · synced" : "")); o.value = p.id; sel.appendChild(o);
+    });
+    sel.value = d.provider || ""; sel.hidden = !sel.options.length;
+  }
+  const info = [];
+  if (d.providerName) info.push("From " + d.providerName + (d.synced ? ", synced" : ""));
+  if (d.closeMatch) info.push(`Close match: ${d.closeMatch.title} by ${d.closeMatch.artist}`);
+  if (d.loading) info.push("still looking…");
+  $("lyricsInfo").textContent = info.join(" · ");
+  if (d.synced) highlightLyrics();
+}
+function highlightLyrics() {
+  if (!lyricsData || !lyricsData.synced || !state) return;
+  const pos = position(), lines = lyricsData.lines;
+  let now = -1;
+  for (let i = 0; i < lines.length; i++) if (lines[i].timeMs != null && lines[i].timeMs <= pos) now = i;
+  const box = $("lyrics");
+  box.querySelectorAll("p").forEach((p) => {
+    const i = +p.dataset.i;
+    p.classList.toggle("now", i === now); p.classList.toggle("past", i < now);
+  });
+  if (now !== highlightLyrics.last) {
+    highlightLyrics.last = now;
+    const p = box.querySelector(`p[data-i="${now}"]`);
+    if (p) box.scrollTo({ top: p.offsetTop - box.clientHeight / 3, behavior: "smooth" });
+  }
+}
+$("lyricsSource").addEventListener("change", (e) => post("/api/lyrics/provider", { provider: e.target.value }).then(loadLyrics));
+
+// --- Search ---
+document.querySelectorAll("#kind button").forEach((b) => b.addEventListener("click", () => {
+  searchKind = b.dataset.kind;
+  document.querySelectorAll("#kind button").forEach((x) => x.classList.toggle("active", x === b));
+  $("q").placeholder = searchKind === "radio" ? "A station, a city, a kind of music — or nothing, for the most listened-to" : "Songs, artists, or !sc / !ytm for one service";
+}));
+$("searchForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const q = $("q").value.trim();
+  if (!q && searchKind === "music") return;
+  const list = $("searchList"); list.replaceChildren(el("div", "empty", "Searching…"));
+  let found;
+  try { found = await get(`/api/search?kind=${searchKind}&q=${encodeURIComponent(q)}`); }
+  catch (err) { list.replaceChildren(el("div", "empty", err.message)); return; }
+  list.replaceChildren();
+  if (!found.tracks.length) list.appendChild(el("div", "empty", found.error || "Nothing found."));
+  found.tracks.forEach((track, i) => {
+    const radio = track.provider === "radio";
+    list.appendChild(trackRow(track, i, {
+      onPick: () => post("/api/play-track", { from: "search", index: i, mode: "now" }).then((ok) => ok && toast("Playing " + track.title)),
+      pickTitle: "Play now",
+      buttons: radio ? [[ICON.playSmall, "Play now", () => post("/api/play-track", { from: "search", index: i })]] : [
+        [ICON.playSmall, "Play now", () => post("/api/play-track", { from: "search", index: i, mode: "now" })],
+        [ICON.next, "Play next", () => post("/api/play-track", { from: "search", index: i, mode: "next" }).then((ok) => ok && toast("Plays next: " + track.title))],
+        [ICON.add, "Add to queue", () => post("/api/play-track", { from: "search", index: i, mode: "queue" }).then((ok) => ok && toast("Added: " + track.title))],
+      ],
+    }));
+  });
+});
+$("linkForm").addEventListener("submit", (e) => { e.preventDefault(); const url = $("link").value.trim(); if (url) post("/api/open", { url, action: "play" }).then((ok) => ok && toast("Opening the link…")); });
+$("queueLink").addEventListener("click", () => { const url = $("link").value.trim(); if (url) post("/api/open", { url, action: "queue" }).then((ok) => ok && toast("Adding the link to the queue…")); });
+
+// --- Playlists and recent ---
+async function loadPlaylists() {
+  const list = $("playlistList"); $("playlistOpen").hidden = true; list.hidden = false;
+  const d = await get("/api/playlists").catch(() => ({ playlists: [] }));
+  list.replaceChildren();
+  if (!d.playlists.length) list.appendChild(el("div", "empty", "No playlists in your Noctorium library yet."));
+  d.playlists.forEach((p, i) => {
+    list.appendChild(trackRow({ title: p.title, artist: p.count + (p.count === 1 ? " song" : " songs") }, i, {
+      onPick: () => showPlaylist(p.id), pickTitle: "Open",
+      buttons: [[ICON.playSmall, "Play", () => post("/api/playlists/play", { id: p.id }).then((ok) => ok && toast("Playing " + p.title))]],
+    }));
+  });
+}
+async function showPlaylist(id) {
+  const d = await get("/api/playlist?id=" + encodeURIComponent(id)).catch((e) => { toast(e.message); return null; });
+  if (!d) return;
+  openPlaylist = d; $("playlistList").hidden = true; $("playlistOpen").hidden = false; $("playlistTitle").textContent = d.title;
+  const list = $("playlistTracks"); list.replaceChildren();
+  d.tracks.forEach((track, i) => list.appendChild(trackRow(track, i, {
+    onPick: () => post("/api/playlists/play", { id, index: i }), pickTitle: "Play from here",
+    buttons: [
+      [ICON.next, "Play next", () => post("/api/play-track", { from: "playlist", playlist: id, index: i, mode: "next" }).then((ok) => ok && toast("Plays next: " + track.title))],
+      [ICON.add, "Add to queue", () => post("/api/play-track", { from: "playlist", playlist: id, index: i, mode: "queue" }).then((ok) => ok && toast("Added: " + track.title))],
+    ],
+  })));
+}
+$("playlistBack").addEventListener("click", loadPlaylists);
+$("playlistPlay").addEventListener("click", () => openPlaylist && post("/api/playlists/play", { id: openPlaylist.id }));
+async function loadRecent() {
+  const d = await get("/api/recent").catch(() => ({ tracks: [] }));
+  const list = $("recentList"); list.replaceChildren();
+  if (!d.tracks.length) list.appendChild(el("div", "empty", "Nothing played yet."));
+  d.tracks.forEach((track, i) => list.appendChild(trackRow(track, i, {
+    onPick: () => post("/api/play-track", { from: "recent", index: i }), pickTitle: "Play now",
+    buttons: [
+      [ICON.next, "Play next", () => post("/api/play-track", { from: "recent", index: i, mode: "next" }).then((ok) => ok && toast("Plays next: " + track.title))],
+      [ICON.add, "Add to queue", () => post("/api/play-track", { from: "recent", index: i, mode: "queue" }).then((ok) => ok && toast("Added: " + track.title))],
+    ],
+  })));
+}
+async function loadApi() {
+  const d = await get("/api").catch(() => null); if (!d) return;
+  const box = $("apiList"); box.replaceChildren();
+  [["GET", d.get], ["POST", d.post]].forEach(([m, items]) => {
+    box.appendChild(el("h3", "", m)); const ul = el("ul");
+    items.forEach((x) => { const li = el("li"); li.appendChild(el("code", "", x)); ul.appendChild(li); });
+    box.appendChild(ul);
+  });
+}
+
+// --- Tabs and controls ---
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => {
+  tab = b.dataset.tab;
+  document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("active", x === b));
+  document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + tab));
+  if (tab === "lyrics") { lyricsKey = null; loadLyrics(); }
+  if (tab === "playlists") loadPlaylists();
+  if (tab === "recent") loadRecent();
+  if (tab === "api") loadApi();
+  if (tab === "search") $("q").focus();
+}));
+document.querySelectorAll("[data-post]").forEach((b) => b.addEventListener("click", () => {
+  if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
+  post(b.dataset.post).then(() => { if (b.dataset.post.startsWith("/api/lyrics")) { lyricsKey = null; setTimeout(loadLyrics, 300); } });
+}));
+$("play").addEventListener("click", () => post("/api/play-pause"));
+$("prev").addEventListener("click", () => post("/api/previous"));
+$("next").addEventListener("click", () => post("/api/next"));
+$("shuffle").addEventListener("click", () => post("/api/shuffle"));
+$("repeat").addEventListener("click", () => post("/api/repeat"));
+$("like").addEventListener("click", () => { render.likeAsked = true; render.likeMessage = null; post("/api/like"); });
+$("mute").addEventListener("click", () => post("/api/mute"));
+$("stopAfter").addEventListener("click", () => post("/api/stop-after-current"));
+$("autoplay").addEventListener("click", () => post("/api/autoplay"));
+$("volume").addEventListener("input", (e) => { volumeHeldUntil = Date.now() + 1500; post("/api/volume", { volume: e.target.value / 100 }); });
+for (let s = 0.5; s <= 2.001; s += 0.25) { const o = el("option", "", s.toFixed(2).replace(/0$/, "") + "×"); o.value = s.toFixed(2); $("speed").appendChild(o); }
+$("speed").addEventListener("change", (e) => post("/api/speed", { speed: +e.target.value }));
+$("sleep").addEventListener("change", (e) => {
+  const v = e.target.value;
+  post("/api/sleep", v === "" ? { cancel: true } : v === "end" ? { endOfTrack: true } : { minutes: +v });
+});
+$("bar").addEventListener("click", (e) => {
+  if (!state || state.nowPlaying.live || !state.nowPlaying.durationMs) return;
+  const r = $("bar").getBoundingClientRect();
+  const to = Math.round(((e.clientX - r.left) / r.width) * state.nowPlaying.durationMs);
+  state.nowPlaying.positionMs = to; lastAt = Date.now(); seekingUntil = Date.now() + 700; renderProgress();
+  post("/api/seek", { positionMs: to });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.code === "Space") { e.preventDefault(); post("/api/play-pause"); }
+  else if (e.key === "ArrowRight" && e.shiftKey) post("/api/next");
+  else if (e.key === "ArrowLeft" && e.shiftKey) post("/api/previous");
+  else if (e.key === "ArrowRight") post("/api/seek", { deltaMs: 5000 });
+  else if (e.key === "ArrowLeft") post("/api/seek", { deltaMs: -5000 });
+  else if (e.key === "ArrowUp") post("/api/volume", { delta: 0.05 });
+  else if (e.key === "ArrowDown") post("/api/volume", { delta: -0.05 });
+});
+
+refresh();
+setInterval(refresh, 1000);
+setInterval(() => { renderProgress(); if (tab === "lyrics") highlightLyrics(); }, 200);
+</script>
+</body>
+</html>
