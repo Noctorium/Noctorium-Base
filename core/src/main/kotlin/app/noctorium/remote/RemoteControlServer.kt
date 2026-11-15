@@ -264,12 +264,31 @@ class RemoteControlServer(
     }
 }
 
-/** The controller page, read once from the resources. */
+/**
+ * The controller page, read once from the resources, with Noctorium's logo written into it.
+ *
+ * The logo goes in as a `data:` address where the page says [LOGO_MARK], rather than as a file of its own, so the
+ * server stays a server of text and the page needs nothing more from it to look right.
+ */
 internal object RemoteControlPage {
+    const val LOGO_MARK = "__NOCTORIUM_LOGO__"
+
     private val page: String? by lazy {
-        RemoteControlPage::class.java.getResourceAsStream("/app/noctorium/remote/controller.html")
-            ?.use { it.readBytes().toString(Charsets.UTF_8) }
+        val html = resource("controller.html")?.toString(Charsets.UTF_8) ?: return@lazy null
+        html.replace(LOGO_MARK, logoAddress())
     }
 
     fun html(): String? = page
+
+    /** The logo as a `data:` address, or a transparent pixel if this build lost it. */
+    internal fun logoAddress(): String {
+        val png = resource("logo.png") ?: return TRANSPARENT_PIXEL
+        return "data:image/png;base64," + java.util.Base64.getEncoder().encodeToString(png)
+    }
+
+    private fun resource(name: String): ByteArray? =
+        RemoteControlPage::class.java.getResourceAsStream("/app/noctorium/remote/$name")?.use { it.readBytes() }
+
+    private const val TRANSPARENT_PIXEL =
+        "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"
 }

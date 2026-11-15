@@ -13,6 +13,8 @@ import app.noctorium.playback.PlaybackStatus
 import app.noctorium.playback.RepeatMode
 import app.noctorium.playback.SleepTimerState
 import app.noctorium.playlists.LocalPlaylistRepository
+import app.noctorium.settings.AccentPreset
+import app.noctorium.settings.ThemePreset
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
@@ -56,6 +58,34 @@ class RemoteControlApiTest {
     private fun RemoteControlApi.ok(path: String, body: String = "{}") {
         val reply = post(path, body)
         assertEquals(200, reply.status, "$path answered ${reply.body}")
+    }
+
+    @Test
+    fun `the theme Noctorium is drawn in is there for the page to wear`() {
+        harness().use { state ->
+            val api = RemoteControlApi(state)
+            val night = api.get("/api/state")["theme"]!!.jsonObject
+            assertEquals("Night", night["name"]!!.jsonPrimitive.content)
+            assertEquals("#000000", night["background"]!!.jsonPrimitive.content)
+            assertEquals("#b47cff", night["accent"]!!.jsonPrimitive.content)
+            assertFalse(night["light"]!!.jsonPrimitive.boolean)
+
+            state.setTheme(ThemePreset.NOCTORIUM_DAY)
+            waitFor("the Day theme") { api.get("/api/theme")["name"]!!.jsonPrimitive.content == "Day" }
+            val day = api.get("/api/theme")
+            assertTrue(day["light"]!!.jsonPrimitive.boolean)
+            assertEquals("#7c3aed", day["accent"]!!.jsonPrimitive.content)
+            assertEquals("#faf7ff", day["background"]!!.jsonPrimitive.content)
+
+            // An accent picked over the theme is the one the page is given.
+            state.setAccent(AccentPreset.MINT)
+            waitFor("Mint") { api.get("/api/theme")["accent"]!!.jsonPrimitive.content == "#5fe3b0" }
+            state.setCustomAccent(0x123456)
+            waitFor("their own colour") { api.get("/api/theme")["accent"]!!.jsonPrimitive.content == "#123456" }
+            state.setAccent(AccentPreset.ARTWORK)
+            waitFor("the artwork") { api.get("/api/theme")["followsArtwork"]!!.jsonPrimitive.boolean }
+            assertEquals("#7c3aed", api.get("/api/theme")["accent"]!!.jsonPrimitive.content, "the theme's own, until the page sees the cover")
+        }
     }
 
     @Test

@@ -71,6 +71,13 @@ class RemoteControlServerTest {
         assertEquals(200, page.status)
         assertTrue(page.headers["content-type"]!!.startsWith("text/html"))
         assertTrue("Noctorium Remote" in page.body)
+        // Noctorium's own logo, written into the page, in its header and its browser tab.
+        assertTrue(RemoteControlPage.LOGO_MARK !in page.body, "the logo was left as its placeholder")
+        assertTrue(page.body.contains("""<img class="logo" src="data:image/png;base64,"""))
+        assertTrue(page.body.contains("""<link rel="icon" type="image/png" href="data:image/png;base64,"""))
+        val logo = java.util.Base64.getDecoder().decode(RemoteControlPage.logoAddress().substringAfter("base64,"))
+        assertEquals(listOf(0x89, 'P'.code, 'N'.code, 'G'.code), logo.take(4).map { it.toInt() and 0xFF }, "the logo is a PNG")
+        assertTrue(logo.size in 2_000..60_000, "the logo is small enough to sit in the page: ${logo.size} bytes")
         assertTrue("frame-ancestors 'none'" in page.headers["content-security-policy"]!!)
         assertEquals("no-store", page.headers["cache-control"])
         assertTrue(page.headers.keys.none { it.startsWith("access-control") }, "no other page may read the answers")

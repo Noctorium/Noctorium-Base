@@ -14,6 +14,8 @@ import app.noctorium.playback.MIN_SPEED
 import app.noctorium.playback.PlaybackStatus
 import app.noctorium.playback.RepeatMode
 import app.noctorium.playback.SleepTimerState
+import app.noctorium.settings.AccentPreset
+import app.noctorium.settings.themeColours
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -89,6 +91,7 @@ class RemoteControlApi(
         "/api" -> RemoteReply.json(endpoints())
         "/api/state" -> RemoteReply.json(stateJson())
         "/api/now-playing" -> RemoteReply.json(nowPlaying())
+        "/api/theme" -> RemoteReply.json(themeJson())
         "/api/queue" -> RemoteReply.json(queueJson())
         "/api/lyrics" -> RemoteReply.json(lyrics(wait = query["wait"] == "1" || query["wait"] == "true"))
         "/api/search" -> RemoteReply.json(search(query["q"].orEmpty(), kindOf(query["kind"])))
@@ -101,7 +104,34 @@ class RemoteControlApi(
     private fun stateJson(): JsonObject = buildJsonObject {
         put("nowPlaying", nowPlaying())
         put("queue", queueJson())
+        put("theme", themeJson())
     }
+
+    /**
+     * The colours Noctorium is drawn in, as `#rrggbb`, so the page can wear them too. The accent is the one in force:
+     * the theme's own, or the one picked over it. Following the artwork is the page's to do, from the cover it has.
+     */
+    private fun themeJson(): JsonObject {
+        val preferences = state.settings.value.preferences
+        val colours = preferences.themeColours()
+        val accent = when (preferences.accent) {
+            AccentPreset.CUSTOM -> preferences.customAccent
+            else -> preferences.accent.argb ?: colours.accent
+        }
+        return buildJsonObject {
+            put("name", preferences.theme.displayName)
+            put("light", colours.light)
+            put("background", hex(colours.background))
+            put("panel", hex(colours.panel))
+            put("card", hex(colours.card))
+            put("text", hex(colours.text))
+            put("subtext", hex(colours.subtext))
+            put("accent", hex(accent))
+            put("followsArtwork", preferences.accent == AccentPreset.ARTWORK)
+        }
+    }
+
+    private fun hex(argb: Long): String = "#%06x".format(argb and 0xFFFFFF)
 
     private fun nowPlaying(): JsonObject {
         val playback = playbackNow()
@@ -479,6 +509,7 @@ class RemoteControlApi(
         val ENDPOINTS_GET = listOf(
             "/api/state  -- now playing and the queue together",
             "/api/now-playing",
+            "/api/theme  -- the colours Noctorium is drawn in",
             "/api/queue",
             "/api/lyrics?wait=1  -- the playing song's lyrics, with currentLine",
             "/api/search?q=daft punk&kind=music|radio",

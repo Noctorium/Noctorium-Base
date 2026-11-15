@@ -4,32 +4,38 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Noctorium Remote</title>
+<link rel="icon" type="image/png" href="__NOCTORIUM_LOGO__">
 <style>
   :root {
     --bg: #0e0c14; --card: #17141f; --raised: #211d2c; --line: #2d2839; --text: #f1edf8; --muted: #a49cb5;
-    --accent: #b47cff; --accent-ink: #1a0f2a; --danger: #ff6b81;
+    --accent: #b47cff; --accent-ink: #1a0f2a; --accent-text: #b47cff; --danger: #ff6b81;
+    --font: 14px; --radius: 20px; --radius-s: 12px; --cover: 168px; --backdrop: .28; --lyric-size: 22px;
   }
+  [hidden] { display: none !important; }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); font: var(--font)/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
   body { min-height: 100vh; }
   button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
   button:disabled { opacity: .4; cursor: default; }
-  input, select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; outline: none; }
+  input, select { font: inherit; color: var(--text); background: var(--raised); border: 1px solid var(--line); border-radius: var(--radius-s); padding: 9px 12px; outline: none; }
   input:focus, select:focus { border-color: var(--accent); }
   .wrap { max-width: 980px; margin: 0 auto; padding: 20px 16px 40px; }
   header { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; }
-  header .logo { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), #6b3fd1); display: grid; place-items: center; font-weight: 800; color: #fff; }
+  header .logo { width: 32px; height: 32px; border-radius: 9px; object-fit: cover; display: block; box-shadow: 0 0 0 1px var(--line), 0 4px 14px rgba(0,0,0,.35); }
   header h1 { font-size: 17px; margin: 0; font-weight: 700; letter-spacing: .2px; }
-  header .conn { margin-left: auto; font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  header .gear { margin-left: auto; }
+  header .conn { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
   header .dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; }
   header .conn.off .dot { background: var(--danger); }
 
-  .player { position: relative; overflow: hidden; border-radius: 20px; background: var(--card); border: 1px solid var(--line); padding: 20px; display: grid; grid-template-columns: 168px 1fr; gap: 22px; }
-  .backdrop { position: absolute; inset: -40px; background-size: cover; background-position: center; filter: blur(48px) saturate(1.3); opacity: .28; pointer-events: none; }
+  .player { position: relative; overflow: hidden; border-radius: var(--radius); background: var(--card); border: 1px solid var(--line); padding: 20px; display: grid; grid-template-columns: var(--cover) 1fr; gap: 22px; }
+  .backdrop { position: absolute; inset: -40px; background-size: cover; background-position: center; filter: blur(48px) saturate(1.3); opacity: var(--backdrop); pointer-events: none; }
   .player > :not(.backdrop) { position: relative; }
-  .cover { width: 168px; height: 168px; border-radius: 14px; background: var(--raised) center/cover no-repeat; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
+  /* On a pale page the cover lends its colours only: a dark cover must not turn the card grey. */
+  body.light .backdrop { filter: blur(48px) saturate(1.8); mix-blend-mode: color; }
+  .cover { width: var(--cover); height: var(--cover); border-radius: var(--radius-s); background: var(--raised) center/cover no-repeat; box-shadow: 0 10px 30px rgba(0,0,0,.45); }
   .meta { min-width: 0; display: flex; flex-direction: column; }
-  .service { font-size: 11px; text-transform: uppercase; letter-spacing: .9px; color: var(--accent); font-weight: 700; }
+  .service { font-size: 11px; text-transform: uppercase; letter-spacing: .9px; color: var(--accent-text); font-weight: 700; }
   .title { font-size: 22px; font-weight: 750; margin: 2px 0 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .artist { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .progress { margin-top: auto; padding-top: 14px; }
@@ -41,7 +47,7 @@
   .controls { display: flex; align-items: center; gap: 6px; margin-top: 10px; flex-wrap: wrap; }
   .icon { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--muted); }
   .icon:hover:not(:disabled) { background: var(--raised); color: var(--text); }
-  .icon.on { color: var(--accent); }
+  .icon.on { color: var(--accent-text); }
   .icon svg { width: 21px; height: 21px; fill: currentColor; }
   .main-btn { width: 52px; height: 52px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; }
   .main-btn svg { width: 26px; height: 26px; fill: currentColor; }
@@ -50,13 +56,13 @@
   .volume { display: flex; align-items: center; gap: 4px; }
   input[type=range] { -webkit-appearance: none; appearance: none; padding: 0; border: 0; background: transparent; width: 110px; height: 22px; }
   input[type=range]::-webkit-slider-runnable-track { height: 5px; border-radius: 3px; background: var(--line); }
-  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; margin-top: -4.5px; }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #fff; margin-top: -4.5px; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
   input[type=range]::-moz-range-track { height: 5px; border-radius: 3px; background: var(--line); }
-  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; }
+  input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.45); }
   .extras { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; align-items: center; font-size: 12px; color: var(--muted); }
   .extras select { padding: 5px 8px; font-size: 12px; border-radius: 8px; }
   .chip { border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; font-size: 12px; color: var(--muted); background: var(--raised); }
-  .chip.on { border-color: var(--accent); color: var(--accent); }
+  .chip.on { border-color: var(--accent); color: var(--accent-text); }
   .error { color: var(--danger); font-size: 12px; margin-top: 6px; }
 
   nav { display: flex; gap: 4px; margin: 22px 0 12px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
@@ -68,10 +74,10 @@
   .toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items: center; }
   .toolbar .grow { flex: 1; min-width: 160px; }
   .list { display: flex; flex-direction: column; gap: 2px; }
-  .row { display: grid; grid-template-columns: 26px 44px 1fr auto; gap: 12px; align-items: center; padding: 7px 10px; border-radius: 12px; }
+  .row { display: grid; grid-template-columns: 26px 44px 1fr auto; gap: 12px; align-items: center; padding: 7px 10px; border-radius: var(--radius-s); }
   .row:hover { background: var(--card); }
   .row.current { background: var(--raised); }
-  .row.current .num { color: var(--accent); }
+  .row.current .num { color: var(--accent-text); }
   .row .num { color: var(--muted); font-size: 12px; text-align: right; font-variant-numeric: tabular-nums; }
   .row .art { width: 44px; height: 44px; border-radius: 8px; background: var(--raised) center/cover no-repeat; }
   .row .text { min-width: 0; cursor: pointer; }
@@ -83,7 +89,7 @@
   .row .dur { color: var(--muted); font-size: 12px; margin-right: 4px; font-variant-numeric: tabular-nums; }
   .section-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .8px; margin: 18px 10px 6px; font-weight: 700; }
   .empty { color: var(--muted); padding: 26px 10px; text-align: center; }
-  .btn { padding: 8px 14px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line); font-weight: 600; font-size: 13px; }
+  .btn { padding: 8px 14px; border-radius: var(--radius-s); background: var(--raised); border: 1px solid var(--line); font-weight: 600; font-size: 13px; }
   .btn:hover { border-color: var(--accent); }
   .btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
   .seg { display: inline-flex; background: var(--raised); border: 1px solid var(--line); border-radius: 10px; padding: 3px; }
@@ -91,12 +97,14 @@
   .seg button.active { background: var(--accent); color: var(--accent-ink); }
 
   .lyrics { position: relative; max-height: 62vh; overflow-y: auto; padding: 10px 6px 30vh; scroll-behavior: smooth; }
-  .lyrics p { margin: 0; padding: 7px 10px; font-size: 22px; font-weight: 700; color: var(--muted); opacity: .5; border-radius: 10px; transform-origin: left center; transition: opacity .25s, color .25s, transform .25s; }
+  .lyrics p { margin: 0; padding: 7px 10px; font-size: var(--lyric-size); font-weight: 700; color: var(--muted); opacity: .5; border-radius: var(--radius-s); transform-origin: left center; transition: opacity .25s, color .25s, transform .25s; }
   .lyrics.synced p { cursor: pointer; }
   .lyrics.synced p:hover { background: var(--card); }
-  .lyrics p.now { color: #fff; opacity: 1; transform: scale(1.06); text-shadow: 0 0 18px rgba(180, 124, 255, .55); }
+  .lyrics p.now { color: var(--text); opacity: 1; transform: scale(1.06); text-shadow: 0 0 18px color-mix(in srgb, var(--accent) 55%, transparent); }
+  body.lyrics-center .lyrics p { text-align: center; transform-origin: center; }
+  body.no-glow .lyrics p.now { text-shadow: none; }
   .lyrics p.past { opacity: .28; }
-  .lyrics.plain p { opacity: .9; color: var(--text); font-size: 18px; font-weight: 600; }
+  .lyrics.plain p { opacity: .9; color: var(--text); font-size: calc(var(--lyric-size) * .82); font-weight: 600; }
   .lyrics-info { color: var(--muted); font-size: 12px; }
   .toast { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); background: var(--raised); border: 1px solid var(--line); padding: 10px 16px; border-radius: 12px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: calc(100% - 32px); }
   .toast.show { opacity: 1; }
@@ -104,9 +112,46 @@
   .api { color: var(--muted); font-size: 13px; }
   .api ul { padding-left: 18px; }
 
+  /* Compact: more of the lists on the screen at once. */
+  body.compact .player { padding: 14px; gap: 14px; }
+  body.compact .row { padding: 4px 8px; grid-template-columns: 26px 36px 1fr auto; gap: 10px; }
+  body.compact .row .art { width: 36px; height: 36px; }
+  body.compact nav { margin: 14px 0 8px; }
+  body.compact .controls { margin-top: 6px; }
+
+  /* Only the player, for a small window or a phone on a stand. */
+  body.player-only nav, body.player-only .panel { display: none !important; }
+  body.player-only .wrap { max-width: 560px; }
+  body.player-only .player { grid-template-columns: 1fr; text-align: center; }
+  body.player-only .cover { margin: 0 auto; width: min(calc(var(--cover) * 1.6), 100%); height: auto; aspect-ratio: 1; }
+  body.player-only .controls, body.player-only .extras { justify-content: center; }
+  body.player-only .spacer { flex-basis: 100%; height: 0; }
+
+  /* Customize */
+  .sheet-shade { position: fixed; inset: 0; background: rgba(0,0,0,.5); opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 10; }
+  .sheet { position: fixed; top: 0; right: 0; bottom: 0; width: min(420px, 100%); background: var(--card); border-left: 1px solid var(--line); overflow-y: auto; padding: 18px 18px 40px; transform: translateX(105%); transition: transform .22s ease, visibility .22s; z-index: 11; visibility: hidden; }
+  body.customizing .sheet-shade { opacity: 1; pointer-events: auto; }
+  body.customizing .sheet { transform: none; visibility: visible; }
+  .sheet-head { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  .sheet-head h2 { margin: 0; font-size: 18px; flex: 1; }
+  .sheet h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .9px; color: var(--accent-text); margin: 22px 0 6px; }
+  .opt { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 7px 0; min-height: 40px; }
+  .opt > span { flex: 1; }
+  .opt small { display: block; color: var(--muted); font-size: 12px; }
+  .opt select, .opt input[type=text] { max-width: 190px; }
+  .opt .seg button { padding: 5px 10px; }
+  .opt input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+  .opt input[type=range] { width: 150px; }
+  .swatches { display: flex; flex-wrap: wrap; gap: 8px; padding: 4px 0 8px; }
+  .swatch { position: relative; min-width: 30px; height: 30px; border-radius: 999px; border: 2px solid var(--line); background: var(--raised); font-size: 11px; font-weight: 700; color: var(--muted); padding: 0 9px; }
+  .swatch.dot { width: 30px; padding: 0; }
+  .swatch.active { border-color: var(--text); box-shadow: 0 0 0 2px var(--accent); color: var(--text); }
+  .swatch input[type=color] { position: absolute; inset: 0; opacity: 0; width: 100%; height: 100%; padding: 0; border: 0; cursor: pointer; }
+  .sheet .foot { display: flex; gap: 8px; margin-top: 26px; }
+
   @media (max-width: 640px) {
     .player { grid-template-columns: 1fr; gap: 14px; }
-    .cover { width: 100%; height: auto; aspect-ratio: 1; max-width: 300px; margin: 0 auto; }
+    .cover { width: 100%; height: auto; aspect-ratio: 1; max-width: min(300px, calc(var(--cover) * 1.8)); margin: 0 auto; }
     .title { font-size: 19px; }
     .row { grid-template-columns: 44px 1fr auto; }
     .row .num { display: none; }
@@ -118,8 +163,9 @@
 <body>
 <div class="wrap">
   <header>
-    <div class="logo">N</div>
-    <h1>Noctorium Remote</h1>
+    <img class="logo" src="__NOCTORIUM_LOGO__" alt="Noctorium">
+    <h1 id="pageName">Noctorium Remote</h1>
+    <button class="icon gear" id="customize" title="Customize this page"><svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z"/></svg></button>
     <div class="conn" id="conn"><span class="dot"></span><span id="connText">Connected</span></div>
   </header>
 
@@ -227,6 +273,16 @@
   </section>
 </div>
 <div class="toast" id="toast"></div>
+<div class="sheet-shade" id="sheetShade"></div>
+<aside class="sheet" id="sheet" aria-label="Customize">
+  <div class="sheet-head">
+    <h2>Customize</h2>
+    <button class="icon" id="sheetClose" title="Close"><svg viewBox="0 0 24 24"><path d="M19 6.4 17.6 5 12 10.6 6.4 5 5 6.4 10.6 12 5 17.6 6.4 19 12 13.4 17.6 19 19 17.6 13.4 12z"/></svg></button>
+  </div>
+  <div class="lyrics-info">Kept in this browser, so a phone and a computer can each have their own.</div>
+  <div id="sheetBody"></div>
+  <div class="foot"><button class="btn" id="resetLook">Back to how it was</button></div>
+</aside>
 
 <script>
 "use strict";
@@ -305,7 +361,9 @@ function render() {
   $("live").style.display = now.live ? "inline-block" : "none";
   const cover = t && t.artworkUrl ? `url("${t.artworkUrl.replace(/"/g, "%22")}")` : "";
   if ($("cover").dataset.src !== cover) { $("cover").style.backgroundImage = cover; $("backdrop").style.backgroundImage = cover; $("cover").dataset.src = cover; }
-  document.title = t ? `${now.playing ? "▶ " : ""}${t.title} · Noctorium Remote` : "Noctorium Remote";
+  document.title = t ? `${now.playing ? "▶ " : ""}${t.title} · ${look.name}` : look.name;
+  if (state.theme && JSON.stringify(state.theme) !== applyLook.theme) applyLook();
+  if (look.accent === "cover" || (look.accent === "app" && state.theme && state.theme.followsArtwork)) followCover(t && t.artworkUrl);
   $("playIcon").innerHTML = `<path d="${now.status === "resolving" ? ICON.spin : now.playing ? ICON.pause : ICON.play}"/>`;
   $("shuffle").classList.toggle("on", q.shuffle);
   $("repeat").classList.toggle("on", q.repeat !== "off");
@@ -436,7 +494,7 @@ function highlightLyrics() {
   if (now !== highlightLyrics.last) {
     highlightLyrics.last = now;
     const p = box.querySelector(`p[data-i="${now}"]`);
-    if (p) box.scrollTo({ top: p.offsetTop - box.clientHeight / 3, behavior: "smooth" });
+    if (p && look.lyricScroll) box.scrollTo({ top: p.offsetTop - box.clientHeight / 3, behavior: "smooth" });
   }
 }
 $("lyricsSource").addEventListener("change", (e) => post("/api/lyrics/provider", { provider: e.target.value }).then(loadLyrics));
@@ -524,8 +582,11 @@ async function loadApi() {
 }
 
 // --- Tabs and controls ---
-document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => {
-  tab = b.dataset.tab;
+document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("click", () => showTab(b.dataset.tab)));
+function showTab(name) {
+  const b = document.querySelector(`#tabs button[data-tab="${name}"]`);
+  if (!b) return;
+  tab = name;
   document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("active", x === b));
   document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + tab));
   if (tab === "lyrics") { lyricsKey = null; loadLyrics(); }
@@ -533,7 +594,7 @@ document.querySelectorAll("#tabs button").forEach((b) => b.addEventListener("cli
   if (tab === "recent") loadRecent();
   if (tab === "api") loadApi();
   if (tab === "search") $("q").focus();
-}));
+}
 document.querySelectorAll("[data-post]").forEach((b) => b.addEventListener("click", () => {
   if (b.dataset.confirm && !confirm(b.dataset.confirm)) return;
   post(b.dataset.post).then(() => { if (b.dataset.post.startsWith("/api/lyrics")) { lyricsKey = null; setTimeout(loadLyrics, 300); } });
@@ -562,15 +623,245 @@ $("bar").addEventListener("click", (e) => {
   post("/api/seek", { positionMs: to });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (!look.keys || e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.key === "Escape" && document.body.classList.contains("customizing")) return closeSheet();
   if (e.code === "Space") { e.preventDefault(); post("/api/play-pause"); }
   else if (e.key === "ArrowRight" && e.shiftKey) post("/api/next");
   else if (e.key === "ArrowLeft" && e.shiftKey) post("/api/previous");
-  else if (e.key === "ArrowRight") post("/api/seek", { deltaMs: 5000 });
-  else if (e.key === "ArrowLeft") post("/api/seek", { deltaMs: -5000 });
-  else if (e.key === "ArrowUp") post("/api/volume", { delta: 0.05 });
-  else if (e.key === "ArrowDown") post("/api/volume", { delta: -0.05 });
+  else if (e.key === "ArrowRight") post("/api/seek", { deltaMs: look.seekStep * 1000 });
+  else if (e.key === "ArrowLeft") post("/api/seek", { deltaMs: -look.seekStep * 1000 });
+  else if (e.key === "ArrowUp") { e.preventDefault(); post("/api/volume", { delta: look.volumeStep / 100 }); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); post("/api/volume", { delta: -look.volumeStep / 100 }); }
+  else if (e.key === "m" || e.key === "M") post("/api/mute");
+  else if (e.key === "l" || e.key === "L") { render.likeAsked = true; post("/api/like"); }
 });
+
+// --- Customize ---
+// Everything here is kept in this browser's own storage, so a phone on a stand and a computer can look different.
+const LOOK_KEY = "noctorium-remote-look";
+const LOOK_DEFAULTS = {
+  name: "Noctorium Remote",
+  colours: "app", accent: "app", customAccent: "#b47cff",
+  backdrop: 28, cover: "medium", corners: "round", density: "comfortable", text: 100, layout: "full",
+  parts: { service: true, shuffleRepeat: true, like: true, volume: true, extras: true, connection: true },
+  tabs: { queue: true, lyrics: true, search: true, playlists: true, recent: true, api: true },
+  startTab: "queue",
+  lyricSize: "m", lyricAlign: "left", lyricGlow: true, lyricScroll: true,
+  keys: true, seekStep: 5, volumeStep: 5,
+};
+const PALETTES = {
+  dark: { background: "#0e0c14", panel: "#17141f", card: "#211d2c", text: "#f1edf8", subtext: "#a49cb5", light: false },
+  black: { background: "#000000", panel: "#0b0a0f", card: "#17141f", text: "#f8f4ff", subtext: "#a49cb5", light: false },
+  light: { background: "#f6f3fb", panel: "#ffffff", card: "#ece6f6", text: "#1a1425", subtext: "#5b5470", light: true },
+};
+const ACCENTS = [["#b47cff", "Violet"], ["#ff6ec7", "Magenta"], ["#ff9757", "Ember"], ["#5ab2ff", "Azure"], ["#5fe3b0", "Mint"], ["#e0243f", "Crimson"], ["#f5c542", "Gold"]];
+const TAB_NAMES = { queue: "Queue", lyrics: "Lyrics", search: "Search", playlists: "Playlists", recent: "Recently played", api: "API" };
+const SIZES = { cover: { small: 120, medium: 168, large: 230 }, lyric: { s: 17, m: 22, l: 28, xl: 36 }, corners: { round: [20, 12], soft: [12, 8], square: [4, 3] } };
+
+function loadLook() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LOOK_KEY) || "{}") || {}; } catch (e) { saved = {}; }
+  return { ...LOOK_DEFAULTS, ...saved,
+    parts: { ...LOOK_DEFAULTS.parts, ...(saved.parts || {}) },
+    tabs: { ...LOOK_DEFAULTS.tabs, ...(saved.tabs || {}) } };
+}
+let look = loadLook();
+function saveLook() { try { localStorage.setItem(LOOK_KEY, JSON.stringify(look)); } catch (e) { /* private window */ } }
+
+const hexRgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+const rgbHex = (r, g, b) => "#" + [r, g, b].map((v) => Math.round(v).toString(16).padStart(2, "0")).join("");
+const mix = (a, b, t) => { const x = hexRgb(a), y = hexRgb(b); return rgbHex(...x.map((v, i) => v + (y[i] - v) * t)); };
+const luminance = (hex) => { const [r, g, b] = hexRgb(hex).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; }); return 0.2126 * r + 0.7152 * g + 0.0722 * b; };
+const validHex = (v) => typeof v === "string" && /^#[0-9a-f]{6}$/i.test(v);
+
+/** The colours in force: Noctorium's own theme, or one of the page's. */
+function palette() {
+  if (look.colours === "app" && state && state.theme) return state.theme;
+  return PALETTES[look.colours] || PALETTES.dark;
+}
+function accentColour(p) {
+  if (look.accent === "custom" && validHex(look.customAccent)) return look.customAccent;
+  if (validHex(look.accent)) return look.accent;
+  const followCoverNow = look.accent === "cover" || (look.accent === "app" && p.followsArtwork);
+  if (followCoverNow && followCover.colour) return followCover.colour;
+  if (validHex(p.accent)) return p.accent;
+  return "#b47cff";
+}
+
+/** Puts [look] on the page: colours, sizes, what shows, which tabs there are. */
+function applyLook() {
+  const p = palette(), root = document.documentElement.style, body = document.body.classList;
+  applyLook.theme = state && state.theme ? JSON.stringify(state.theme) : null;
+  const accent = accentColour(p);
+  root.setProperty("--bg", p.background);
+  root.setProperty("--card", p.panel);
+  root.setProperty("--raised", p.card);
+  root.setProperty("--line", mix(p.card, p.text, p.light ? 0.14 : 0.1));
+  root.setProperty("--text", p.text);
+  root.setProperty("--muted", p.subtext);
+  root.setProperty("--accent", accent);
+  root.setProperty("--accent-ink", luminance(accent) > 0.4 ? "#120c1c" : "#ffffff");
+  // As writing, the accent has to stand out from the page: darkened on a pale one until it does.
+  let text = accent;
+  for (let i = 0; p.light && i < 8 && luminance(text) > 0.2; i++) text = mix(text, "#000000", 0.18);
+  root.setProperty("--accent-text", text);
+  body.toggle("light", !!p.light);
+  root.colorScheme = p.light ? "light" : "dark";
+  root.setProperty("--backdrop", String(Math.min(1, (look.backdrop / 100) * (p.light ? 1.8 : 1))));
+  root.setProperty("--cover", (SIZES.cover[look.cover] || 168) + "px");
+  const [r1, r2] = SIZES.corners[look.corners] || SIZES.corners.round;
+  root.setProperty("--radius", r1 + "px"); root.setProperty("--radius-s", r2 + "px");
+  root.setProperty("--font", (14 * look.text / 100) + "px");
+  root.setProperty("--lyric-size", (SIZES.lyric[look.lyricSize] || 22) + "px");
+  body.toggle("compact", look.density === "compact");
+  body.toggle("player-only", look.layout === "player");
+  body.toggle("lyrics-center", look.lyricAlign === "center");
+  body.toggle("no-glow", !look.lyricGlow);
+  $("pageName").textContent = look.name;
+  if (!state || !state.nowPlaying.track) document.title = look.name;
+  $("service").hidden = !look.parts.service;
+  $("shuffle").hidden = $("repeat").hidden = !look.parts.shuffleRepeat;
+  $("like").hidden = !look.parts.like;
+  document.querySelector(".volume").hidden = !look.parts.volume;
+  document.querySelector(".extras").hidden = !look.parts.extras;
+  $("conn").hidden = !look.parts.connection;
+  document.querySelectorAll("#tabs button").forEach((b) => (b.hidden = !look.tabs[b.dataset.tab]));
+  if (!look.tabs[tab]) { const first = Object.keys(TAB_NAMES).find((t) => look.tabs[t]); if (first) showTab(first); }
+  $("tabs").hidden = !Object.values(look.tabs).some(Boolean);
+}
+
+/** The cover's own colour, for the accent that follows the artwork. Covers some services serve can't be read; then it stays as it was. */
+function followCover(url) {
+  if (!url || url === followCover.url) return;
+  followCover.url = url;
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = () => {
+    try {
+      const c = document.createElement("canvas"); c.width = c.height = 24;
+      const g = c.getContext("2d"); g.drawImage(img, 0, 0, 24, 24);
+      const d = g.getImageData(0, 0, 24, 24).data;
+      let best = null, bestScore = -1;
+      for (let i = 0; i < d.length; i += 4) {
+        const [r, gg, b] = [d[i], d[i + 1], d[i + 2]], max = Math.max(r, gg, b), min = Math.min(r, gg, b);
+        const score = (max - min) * (0.4 + max / 255);
+        if (score > bestScore) { bestScore = score; best = [r, gg, b]; }
+      }
+      if (!best || bestScore < 30) return;
+      // Bright enough to read on the page, whatever the cover's darkness.
+      const lift = palette().light ? 0 : Math.max(0, 170 - Math.max(...best));
+      followCover.colour = rgbHex(...best.map((v) => Math.min(255, v + lift)));
+      applyLook();
+    } catch (e) { /* the service did not let the cover be read */ }
+  };
+  img.src = url;
+}
+
+// The sheet, built from the list of what can be changed.
+function opt(label, hint, control) {
+  const row = el("div", "opt"), text = el("span", "", label);
+  if (hint) text.appendChild(el("small", "", hint));
+  row.append(text, control);
+  return row;
+}
+function segmented(get, set, options) {
+  const seg = el("div", "seg");
+  options.forEach(([value, label]) => {
+    const b = el("button", get() === value ? "active" : "", label); b.type = "button";
+    b.addEventListener("click", () => { set(value); seg.querySelectorAll("button").forEach((x) => x.classList.toggle("active", x === b)); changed(); });
+    seg.appendChild(b);
+  });
+  return seg;
+}
+function choice(get, set, options) {
+  const s = el("select");
+  options.forEach(([value, label]) => { const o = el("option", "", label); o.value = String(value); s.appendChild(o); });
+  s.value = String(get());
+  s.addEventListener("change", () => { set(s.value); changed(); });
+  return s;
+}
+function toggle(get, set) {
+  const c = el("input"); c.type = "checkbox"; c.checked = !!get();
+  c.addEventListener("change", () => { set(c.checked); changed(); });
+  return c;
+}
+function slider(get, set, min, max) {
+  const r = el("input"); r.type = "range"; r.min = min; r.max = max; r.value = get();
+  r.addEventListener("input", () => { set(+r.value); changed(); });
+  return r;
+}
+function accentPicker() {
+  const box = el("div", "swatches");
+  const pick = (value) => { look.accent = value; changed(); buildSheet(); };
+  const named = (value, label) => { const b = el("button", "swatch" + (look.accent === value ? " active" : ""), label); b.type = "button"; b.addEventListener("click", () => pick(value)); return b; };
+  box.appendChild(named("app", "Noctorium's"));
+  box.appendChild(named("cover", "The cover"));
+  ACCENTS.forEach(([hex, label]) => {
+    const b = el("button", "swatch dot" + (look.accent === hex ? " active" : "")); b.type = "button";
+    b.title = label; b.style.background = hex; b.addEventListener("click", () => pick(hex)); box.appendChild(b);
+  });
+  const own = el("button", "swatch dot" + (look.accent === "custom" ? " active" : "")); own.type = "button"; own.title = "Your own colour";
+  own.style.background = `conic-gradient(red, yellow, lime, cyan, blue, magenta, red)`;
+  const input = el("input"); input.type = "color"; input.value = validHex(look.customAccent) ? look.customAccent : "#b47cff";
+  input.addEventListener("input", () => { look.customAccent = input.value; look.accent = "custom"; changed(); });
+  input.addEventListener("change", buildSheet);
+  own.appendChild(input); box.appendChild(own);
+  return box;
+}
+function changed() { saveLook(); applyLook(); }
+
+function buildSheet() {
+  const body = $("sheetBody"); body.replaceChildren();
+  const section = (title) => body.appendChild(el("h3", "", title));
+  const name = el("input"); name.type = "text"; name.value = look.name; name.maxLength = 40; name.placeholder = LOOK_DEFAULTS.name;
+  name.addEventListener("input", () => { look.name = name.value.trim() || LOOK_DEFAULTS.name; changed(); });
+
+  section("Look");
+  body.appendChild(opt("Name", "On the page and in the browser tab: “Living room”, say.", name));
+  body.appendChild(opt("Colours", look.colours === "app" && state && state.theme ? "Now: " + state.theme.name : null,
+    choice(() => look.colours, (v) => (look.colours = v), [["app", "Noctorium's theme"], ["dark", "Dark"], ["black", "Black"], ["light", "Light"]])));
+  body.appendChild(el("div", "lyrics-info", "Accent"));
+  body.appendChild(accentPicker());
+  body.appendChild(opt("Corners", null, segmented(() => look.corners, (v) => (look.corners = v), [["round", "Round"], ["soft", "Soft"], ["square", "Square"]])));
+  body.appendChild(opt("Text size", null, segmented(() => look.text, (v) => (look.text = v), [[90, "S"], [100, "M"], [112, "L"], [125, "XL"]])));
+  body.appendChild(opt("Cover glow", "The cover's colours blurred behind the player.", slider(() => look.backdrop, (v) => (look.backdrop = v), 0, 70)));
+
+  section("Layout");
+  body.appendChild(opt("Show", null, segmented(() => look.layout, (v) => (look.layout = v), [["full", "Everything"], ["player", "Only the player"]])));
+  body.appendChild(opt("Cover size", null, segmented(() => look.cover, (v) => (look.cover = v), [["small", "S"], ["medium", "M"], ["large", "L"]])));
+  body.appendChild(opt("Lists", null, segmented(() => look.density, (v) => (look.density = v), [["comfortable", "Roomy"], ["compact", "Compact"]])));
+
+  section("On the player");
+  [["shuffleRepeat", "Shuffle and repeat"], ["like", "Like"], ["volume", "Volume"], ["extras", "Speed, sleep timer and the rest"], ["service", "Which service it is from"], ["connection", "Connected"]]
+    .forEach(([key, label]) => body.appendChild(opt(label, null, toggle(() => look.parts[key], (v) => (look.parts[key] = v)))));
+
+  section("Tabs");
+  Object.entries(TAB_NAMES).forEach(([key, label]) => body.appendChild(opt(label, null, toggle(() => look.tabs[key], (v) => (look.tabs[key] = v)))));
+  body.appendChild(opt("Open on", null, choice(() => look.startTab, (v) => (look.startTab = v), Object.entries(TAB_NAMES))));
+
+  section("Lyrics");
+  body.appendChild(opt("Size", null, segmented(() => look.lyricSize, (v) => (look.lyricSize = v), [["s", "S"], ["m", "M"], ["l", "L"], ["xl", "XL"]])));
+  body.appendChild(opt("Lines", null, segmented(() => look.lyricAlign, (v) => (look.lyricAlign = v), [["left", "Left"], ["center", "Centred"]])));
+  body.appendChild(opt("Glow on the line being sung", null, toggle(() => look.lyricGlow, (v) => (look.lyricGlow = v))));
+  body.appendChild(opt("Follow the song", "Scroll to the line being sung.", toggle(() => look.lyricScroll, (v) => (look.lyricScroll = v))));
+
+  section("Keyboard");
+  body.appendChild(opt("Shortcuts", "Space plays, ← → seek, ↑ ↓ volume, Shift ← → skip, M mutes, L likes.", toggle(() => look.keys, (v) => (look.keys = v))));
+  body.appendChild(opt("← → seek by", null, choice(() => look.seekStep, (v) => (look.seekStep = +v), [[5, "5 seconds"], [10, "10 seconds"], [15, "15 seconds"], [30, "30 seconds"]])));
+  body.appendChild(opt("↑ ↓ volume by", null, choice(() => look.volumeStep, (v) => (look.volumeStep = +v), [[2, "2%"], [5, "5%"], [10, "10%"]])));
+}
+function openSheet() { buildSheet(); document.body.classList.add("customizing"); }
+function closeSheet() { document.body.classList.remove("customizing"); }
+$("customize").addEventListener("click", openSheet);
+$("sheetClose").addEventListener("click", closeSheet);
+$("sheetShade").addEventListener("click", closeSheet);
+$("resetLook").addEventListener("click", () => {
+  look = loadLook.defaults(); saveLook(); applyLook(); buildSheet(); toast("Back to how it was.");
+});
+loadLook.defaults = () => JSON.parse(JSON.stringify(LOOK_DEFAULTS));
+
+applyLook();
+showTab(look.tabs[look.startTab] ? look.startTab : Object.keys(TAB_NAMES).find((t) => look.tabs[t]) || "queue");
 
 refresh();
 setInterval(refresh, 1000);
