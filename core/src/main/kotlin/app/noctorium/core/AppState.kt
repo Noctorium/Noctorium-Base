@@ -4685,25 +4685,7 @@ class AppState(
             kotlinx.coroutines.delay(350)
             val mode = parsed.mode ?: mutableUi.value.searchMode
             mutableUi.update { it.copy(errorMessage = null) }
-            val selectedProviders = when (mode) {
-                // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
-                // slower, less certain copy of the YouTube Music result beside it.
-                SearchMode.HYBRID -> providers.filter {
-                    it.type in mutableSettings.value.preferences.hybridSearch &&
-                    (it.type != ProviderType.SPOTIFY || spotifyPlaysSongs()) &&
-                        // VK only for an account signed in to it: otherwise its refusal is all it would add.
-                        (it.type != ProviderType.VK || vkClient.isSignedIn())
-                }
-                SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }
-                SearchMode.YOUTUBE_MUSIC -> providers.filter { it.type == ProviderType.YOUTUBE_MUSIC }
-                SearchMode.YOUTUBE_VIDEO -> providers.filter { it.type == ProviderType.YOUTUBE_VIDEO }
-                SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
-                SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
-                SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
-                SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
-                SearchMode.TIDAL -> providers.filter { it.type == ProviderType.TIDAL }
-                SearchMode.APPLE_MUSIC -> providers.filter { it.type == ProviderType.APPLE_MUSIC }
-            }
+            val selectedProviders = searchProviders(mode)
             val attempts = selectedProviders.map { provider -> async { runCatching { provider.search(query) } } }.awaitAll()
             val results = attempts.map { it.getOrDefault(SearchResults()) }
             rawSearchTracks = interleave(results.map(SearchResults::tracks))
@@ -4723,6 +4705,51 @@ class AppState(
             }
         }
     }
+
+    /** The services a search in [mode] asks. */
+    private fun searchProviders(mode: SearchMode) = when (mode) {
+        // Spotify answers here only when its songs play on Spotify. Matched, each one would be a
+        // slower, less certain copy of the YouTube Music result beside it.
+        SearchMode.HYBRID -> providers.filter {
+            it.type in mutableSettings.value.preferences.hybridSearch &&
+                (it.type != ProviderType.SPOTIFY || spotifyPlaysSongs()) &&
+                // VK only for an account signed in to it: otherwise its refusal is all it would add.
+                (it.type != ProviderType.VK || vkClient.isSignedIn())
+        }
+        SearchMode.SOUNDCLOUD -> providers.filter { it.type == ProviderType.SOUNDCLOUD }
+        SearchMode.YOUTUBE_MUSIC -> providers.filter { it.type == ProviderType.YOUTUBE_MUSIC }
+        SearchMode.YOUTUBE_VIDEO -> providers.filter { it.type == ProviderType.YOUTUBE_VIDEO }
+        SearchMode.BANDCAMP -> providers.filter { it.type == ProviderType.BANDCAMP }
+        SearchMode.SPOTIFY -> providers.filter { it.type == ProviderType.SPOTIFY }
+        SearchMode.VK -> providers.filter { it.type == ProviderType.VK }
+        SearchMode.DEEZER -> providers.filter { it.type == ProviderType.DEEZER }
+        SearchMode.TIDAL -> providers.filter { it.type == ProviderType.TIDAL }
+        SearchMode.APPLE_MUSIC -> providers.filter { it.type == ProviderType.APPLE_MUSIC }
+    }
+
+    /**
+     * Songs for [text], from the services the search page asks, without the search page: for a car's screen or its
+     * voice search, which must not change what the phone shows. Bangs work as they do in the search box.
+     */
+    suspend fun searchQuietly(text: String): List<Track> {
+        val parsed = SearchBangs.parse(text)
+        if (parsed.query.isBlank()) return emptyList()
+        val mode = parsed.mode ?: mutableUi.value.searchMode
+        val results = kotlinx.coroutines.coroutineScope {
+            searchProviders(mode).map { provider -> async { runCatching { provider.search(parsed.query) }.getOrDefault(SearchResults()) } }.awaitAll()
+        }
+        return interleave(results.map(SearchResults::tracks)).edited(mutableUi.value.trackEdits)
+    }
+
+    /**
+     * Radio stations for [query] in the country chosen on the search page, without changing that page: for a car's
+     * Radio. Nothing asked for is the country's most listened-to stations.
+     */
+    suspend fun radioStationsQuietly(query: String = ""): List<Track> = radioBrowser.search(query, mutableUi.value.radioCountry)
+
+    /** A service playlist's songs, read without opening it on the phone's screen: for a car's library. */
+    suspend fun playlistTracks(playlist: Playlist): List<Track> =
+        providers.firstOrNull { it.type == playlist.provider }?.getPlaylistTracks(playlist).orEmpty()
 
     /**
      * Radio stations for what was typed, in the country chosen. Nothing typed is still a search: the country's --
