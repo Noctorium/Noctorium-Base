@@ -11,7 +11,13 @@ import java.nio.charset.StandardCharsets
 data class SoundCloudProfile(val permalink: String, val displayName: String, val id: String? = null)
 
 /** A SoundCloud profile found by searching: an artist, with the address of their page and their picture. */
-data class SoundCloudUser(val name: String, val permalinkUrl: String, val avatarUrl: String? = null)
+data class SoundCloudUser(
+    val name: String,
+    val permalinkUrl: String,
+    val avatarUrl: String? = null,
+    val followers: Long? = null,
+    val about: String? = null,
+)
 
 /**
  * Reads the account behind a signed-in SoundCloud session.
@@ -256,6 +262,21 @@ class SoundCloudAccountClient internal constructor(
         }
     }
 
+    /** The profile at [profileUrl] -- https://soundcloud.com/odesza -- with its picture, followers and bio; null if unknown. */
+    suspend fun userProfile(profileUrl: String, clientId: String?): SoundCloudUser? {
+        if (clientId.isNullOrBlank()) return null
+        val user = resolve(profileUrl, token = "", clientId = clientId) ?: return null
+        if (user["kind"]?.jsonPrimitive?.contentOrNull != "user") return null
+        val name = user["username"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        return SoundCloudUser(
+            name = name,
+            permalinkUrl = user["permalink_url"]?.jsonPrimitive?.contentOrNull ?: profileUrl,
+            avatarUrl = user["avatar_url"]?.jsonPrimitive?.contentOrNull?.replace("-large.", "-t500x500."),
+            followers = user["followers_count"]?.jsonPrimitive?.longOrNull,
+            about = user["description"]?.jsonPrimitive?.contentOrNull?.let(::oneLine),
+        )
+    }
+
     /**
      * The tracks of the profile at [profileUrl] -- https://soundcloud.com/odesza -- newest first, as their page lists
      * them. Null when SoundCloud could not say, so the extractor can be asked instead.
@@ -333,6 +354,16 @@ class SoundCloudAccountClient internal constructor(
         const val TRACK_BATCH = 50
     }
 }
+
+/**
+ * A profile's bio as one line for a page's header: its lines, whatever breaks them, joined with a dot; null for none.
+ */
+internal fun oneLine(text: String): String? =
+    text.split(Regex("[\r\n\u0085\u2028\u2029]+"))
+        .map { it.replace(Regex("\\s+"), " ").trim() }
+        .filter(String::isNotEmpty)
+        .joinToString(" · ")
+        .takeIf(String::isNotEmpty)
 
 /**
  * The secret on the end of a private SoundCloud address -- `s-3Nlxbz0kKAb` -- or null for a public one.

@@ -279,6 +279,20 @@ enum class SearchMode(val displayName: String) {
     APPLE_MUSIC("Apple Music"),
 }
 
+/**
+ * What an artist's page shows above their songs: their picture, a line about them, how many follow them, and their page
+ * on the service itself. Whatever the service does not say is null, and the page does without it.
+ */
+data class ArtistDetails(
+    val name: String,
+    val provider: ProviderType,
+    val picture: String? = null,
+    val about: String? = null,
+    val followers: Long? = null,
+    /** Their page on the service, to open in a browser; null where there is none to link to. */
+    val pageUrl: String? = null,
+)
+
 data class LibraryState(
     val localPlaylists: List<LocalPlaylist> = emptyList(),
     val openLocalPlaylist: LocalPlaylist? = null,
@@ -295,6 +309,8 @@ data class LibraryState(
     /** SoundCloud can only locate a listener's own playlists by profile name, and cookies do not reveal it. */
     val needsSoundCloudUsername: Boolean = false,
     val openPlaylist: Playlist? = null,
+    /** The artist [openPlaylist] is the page of, when it is one: see [AppState.openArtist]. */
+    val openArtist: ArtistDetails? = null,
     val openPlaylistLoading: Boolean = false,
     val openPlaylistError: String? = null,
     /** True while artwork and durations are still being resolved slice by slice. */
@@ -2540,9 +2556,17 @@ class AppState(
      */
     fun openPlaylist(playlist: Playlist) {
         playlistJob?.cancel()
+        // An artist's page remembers where it was opened from -- Search's cards, a name under a song -- for Back to go
+        // back to; any other page forgets it.
+        artistOpenedFrom = if (playlist.isArtistPage()) mutableUi.value.destination.takeIf { it != Destination.LIBRARY } else null
         mutableLibrary.update {
             it.copy(
                 openPlaylist = playlist,
+                openArtist = if (playlist.isArtistPage()) {
+                    ArtistDetails(playlist.title, playlist.provider, picture = playlist.artworkUrl, pageUrl = artistPageUrl(playlist))
+                } else {
+                    null
+                },
                 openPlaylistLoading = true,
                 openPlaylistError = null,
                 openPlaylistEnriching = false,
@@ -2573,6 +2597,7 @@ class AppState(
             }
             // A followed public playlist read just now, or found not to be readable, says so in Settings.
             if (playlist.provider == ProviderType.SPOTIFY && spotifyPublic.isFollowed(playlist.id)) publishSpotifyPublicState()
+            if (playlist.isArtistPage()) learnAboutArtist(playlist, tracks)
             if (tracks.none { it.artworkUrl == null }) return@launch
             resolveArtwork(playlist, provider, tracks)
         }
@@ -4080,7 +4105,19 @@ class AppState(
 
     fun closePlaylist() {
         playlistJob?.cancel()
-        mutableLibrary.update { it.copy(openPlaylist = null, openPlaylistLoading = false, openPlaylistError = null) }
+        val wasArtist = mutableLibrary.value.openArtist != null
+        mutableLibrary.update { it.copy(openPlaylist = null, openArtist = null, openPlaylistLoading = false, openPlaylistError = null) }
+        // Back from an artist goes back to where their name was pressed -- Search, Now playing -- not into the library.
+        val from = artistOpenedFrom
+        artistOpenedFrom = null
+        if (wasArtist && from != null && from != Destination.LIBRARY) navigate(from)
+    }
+
+    /** A playlist's songs, played in an order of their own: what Shuffle on a playlist's or an artist's page does. */
+    fun shufflePlaylist(playlist: Playlist) {
+        val shuffled = playlist.tracks.shuffled()
+        if (shuffled.isEmpty()) return
+        play(shuffled.first(), PlaybackOrigin.PLAYLIST, shuffled)
     }
 
     fun playPlaylist(playlist: Playlist, startAt: Track? = null) {
@@ -4818,6 +4855,61 @@ class AppState(
         navigate(Destination.LIBRARY)
     }
 
+    /** Where an artist's page was opened from, for Back to go back to: see [closePlaylist]. */
+    private var artistOpenedFrom: Destination? = null
+
+    /**
+     * Their page on the service itself, for "Open on …": by their own id where the page has one, the SoundCloud profile,
+     * and otherwise the service's own search for their name.
+     */
+    internal fun artistPageUrl(page: Playlist): String? {
+        val name = java.net.URLEncoder.encode(page.title, Charsets.UTF_8)
+        val ownId = page.id.removePrefix("artist:").takeIf { page.id.startsWith("artist:") && it.isNotBlank() }
+        return when (page.provider) {
+            ProviderType.SPOTIFY -> ownId?.let { "https://open.spotify.com/artist/$it" } ?: "https://open.spotify.com/search/$name"
+            ProviderType.DEEZER -> ownId?.let { "https://www.deezer.com/artist/$it" } ?: "https://www.deezer.com/search/$name"
+            ProviderType.TIDAL -> ownId?.let { "https://tidal.com/browse/artist/$it" } ?: "https://tidal.com/search?q=$name"
+            ProviderType.APPLE_MUSIC -> ownId?.let { "https://music.apple.com/artist/$it" } ?: "https://music.apple.com/search?term=$name"
+            ProviderType.SOUNDCLOUD -> page.sourceUrl?.removeSuffix("/tracks") ?: "https://soundcloud.com/search/people?q=$name"
+            ProviderType.BANDCAMP -> page.sourceUrl?.takeIf { it.startsWith("http") } ?: "https://bandcamp.com/search?q=$name&item_type=b"
+            ProviderType.YOUTUBE_MUSIC -> "https://music.youtube.com/search?q=$name"
+            ProviderType.YOUTUBE_VIDEO -> "https://www.youtube.com/results?search_query=$name"
+            ProviderType.VK -> "https://vk.com/audio?q=$name"
+            ProviderType.LOCAL, ProviderType.RADIO -> null
+        }
+    }
+
+    /**
+     * What more there is to say about the artist whose page is open, once their songs are in: a SoundCloud profile's
+     * picture, followers and bio, and a YouTube Music artist's own channel page, found from one of their songs.
+     */
+    private suspend fun learnAboutArtist(page: Playlist, songs: List<Track>) {
+        val known = mutableLibrary.value.openArtist?.takeIf { mutableLibrary.value.openPlaylist?.playlistKey == page.playlistKey } ?: return
+        val learned = when (page.provider) {
+            ProviderType.SOUNDCLOUD -> {
+                val profile = page.sourceUrl?.removeSuffix("/tracks")
+                    ?: songs.firstOrNull()?.sourceUrl?.let(::soundCloudProfileOf)
+                val user = profile?.let { runCatching { soundCloudAccount.userProfile(it, soundCloudClientIds.clientId()) }.getOrNull() }
+                if (user == null) known.copy(picture = known.picture, pageUrl = profile ?: known.pageUrl)
+                else known.copy(picture = user.avatarUrl ?: known.picture, about = user.about, followers = user.followers, pageUrl = user.permalinkUrl)
+            }
+            ProviderType.YOUTUBE_MUSIC -> {
+                val theirs = songs.firstOrNull { song -> song.artists.any { namesMatch(it.name, page.title) } }
+                val keys = runCatching { innertubeKeys.keys() }.getOrNull()
+                val channel = if (theirs != null && keys != null) {
+                    runCatching { youTubeMusic.artistOf(theirs.id, youTubeSession() ?: YouTubeSession(keys, null)) }.getOrNull()
+                } else {
+                    null
+                }
+                channel?.let { known.copy(pageUrl = "https://music.youtube.com/channel/${it.channelId}") } ?: known
+            }
+            else -> known
+        }
+        mutableLibrary.update { state ->
+            if (state.openPlaylist?.playlistKey == page.playlistKey) state.copy(openArtist = learned) else state
+        }
+    }
+
     /** The first artist of [track]'s, opened: what pressing the artist's name under a song does. */
     fun openArtistOf(track: Track) {
         val artist = track.artists.firstOrNull()
@@ -4852,6 +4944,7 @@ class AppState(
 
     /** An artist's page found by their name when opened: see [artistTracks]. */
     private fun artistNamed(name: String, provider: ProviderType) =
+        // The service, under the name on Search's cards, so the same artist on two services can be told apart.
         Playlist(id = "$ARTIST_NAMED${name.trim()}", title = name.trim(), provider = provider, ownerName = provider.displayName)
 
     /**

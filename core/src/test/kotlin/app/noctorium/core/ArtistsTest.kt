@@ -115,4 +115,45 @@ class ArtistsTest {
             assertEquals("https://soundcloud.com/flume/never-be-like-you-feat-kai2", state.ui.value.searchQuery)
         }
     }
+
+    @Test
+    fun `back from an artist goes back to where their name was pressed`() {
+        AppStateHarness.state().use { state ->
+            state.navigate(Destination.NOW_PLAYING)
+            state.openArtist(Artist("YOUTUBE_MUSIC:Daft Punk", "Daft Punk", ProviderType.YOUTUBE_MUSIC))
+            assertEquals(Destination.LIBRARY, state.ui.value.destination)
+            assertEquals("Daft Punk", state.library.value.openArtist?.name)
+            state.closePlaylist()
+            assertEquals(Destination.NOW_PLAYING, state.ui.value.destination)
+            assertNull(state.library.value.openArtist)
+
+            // A playlist opened in the library is closed into the library, as ever.
+            state.navigate(Destination.LIBRARY)
+            state.openPlaylist(app.noctorium.domain.Playlist("PL1", "Mix", ProviderType.YOUTUBE_MUSIC))
+            assertNull(state.library.value.openArtist)
+            state.closePlaylist()
+            assertEquals(Destination.LIBRARY, state.ui.value.destination)
+        }
+    }
+
+    @Test
+    fun `an artist's page links to them on their service`() {
+        AppStateHarness.state().use { state ->
+            val spotify = state.artistPageOf(Artist("4tZwfgrHOc3mvqYlEYSvVi", "Daft Punk", ProviderType.SPOTIFY))!!
+            assertEquals("https://open.spotify.com/artist/4tZwfgrHOc3mvqYlEYSvVi", state.artistPageUrl(spotify))
+            val song = AppStateHarness.song("odesza/a-moment-apart").copy(
+                artists = listOf(Artist("SOUNDCLOUD:ODESZA", "ODESZA", ProviderType.SOUNDCLOUD)),
+                sourceUrl = "https://soundcloud.com/odesza/a-moment-apart",
+            )
+            assertEquals("https://soundcloud.com/odesza", state.artistPageUrl(state.artistPageOf(song.artists.first(), song)!!))
+            val youTube = state.artistPageOf(Artist("YOUTUBE_MUSIC:Daft Punk", "Daft Punk", ProviderType.YOUTUBE_MUSIC))!!
+            assertEquals("https://music.youtube.com/search?q=Daft+Punk", state.artistPageUrl(youTube))
+        }
+    }
+
+    @Test
+    fun `a bio reads as one line, whatever breaks it`() {
+        assertEquals("https://odesza.co · Booking: a@b.com", app.noctorium.social.oneLine("https://odesza.co\u2028Booking:   a@b.com\n\n"))
+        assertNull(app.noctorium.social.oneLine(" \n "))
+    }
 }
