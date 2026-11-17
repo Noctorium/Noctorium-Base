@@ -670,6 +670,10 @@ class YtDlpService(
         val output = outputFuture.get(5, TimeUnit.SECONDS)
         if (process.exitValue() != 0) {
             val safeMessage = output.lineSequence().lastOrNull { it.isNotBlank() }.orEmpty().take(300)
+            // SoundCloud's refusals in words, and marked as the service's, so the same song can be found elsewhere.
+            if ("[soundcloud]" in safeMessage) {
+                soundCloudRefusal(safeMessage)?.let { throw BackendException(it, unavailableHere = true) }
+            }
             throw BackendException("yt-dlp could not resolve this track. $safeMessage")
         }
         return output

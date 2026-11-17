@@ -180,6 +180,8 @@ internal object AppStateHarness {
         queueStore: QueueStore = QueueStore(null),
         // The lyrics sources: the real ones unless a test scripts them.
         lyrics: app.noctorium.lyrics.LyricsRepository = app.noctorium.lyrics.LyricsRepository(),
+        // SoundCloud's API is never reached from a harness unless a test says: no client id, so nothing asks it.
+        soundCloudClientIds: app.noctorium.social.SoundCloudClientIdProvider = app.noctorium.social.SoundCloudClientIdProvider { null },
     ): AppState = AppState(
         lyricsRepository = lyrics,
         ytDlp = backend,
@@ -198,6 +200,7 @@ internal object AppStateHarness {
         innertubeKeys = innertubeKeys,
         referenceMatches = referenceMatches,
         deezerClient = deezer,
+        soundCloudClientIds = soundCloudClientIds,
         tidalClient = tidal,
         appleMusicClient = appleMusic,
         spotifyClient = spotify,

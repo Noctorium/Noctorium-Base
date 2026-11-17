@@ -5,8 +5,36 @@ import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
 import app.noctorium.settings.CookieSource
 
-/** Something the backend could not do, worded for a reader rather than for a log. */
-class BackendException(message: String, cause: Throwable? = null) : Exception(message, cause)
+/**
+ * Something the backend could not do, worded for a reader rather than for a log.
+ *
+ * [unavailableHere] says the service itself will not play this track here -- it is locked, sold to subscribers only,
+ * not offered in this country, or gone -- rather than that something failed on the way. The same song on another
+ * service is then worth trying, where a network failure would fail there too.
+ */
+class BackendException(
+    message: String,
+    cause: Throwable? = null,
+    val unavailableHere: Boolean = false,
+) : Exception(message, cause)
+
+/**
+ * Why SoundCloud will not hand over a track's audio, in a sentence, from what the extractor said; null for anything
+ * else. yt-dlp's words are matched on the desktop, and the phone's extractor says the same things.
+ */
+fun soundCloudRefusal(said: String): String? {
+    val text = said.lowercase()
+    return when {
+        "drm" in text -> "SoundCloud locks this track, so it only plays in SoundCloud's own app."
+        "geo restriction" in text || "from your location" in text || "not available in user's country" in text ||
+            "geographic" in text -> "SoundCloud does not offer this track in your country."
+        "go+" in text || "go plus" in text || "subscription" in text ->
+            "This is a SoundCloud Go+ track, so only subscribers can hear it on SoundCloud."
+        "404" in text || "not found" in text || "has been removed" in text || "resolve id" in text ->
+            "This track is no longer on SoundCloud."
+        else -> null
+    }
+}
 
 /**
  * How Noctorium finds out what a track is and where its audio can be fetched from.

@@ -29,6 +29,12 @@ import app.noctorium.lyrics.LyricsProviderStatus
 import app.noctorium.lyrics.LyricsRepository
 import app.noctorium.lyrics.LyricsUiState
 import app.noctorium.playback.BackendException
+import kotlinx.coroutines.flow.first
+import app.noctorium.domain.Artist
+import app.noctorium.domain.isArtistPage
+import app.noctorium.domain.soundCloudProfileOf
+import app.noctorium.domain.namesMatch
+import app.noctorium.domain.ARTIST_NAMED
 import app.noctorium.playback.MusicBackend
 import app.noctorium.playback.QueueManager
 import app.noctorium.playback.RepeatMode
@@ -256,6 +262,8 @@ enum class ProviderFilter(val displayName: String) {
 enum class SearchKind(val displayName: String) {
     MUSIC("Music"),
     RADIO("Radio"),
+    /** Artists by name, each opening their page on their service: see [AppState.openArtist]. */
+    ARTISTS("Artists"),
 }
 
 enum class SearchMode(val displayName: String) {
@@ -1185,8 +1193,11 @@ class AppState(
         search(mutableUi.value.searchQuery)
     }
 
-    /** Music to Radio and back: what Ctrl+F does a second time, so the switch is there without the mouse. */
-    fun toggleSearchKind() = setSearchKind(if (mutableUi.value.searchKind == SearchKind.MUSIC) SearchKind.RADIO else SearchKind.MUSIC)
+    /** Music, Radio, Artists and round again: what Ctrl+F does a second time, so the switch is there without the mouse. */
+    fun toggleSearchKind() = setSearchKind(SearchKind.entries[(mutableUi.value.searchKind.ordinal + 1) % SearchKind.entries.size])
+
+    /** Whether a link pasted into the search box plays at once, rather than being searched for. */
+    fun setPlayLinksFromSearch(enabled: Boolean) = updatePreferences { copy(playLinksFromSearch = enabled) }
 
     /** The country radio is looked for in, by its ISO code; null for the whole world. */
     fun setRadioCountry(code: String?) {
@@ -2545,8 +2556,12 @@ class AppState(
                         openPlaylistError = "No provider for ${playlist.provider.displayName}",
                     )
                 }
-            // yt-dlp reads a YouTube playlist with the same session cookies the sign-in produced.
-            val listed = runCatching { provider.getPlaylistTracks(playlist) }
+            // yt-dlp reads a YouTube playlist with the same session cookies the sign-in produced. An artist opened by
+            // name is found first: see artistTracks.
+            val listed = runCatching {
+                if (playlist.id.startsWith(ARTIST_NAMED)) artistTracks(playlist, provider)
+                else provider.getPlaylistTracks(playlist)
+            }
             val tracks = listed.getOrDefault(emptyList())
             updateOpenPlaylist(playlist) { state ->
                 state.copy(
@@ -4675,6 +4690,11 @@ class AppState(
             searchRadio(text)
             return
         }
+        if (playsAsLink(text)) return
+        if (mutableUi.value.searchKind == SearchKind.ARTISTS) {
+            searchArtists(text)
+            return
+        }
         mutableUi.update { it.copy(searchQuery = text, searchBang = parsed.bang, searchLoading = query.isNotBlank()) }
         searchJob?.cancel()
         searchJob = scope.launch {
@@ -4704,6 +4724,169 @@ class AppState(
                 )
             }
         }
+    }
+
+    /**
+     * A link pasted into the search box, played at once when the listener has said so: what the Link page does, with
+     * no page in between. Only a paste -- the box empty, or the whole link arriving at once -- so a link being typed
+     * out is not played half way. True when it was taken as a link.
+     */
+    private fun playsAsLink(text: String): Boolean {
+        if (!mutableSettings.value.preferences.playLinksFromSearch) return false
+        val before = mutableUi.value.searchQuery.trim()
+        val trimmed = text.trim()
+        if (!(trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("www."))) return false
+        if (findMusicLink(trimmed) == null) return false
+        if (before.isNotEmpty() && trimmed.length - before.length < 8) return false
+        searchJob?.cancel()
+        mutableUi.update { it.copy(searchQuery = text, searchBang = null, searchLoading = false, errorMessage = null, searchResults = SearchResults()) }
+        openLink(trimmed, LinkAction.PLAY)
+        // What came of it, said where the search was: the Link page is not open to say it.
+        searchJob = scope.launch {
+            val done = linkState.first { it.status == LinkStatus.DONE || it.status == LinkStatus.FAILED }
+            if (done.status == LinkStatus.FAILED) mutableUi.update { it.copy(errorMessage = done.message) }
+        }
+        return true
+    }
+
+    /**
+     * Artists for [text]: each service's own artists where it has them, as the pages [openArtist] opens, and for the
+     * rest the artists of the songs found, so every service in the search has its artists here.
+     */
+    private fun searchArtists(text: String) {
+        val parsed = SearchBangs.parse(text)
+        val query = parsed.query
+        mutableUi.update { it.copy(searchQuery = text, searchBang = parsed.bang, searchLoading = query.isNotBlank(), errorMessage = null) }
+        searchJob?.cancel()
+        searchJob = scope.launch {
+            if (query.isBlank()) {
+                mutableUi.update { it.copy(searchResults = SearchResults(), searchLoading = false) }
+                return@launch
+            }
+            kotlinx.coroutines.delay(350)
+            val mode = parsed.mode ?: mutableUi.value.searchMode
+            val found = searchProviders(mode)
+                .map { provider -> async { runCatching { artistPagesFor(provider, query) }.getOrDefault(emptyList()) } }
+                .awaitAll()
+            val pages = interleave(found).distinctBy { it.playlistKey }
+            mutableUi.update {
+                it.copy(
+                    searchLoading = false,
+                    errorMessage = null,
+                    searchResults = SearchResults(
+                        artists = pages.map { page -> Artist(page.id, page.title, page.provider) },
+                        playlists = pages,
+                    ),
+                )
+            }
+        }
+    }
+
+    /** One service's artists for [query], as pages. */
+    private suspend fun artistPagesFor(provider: MusicProvider, query: String): List<Playlist> = when (provider.type) {
+        // SoundCloud's people search lists anybody near the words: only those who are the artist asked for.
+        ProviderType.SOUNDCLOUD -> soundCloudAccount.searchUsers(query, soundCloudClientIds.clientId()).filter { namesMatch(it.name, query) }.map { user ->
+            artistNamed(user.name, ProviderType.SOUNDCLOUD).copy(
+                sourceUrl = "${user.permalinkUrl.trimEnd('/')}/tracks",
+                artworkUrl = user.avatarUrl,
+            )
+        }
+        ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL, ProviderType.BANDCAMP ->
+            provider.search(query).playlists.filter { it.isArtistPage() }.take(ARTISTS_PER_SERVICE)
+        ProviderType.LOCAL, ProviderType.RADIO -> emptyList()
+        // YouTube Music, YouTube and VK find songs, not artists: their songs' artists are who they found.
+        else -> provider.search(query).tracks
+            .flatMap { track -> track.artists.map { it to track } }
+            .distinctBy { (artist, _) -> artist.name.lowercase() }
+            .filter { (artist, _) -> artist.name.isNotBlank() && namesMatch(artist.name, query) }
+            .take(ARTISTS_PER_SERVICE)
+            .map { (artist, track) -> artistNamed(artist.name, provider.type).copy(artworkUrl = track.artworkUrl) }
+    }
+
+    // --- Artists ---
+
+    /**
+     * Opens [artist]'s page on their service -- the YouTube Music artist of a YouTube Music song, the SoundCloud profile
+     * of a SoundCloud one, and so on for every service -- as their songs, the way a playlist opens: in the library, with
+     * play and shuffle and everything a playlist has. [from] is their song it was opened from, where there is one,
+     * which for SoundCloud says whose profile it is.
+     */
+    fun openArtist(artist: Artist, from: Track? = null) {
+        val page = artistPageOf(artist, from)
+            ?: return libraryNotice("${artist.provider.displayName} has no page for ${artist.name}.", problem = true)
+        openPlaylist(page)
+        navigate(Destination.LIBRARY)
+    }
+
+    /** The first artist of [track]'s, opened: what pressing the artist's name under a song does. */
+    fun openArtistOf(track: Track) {
+        val artist = track.artists.firstOrNull()
+            ?: Artist("${track.provider.name}:${track.artistLine}", track.artistLine, track.provider).takeIf { track.artistLine.isNotBlank() }
+            ?: return
+        openArtist(artist, track)
+    }
+
+    /** The page [openArtist] opens, or null for a service with no artists (radio, songs on this device). */
+    internal fun artistPageOf(artist: Artist, from: Track? = null): Playlist? {
+        val provider = artist.provider
+        if (provider == ProviderType.RADIO || provider == ProviderType.LOCAL || artist.name.isBlank()) return null
+        // The service's own id, where the song carried one: only these services give an artist one worth having.
+        val ownId = artist.id.removePrefix("${provider.name}:").takeIf { it.isNotBlank() && it != artist.name }
+        return when (provider) {
+            ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL ->
+                if (ownId != null && !ownId.startsWith(ARTIST_NAMED) && !ownId.startsWith("artist:")) {
+                    Playlist(id = "artist:$ownId", title = artist.name, provider = provider)
+                } else if (ownId != null && ownId.startsWith("artist:")) {
+                    Playlist(id = ownId, title = artist.name, provider = provider)
+                } else {
+                    artistNamed(artist.name, provider)
+                }
+            // A SoundCloud song's uploader is the profile in its address: soundcloud.com/<profile>/<song>.
+            ProviderType.SOUNDCLOUD -> artistNamed(artist.name, provider).copy(
+                sourceUrl = from?.takeIf { song -> song.artists.firstOrNull()?.name == artist.name }
+                    ?.let { soundCloudProfileOf(it.sourceUrl) }?.let { "$it/tracks" },
+            )
+            else -> artistNamed(artist.name, provider)
+        }
+    }
+
+    /** An artist's page found by their name when opened: see [artistTracks]. */
+    private fun artistNamed(name: String, provider: ProviderType) =
+        Playlist(id = "$ARTIST_NAMED${name.trim()}", title = name.trim(), provider = provider, ownerName = provider.displayName)
+
+    /**
+     * The songs of an artist's page found by name: their profile's tracks on SoundCloud; their own page on a service
+     * that has one, found by searching for them; and otherwise the songs a search for them finds that are theirs.
+     */
+    private suspend fun artistTracks(page: Playlist, provider: MusicProvider): List<Track> {
+        val name = page.title
+        return when (page.provider) {
+            ProviderType.SOUNDCLOUD -> {
+                val profile = page.sourceUrl
+                    ?: soundCloudAccount.searchUsers(name, soundCloudClientIds.clientId()).firstOrNull { namesMatch(it.name, name) }
+                        ?.let { "${it.permalinkUrl.trimEnd('/')}/tracks" }
+                    ?: return songsBy(name, provider)
+                soundCloudAccount.userTracks(profile.removeSuffix("/tracks"), soundCloudClientIds.clientId())
+                    ?: ytDlp.listTracks(ProviderType.SOUNDCLOUD, profile, ARTIST_SONGS)
+            }
+            ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL, ProviderType.BANDCAMP -> {
+                val pages = provider.search(name).playlists.filter { it.isArtistPage() }
+                val own = pages.firstOrNull { it.title.equals(name, ignoreCase = true) } ?: pages.firstOrNull { namesMatch(it.title, name) }
+                own?.let { provider.getPlaylistTracks(it) }?.takeIf { it.isNotEmpty() } ?: songsBy(name, provider)
+            }
+            ProviderType.YOUTUBE_MUSIC -> {
+                val found = runCatching { youTubeSongSearch(name, ARTIST_SONGS) }.getOrDefault(emptyList())
+                    .ifEmpty { provider.search(name).tracks }
+                found.filter { song -> song.artists.any { namesMatch(it.name, name) } }.ifEmpty { found }
+            }
+            else -> songsBy(name, provider)
+        }
+    }
+
+    /** The songs a search for [name] finds that are theirs, or every song found when none says it is. */
+    private suspend fun songsBy(name: String, provider: MusicProvider): List<Track> {
+        val found = provider.search(name).tracks
+        return found.filter { song -> song.artists.any { namesMatch(it.name, name) } }.ifEmpty { found }
     }
 
     /** The services a search in [mode] asks. */
@@ -4748,8 +4931,33 @@ class AppState(
     suspend fun radioStationsQuietly(query: String = ""): List<Track> = radioBrowser.search(query, mutableUi.value.radioCountry)
 
     /** A service playlist's songs, read without opening it on the phone's screen: for a car's library. */
-    suspend fun playlistTracks(playlist: Playlist): List<Track> =
-        providers.firstOrNull { it.type == playlist.provider }?.getPlaylistTracks(playlist).orEmpty()
+    suspend fun playlistTracks(playlist: Playlist): List<Track> {
+        val provider = providers.firstOrNull { it.type == playlist.provider } ?: return emptyList()
+        return if (playlist.id.startsWith(ARTIST_NAMED)) artistTracks(playlist, provider) else provider.getPlaylistTracks(playlist)
+    }
+
+    /**
+     * [artist]'s page, as [openArtist] would open it, without opening anything: for a car's or a TV's own screens. Its
+     * songs are read with [playlistTracks]. Null for an artist with no page (a station, a file on this device).
+     */
+    fun artistPageQuietly(artist: Artist, from: Track? = null): Playlist? = artistPageOf(artist, from)
+
+    /** Artists for [text], as pages, from the services the search page asks, without the search page. */
+    suspend fun searchArtistsQuietly(text: String): List<Playlist> {
+        val parsed = SearchBangs.parse(text)
+        if (parsed.query.isBlank()) return emptyList()
+        val mode = parsed.mode ?: mutableUi.value.searchMode
+        val found = kotlinx.coroutines.coroutineScope {
+            searchProviders(mode).map { provider -> async { runCatching { artistPagesFor(provider, parsed.query) }.getOrDefault(emptyList()) } }.awaitAll()
+        }
+        return interleave(found).distinctBy { it.playlistKey }
+    }
+
+    /** Whether a link typed into a search box plays at once: the listener's setting, for a car's or a TV's search. */
+    fun playsLinksFromSearch(text: String): Boolean =
+        mutableSettings.value.preferences.playLinksFromSearch &&
+            text.trim().let { it.startsWith("http://") || it.startsWith("https://") || it.startsWith("www.") } &&
+            findMusicLink(text.trim()) != null
 
     /**
      * Radio stations for what was typed, in the country chosen. Nothing typed is still a search: the country's --
@@ -4845,11 +5053,12 @@ class AppState(
         // this is where a reference -- a Spotify, Apple Music, Deezer or Tidal song -- becomes a real recording. A
         // track that cannot be matched is not played at all, and the queue is left holding the entry so trying
         // again is possible.
-        val playable = if (track.provider.isReference && !playsOnSpotify(track)) {
+        val referenced = if (track.provider.isReference && !playsOnSpotify(track)) {
             resolveReference(track)?.also { queue.replace(track.queueKey, it) } ?: return
         } else {
             track
         }
+        val playable = playableElsewhereIfRefused(referenced)
         // Spotify's own app reads its own songs; there is nothing for the backend to fill in.
         val enriched = if (playsOnSpotify(playable)) playable else runCatching { ytDlp.enrichMetadata(playable) }.getOrDefault(playable)
         // The listener's own title and artist go on last, over whatever the page said, so they are what
@@ -4864,6 +5073,36 @@ class AppState(
             pendingResume = null
             if (key == shown.queueKey) seekAfterHandover(at)
         }
+    }
+
+    /**
+     * A SoundCloud track SoundCloud will not play here -- locked, Go+ only, not offered in this country, or gone --
+     * as the same song from YouTube Music, said so; the track itself for everything else.
+     *
+     * Its address is asked for now rather than by the player, which is free: the backend keeps the answer, and the
+     * player's own ask a moment later is answered from it. A track saved on this device plays from the file and is
+     * not asked about. When no match is found the track is played as it was, and fails in SoundCloud's own words.
+     */
+    private suspend fun playableElsewhereIfRefused(track: Track): Track {
+        if (track.provider != ProviderType.SOUNDCLOUD || downloads.localFile(track) != null) return track
+        val refusal = try {
+            withContext(Dispatchers.IO) { ytDlp.resolveAudio(track.sourceUrl) }
+            return track
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: BackendException) {
+            error.takeIf { it.unavailableHere }?.message ?: return track
+        } catch (_: Exception) {
+            return track
+        }
+        val query = ReferenceMatch.searchQuery(track)
+        val candidates = runCatching { youTubeSongSearch(query, limit = 8) }.getOrDefault(emptyList())
+            .ifEmpty { runCatching { ytDlp.search(ProviderType.YOUTUBE_MUSIC, query, limit = 8) }.getOrDefault(emptyList()) }
+        val match = ReferenceMatch.choose(track, candidates) ?: return track
+        val elsewhere = ReferenceMatch.resolved(track, match)
+        queue.replace(track.queueKey, elsewhere)
+        likeMessage("$refusal Playing it from YouTube Music instead.")
+        return elsewhere
     }
 
     /** Records what was played so Home can open with it next time. Kept as the service named it. */
@@ -6513,6 +6752,12 @@ private fun formatCheckTime(epochSeconds: Long): String = runCatching {
  * covers appear in batches down the list instead of all at once at the end.
  */
 private const val ARTWORK_SLICE = 10
+
+/** How many artists each service puts in an Artists search. */
+private const val ARTISTS_PER_SERVICE = 6
+
+/** How many songs an artist's page found by name is filled with. */
+private const val ARTIST_SONGS = 50
 
 /**
  * How long into a track the next one's address is fetched. Long enough for the current track to have

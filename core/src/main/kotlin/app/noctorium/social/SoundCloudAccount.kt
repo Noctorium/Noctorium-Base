@@ -10,6 +10,9 @@ import java.nio.charset.StandardCharsets
 
 data class SoundCloudProfile(val permalink: String, val displayName: String, val id: String? = null)
 
+/** A SoundCloud profile found by searching: an artist, with the address of their page and their picture. */
+data class SoundCloudUser(val name: String, val permalinkUrl: String, val avatarUrl: String? = null)
+
 /**
  * Reads the account behind a signed-in SoundCloud session.
  *
@@ -235,6 +238,43 @@ class SoundCloudAccountClient internal constructor(
             if (!address.isNullOrBlank()) return address
         }
         return null
+    }
+
+    /** Profiles for [query], the artists a search on SoundCloud's own site lists first. Empty when it cannot say. */
+    suspend fun searchUsers(query: String, clientId: String?, limit: Int = 6): List<SoundCloudUser> {
+        if (query.isBlank() || clientId.isNullOrBlank()) return emptyList()
+        val url = "https://api-v2.soundcloud.com/search/users?q=${encode(query)}&limit=$limit&client_id=$clientId"
+        val reply = get(url, token = "")?.takeIf { it.status in 200..299 } ?: return emptyList()
+        val found = runCatching { json.parseToJsonElement(reply.body).jsonObject["collection"]?.jsonArray }.getOrNull().orEmpty()
+        return found.mapNotNull { element ->
+            val user = element as? JsonObject ?: return@mapNotNull null
+            val name = user["username"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+            val page = user["permalink_url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("https://soundcloud.com/") }
+                ?: return@mapNotNull null
+            val avatar = user["avatar_url"]?.jsonPrimitive?.contentOrNull?.replace("-large.", "-t500x500.")
+            SoundCloudUser(name, page, avatar)
+        }
+    }
+
+    /**
+     * The tracks of the profile at [profileUrl] -- https://soundcloud.com/odesza -- newest first, as their page lists
+     * them. Null when SoundCloud could not say, so the extractor can be asked instead.
+     */
+    suspend fun userTracks(profileUrl: String, clientId: String?, limit: Int = 200): List<Track>? {
+        if (clientId.isNullOrBlank()) return null
+        val user = resolve(profileUrl, token = "", clientId = clientId) ?: return null
+        if (user["kind"]?.jsonPrimitive?.contentOrNull != "user") return null
+        val id = user["id"]?.jsonPrimitive?.contentOrNull ?: return null
+        val tracks = mutableListOf<Track>()
+        var next: String? = "https://api-v2.soundcloud.com/users/$id/tracks?limit=${limit.coerceIn(1, 200)}&linked_partitioning=1&client_id=$clientId"
+        var pages = 0
+        while (next != null && tracks.size < limit && pages++ < 5) {
+            val reply = get(next, token = "")?.takeIf { it.status in 200..299 } ?: break
+            val page = runCatching { json.parseToJsonElement(reply.body).jsonObject }.getOrNull() ?: break
+            page["collection"]?.jsonArray.orEmpty().forEach { element -> (element as? JsonObject)?.let(::trackFrom)?.let(tracks::add) }
+            next = page["next_href"]?.jsonPrimitive?.contentOrNull?.let { if ("client_id=" in it) it else "$it&client_id=$clientId" }
+        }
+        return tracks.take(limit).takeIf { it.isNotEmpty() || pages > 0 }
     }
 
     /** Looks an address up, without the session and then, if that was refused, with it. */
