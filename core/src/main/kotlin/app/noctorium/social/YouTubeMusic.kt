@@ -433,6 +433,48 @@ class YouTubeMusicClient internal constructor(
         return parseSongs(response.body).take(limit)
     }
 
+    /** Playlists for [query], as YouTube Music's own Playlists tab lists them: its own and the community's. */
+    suspend fun searchPlaylists(query: String, limit: Int, session: YouTubeSession): List<Playlist> {
+        if (query.isBlank() || limit <= 0) return emptyList()
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("query", query.trim())
+            put("params", PLAYLISTS_ONLY_FILTER)
+        }
+        val response = post("search", body.toString(), session) ?: return emptyList()
+        if (response.status !in 200..299) return emptyList()
+        return parsePlaylistRows(response.body).take(limit)
+    }
+
+    /** The playlists a search answered with: each a row whose title opens `VL<its id>`. */
+    internal fun parsePlaylistRows(body: String): List<Playlist> = runCatching {
+        val rows = mutableListOf<JsonObject>()
+        collectRenderers(json.parseToJsonElement(body), "musicResponsiveListItemRenderer", rows)
+        rows.mapNotNull { row ->
+            val browseId = ((row["navigationEndpoint"] as? JsonObject)?.get("browseEndpoint") as? JsonObject)
+                ?.get("browseId")?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+            if (!browseId.startsWith("VL")) return@mapNotNull null
+            val columns = (row["flexColumns"] as? JsonArray).orEmpty().mapNotNull { column ->
+                (column as? JsonObject)?.get("musicResponsiveListItemFlexColumnRenderer") as? JsonObject
+            }
+            val title = columns.getOrNull(0)?.let { runsOf(it["text"] as? JsonObject ?: JsonObject(emptyMap())) }
+                ?.trim()?.takeIf(String::isNotBlank) ?: return@mapNotNull null
+            // "Playlist • Daft Punk • 1.2M views": the second part says whose it is.
+            val owner = fieldsOf(columns.getOrNull(1)).flatten().map(String::trim)
+                .filter { it.isNotBlank() && it != "•" && it != "Playlist" && !it.endsWith("views") }
+                .firstOrNull()
+            val id = browseId.removePrefix("VL")
+            Playlist(
+                id = id,
+                title = title,
+                provider = ProviderType.YOUTUBE_MUSIC,
+                ownerName = owner,
+                artworkUrl = bestThumbnail(row),
+                sourceUrl = "https://music.youtube.com/playlist?list=$id",
+            )
+        }.distinctBy { it.id }
+    }.getOrDefault(emptyList())
+
     /**
      * The tracks of one playlist, read the way YouTube Music's own page reads them.
      *
@@ -563,6 +605,64 @@ class YouTubeMusicClient internal constructor(
         val response = post("browse", body.toString(), session) ?: return null
         if (response.status !in 200..299) return null
         return parseHomeShelves(response.body)
+    }
+
+    /**
+     * An artist's own page on YouTube Music, by their channel: its rows -- their top songs, albums, singles, videos,
+     * the playlists they are on -- as Home's rows are read. Null when it could not be read.
+     */
+    suspend fun artistPage(channelId: String, session: YouTubeSession): YouTubeArtistPage? {
+        val body = buildJsonObject {
+            put("context", context(session))
+            put("browseId", channelId)
+        }
+        val response = post("browse", body.toString(), session) ?: return null
+        if (response.status !in 200..299) return null
+        return parseArtistPage(response.body)
+    }
+
+    /** An artist's page: its rows as Home's are read, and from its header their picture, their line and followers. */
+    internal fun parseArtistPage(body: String): YouTubeArtistPage {
+        val shelves = parseHomeShelves(body)
+        val header = runCatching {
+            val root = json.parseToJsonElement(body).jsonObject["header"] as? JsonObject
+            root?.values?.firstOrNull { it is JsonObject } as? JsonObject
+        }.getOrNull()
+        val picture = header?.let { bestThumbnailIn(it) }
+        val about = (header?.get("description") as? JsonObject)?.let(::runsOf)?.trim()?.takeIf(String::isNotEmpty)
+        val followers = header?.let { findText(it, "subscriberCountText") ?: findText(it, "longSubscriberCountText") }
+        return YouTubeArtistPage(shelves, picture, about, followers)
+    }
+
+    /** The widest picture anywhere in [element]: a header's, whichever shape of header it is. */
+    private fun bestThumbnailIn(element: JsonElement): String? {
+        var best: Pair<Int, String>? = null
+        fun walk(node: JsonElement) {
+            when (node) {
+                is JsonObject -> {
+                    (node["thumbnails"] as? JsonArray)?.forEach { item ->
+                        val thumb = item as? JsonObject ?: return@forEach
+                        val url = (thumb["url"] as? JsonPrimitive)?.contentOrNull ?: return@forEach
+                        val width = (thumb["width"] as? JsonPrimitive)?.intOrNull ?: 0
+                        if (best == null || width > best!!.first) best = width to url
+                    }
+                    node.values.forEach(::walk)
+                }
+                is JsonArray -> node.forEach(::walk)
+                else -> Unit
+            }
+        }
+        walk(element)
+        return best?.second
+    }
+
+    /** The text of the first [key] anywhere in [element], as runs or simpleText. */
+    private fun findText(element: JsonElement, key: String): String? = when (element) {
+        is JsonObject -> (element[key] as? JsonObject)?.let { text ->
+            runsOf(text) ?: (text["simpleText"] as? JsonPrimitive)?.contentOrNull
+        } ?: element.values.firstNotNullOfOrNull { findText(it, key) }
+        is JsonArray -> element.firstNotNullOfOrNull { findText(it, key) }
+        else -> null
     }
 
     /**
@@ -1422,6 +1522,9 @@ class YouTubeMusicClient internal constructor(
         /** YouTube Music's own "Songs" search filter, so albums, artists and playlists stay out. */
         const val SONGS_ONLY_FILTER = "EgWKAQIIAWoKEAkQBRAKEAMQBA%3D%3D"
 
+        /** The same filter for the "Playlists" tab. */
+        const val PLAYLISTS_ONLY_FILTER = "EgWKAQIoAWoKEAkQBRAKEAMQBA%3D%3D"
+
         /** What YouTube Music puts between the artist, the album and the length in a row's second column. */
         const val FIELD_SEPARATOR = "•"
 
@@ -1437,6 +1540,15 @@ class YouTubeMusicClient internal constructor(
  * A row is songs or cards, never both. Most of a home page is the second kind -- the mixes and albums
  * the service has put together -- and a row of those opens somewhere rather than playing something.
  */
+/** An artist's page on YouTube Music: its rows, and their picture, their own line and how many follow them. */
+data class YouTubeArtistPage(
+    val shelves: List<HomeShelf>,
+    val picture: String? = null,
+    val about: String? = null,
+    /** As the page says it: "4.21M subscribers". */
+    val followers: String? = null,
+)
+
 data class HomeShelf(
     val title: String,
     val tracks: List<Track> = emptyList(),

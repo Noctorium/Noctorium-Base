@@ -735,6 +735,8 @@ data class NoctoriumPreferences(
      * began. See [app.noctorium.core.AppState.playFromHome] and [app.noctorium.core.AppState.playFromSearch].
      */
     val homePlay: HomePlay = HomePlay.AUTOPLAY,
+    /** How Home is laid out: see [HomeLayout]. */
+    val homeLayout: HomeLayout = HomeLayout.CLASSIC,
     /**
      * The services that answer a Hybrid search. Each still has to be signed in where it needs that. Read a service
      * at a time, so one from a later version is left out rather than costing every setting in the file.
@@ -1395,6 +1397,14 @@ enum class AutoplaySource(val displayName: String, val description: String) {
  * about Home, so a settings file from then still reads: SHELF is the rest of the shelf, or of the results.
  */
 @Serializable
+/**
+ * How Home is laid out. One so far, Classic -- the greeting, then rows of cards -- with more to come; Settings offers
+ * the choice already, so a layout added later is one more entry here rather than a new setting.
+ */
+enum class HomeLayout(val displayName: String, val description: String) {
+    CLASSIC("Classic", "The greeting, then your pinned songs, what you played last and each service's rows of cards."),
+}
+
 enum class HomePlay(val displayName: String, val description: String) {
     AUTOPLAY("Autoplay after it", "The song, then songs like it, as a radio started from it."),
     SHELF("The songs around it", "The song, then the rest of the shelf on Home, or of the results it was picked from."),

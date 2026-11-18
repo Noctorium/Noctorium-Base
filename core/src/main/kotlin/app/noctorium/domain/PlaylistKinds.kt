@@ -12,6 +12,21 @@ fun Playlist.isArtistPage(): Boolean = id.startsWith(ARTIST_NAMED) || when (prov
     ProviderType.RADIO -> false
 }
 
+/**
+ * Whether this is a service's own collection of the songs the listener liked -- YouTube Music's Liked Music,
+ * SoundCloud's Liked tracks, Spotify's Liked Songs, Deezer's Loved tracks -- which the library shows first, wide.
+ */
+fun Playlist.isLikedCollection(): Boolean = when (provider) {
+    ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO -> id == "LM"
+    ProviderType.SOUNDCLOUD -> id == "likes"
+    ProviderType.SPOTIFY -> id == "liked-songs"
+    ProviderType.DEEZER -> id.startsWith("loved:")
+    else -> false
+}
+
+/** The library's playlists with each service's liked collection first, the rest as they were. */
+fun List<Playlist>.likedFirst(): List<Playlist> = filter { it.isLikedCollection() } + filterNot { it.isLikedCollection() }
+
 /** Whether this "playlist" is really an album, opened as its songs in order. See [isArtistPage]. */
 fun Playlist.isAlbumPage(): Boolean = when (provider) {
     ProviderType.BANDCAMP, ProviderType.SPOTIFY, ProviderType.APPLE_MUSIC, ProviderType.DEEZER, ProviderType.TIDAL ->

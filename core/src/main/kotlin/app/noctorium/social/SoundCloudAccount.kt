@@ -1,6 +1,7 @@
 package app.noctorium.social
 
 import app.noctorium.domain.Artist
+import app.noctorium.domain.Playlist
 import app.noctorium.domain.ProviderType
 import app.noctorium.domain.Track
 import kotlinx.coroutines.CancellationException
@@ -9,6 +10,13 @@ import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 data class SoundCloudProfile(val permalink: String, val displayName: String, val id: String? = null)
+
+/** What a SoundCloud profile's page lists besides its newest tracks. */
+data class SoundCloudCollections(
+    val popular: List<Track> = emptyList(),
+    val albums: List<Playlist> = emptyList(),
+    val playlists: List<Playlist> = emptyList(),
+)
 
 /** A SoundCloud profile found by searching: an artist, with the address of their page and their picture. */
 data class SoundCloudUser(
@@ -217,7 +225,13 @@ class SoundCloudAccountClient internal constructor(
         if (track["kind"]?.jsonPrimitive?.contentOrNull != "track") return null
         val authorization = track["track_authorization"]?.jsonPrimitive?.contentOrNull
         val secret = track["secret_token"]?.jsonPrimitive?.contentOrNull ?: secretOf(trackUrl)
+        // Only streams a player can read: a locked (encrypted) one, or a thirty-second preview, is no answer at all.
         val transcodings = track["media"]?.jsonObject?.get("transcodings")?.jsonArray.orEmpty().mapNotNull { it as? JsonObject }
+            .filter { transcoding ->
+                val protocol = transcoding["format"]?.jsonObject?.get("protocol")?.jsonPrimitive?.contentOrNull
+                (protocol == "progressive" || protocol == "hls") &&
+                    transcoding["snipped"]?.jsonPrimitive?.booleanOrNull != true
+            }
         val chosen = transcodings.sortedBy { transcoding ->
             val format = transcoding["format"]?.jsonObject
             val protocol = format?.get("protocol")?.jsonPrimitive?.contentOrNull
@@ -296,6 +310,55 @@ class SoundCloudAccountClient internal constructor(
             next = page["next_href"]?.jsonPrimitive?.contentOrNull?.let { if ("client_id=" in it) it else "$it&client_id=$clientId" }
         }
         return tracks.take(limit).takeIf { it.isNotEmpty() || pages > 0 }
+    }
+
+    /**
+     * What a profile's page shows besides its newest tracks: its most played tracks, its albums and its playlists.
+     * Empty where SoundCloud could not say.
+     */
+    suspend fun userCollections(profileUrl: String, clientId: String?): SoundCloudCollections {
+        if (clientId.isNullOrBlank()) return SoundCloudCollections()
+        val user = resolve(profileUrl, token = "", clientId = clientId) ?: return SoundCloudCollections()
+        if (user["kind"]?.jsonPrimitive?.contentOrNull != "user") return SoundCloudCollections()
+        val id = user["id"]?.jsonPrimitive?.contentOrNull ?: return SoundCloudCollections()
+        suspend fun collection(path: String): List<JsonObject> {
+            val reply = get("https://api-v2.soundcloud.com/users/$id/$path?limit=20&linked_partitioning=1&client_id=$clientId", "")
+                ?.takeIf { it.status in 200..299 } ?: return emptyList()
+            return runCatching { json.parseToJsonElement(reply.body).jsonObject["collection"]?.jsonArray.orEmpty().mapNotNull { it as? JsonObject } }
+                .getOrDefault(emptyList())
+        }
+        val popular = collection("toptracks").mapNotNull(::trackFrom)
+        val albums = collection("albums").mapNotNull(::setFrom)
+        val playlists = collection("playlists_without_albums").mapNotNull(::setFrom)
+        return SoundCloudCollections(popular, albums, playlists)
+    }
+
+    /** Playlists and albums for [query], as SoundCloud's own search lists them. */
+    suspend fun searchPlaylists(query: String, clientId: String?, limit: Int = 12): List<Playlist> {
+        if (query.isBlank() || clientId.isNullOrBlank()) return emptyList()
+        val url = "https://api-v2.soundcloud.com/search/playlists?q=${encode(query)}&limit=$limit&client_id=$clientId"
+        val reply = get(url, token = "")?.takeIf { it.status in 200..299 } ?: return emptyList()
+        return runCatching { json.parseToJsonElement(reply.body).jsonObject["collection"]?.jsonArray.orEmpty().mapNotNull { (it as? JsonObject)?.let(::setFrom) } }
+            .getOrDefault(emptyList())
+    }
+
+    /** A set -- an album or a playlist -- as a playlist that opens, by its page. */
+    private fun setFrom(set: JsonObject): Playlist? {
+        val id = set["id"]?.jsonPrimitive?.contentOrNull ?: return null
+        val title = set["title"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        val page = set["permalink_url"]?.jsonPrimitive?.contentOrNull?.takeIf { it.startsWith("http") } ?: return null
+        val artwork = (set["artwork_url"]?.jsonPrimitive?.contentOrNull
+            ?: set["tracks"]?.jsonArray?.firstNotNullOfOrNull { (it as? JsonObject)?.get("artwork_url")?.jsonPrimitive?.contentOrNull })
+            ?.replace("-large.", "-t500x500.")
+        return Playlist(
+            id = id,
+            title = title,
+            provider = ProviderType.SOUNDCLOUD,
+            ownerName = set["user"]?.jsonObject?.get("username")?.jsonPrimitive?.contentOrNull,
+            artworkUrl = artwork,
+            sourceUrl = page,
+            trackCount = set["track_count"]?.jsonPrimitive?.intOrNull,
+        )
     }
 
     /** Looks an address up, without the session and then, if that was refused, with it. */
