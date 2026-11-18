@@ -530,13 +530,14 @@ class YouTubeMusicClient internal constructor(
             // Only the first page has the header; the rest are songs and a token.
             if (token == null) details = parsePlaylistDetails(response.body)
 
-            val page = parseSongs(response.body)
+            // Only the playlist's own songs: see [playlistSongsPage].
+            val (page, next) = playlistSongsPage(response.body)
             // A page with no songs on it is the end of the list, and on the first page it is an empty
             // playlist -- which is an answer.
             if (page.isEmpty()) return answer(found.take(limit))
-            found += page
+            found += page.filter { song -> found.none { it.id == song.id } }
             if (found.size >= limit) return answer(found.take(limit))
-            continuation = continuationToken(response.body)?.takeIf { it != token } ?: return answer(found.take(limit))
+            continuation = next?.takeIf { it != token } ?: return answer(found.take(limit))
         }
         return answer(found.take(limit))
     }
@@ -973,6 +974,36 @@ class YouTubeMusicClient internal constructor(
             is JsonArray -> element.forEach { collectRenderers(it, name, into) }
             else -> Unit
         }
+    }
+
+    /**
+     * One page of a playlist's own songs, and the token for the next page of them.
+     *
+     * The page of a playlist of the listener's own carries a Suggestions shelf under the songs -- songs YouTube Music
+     * thinks would fit, with a Refresh button -- and the token behind that button is a continuation like any other. Read
+     * as one heap, those suggestions became songs of the playlist, and following that token brought more of them: a
+     * playlist of one song opened with eight. So the songs are read from the playlist's own shelf alone
+     * (`musicPlaylistShelfRenderer`, or on a later page its continuation), and so is the token; a page that is the
+     * suggestions' (`musicShelfContinuation`) has none of the playlist's songs. A page in neither shape -- an album, a
+     * shape YouTube has not sent before -- is read whole, as it always was.
+     */
+    internal fun playlistSongsPage(body: String): Pair<List<Track>, String?> = runCatching {
+        val root = json.parseToJsonElement(body)
+        val shelf = findObject(root, "musicPlaylistShelfRenderer")
+            ?: findObject(root, "musicPlaylistShelfContinuation")
+            ?: findObject(root, "appendContinuationItemsAction")
+        if (shelf == null && findObject(root, "musicShelfContinuation") != null) return@runCatching emptyList<Track>() to null
+        val scope = shelf ?: root
+        val rows = mutableListOf<JsonObject>()
+        collectRenderers(scope, "musicResponsiveListItemRenderer", rows)
+        rows.mapNotNull(::songFromRow).distinctBy { it.id } to findContinuation(scope)
+    }.getOrDefault(emptyList<Track>() to null)
+
+    /** The first object anywhere in [element] under [key]. */
+    private fun findObject(element: JsonElement, key: String): JsonObject? = when (element) {
+        is JsonObject -> (element[key] as? JsonObject) ?: element.values.firstNotNullOfOrNull { findObject(it, key) }
+        is JsonArray -> element.firstNotNullOfOrNull { findObject(it, key) }
+        else -> null
     }
 
     /** The token for the next page of a listing, or null once there are no more. */
