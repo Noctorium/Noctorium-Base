@@ -5274,6 +5274,9 @@ class AppState(
     /** How Home is laid out: see [HomeLayout]. */
     fun setHomeLayout(choice: app.noctorium.settings.HomeLayout) = updatePreferences { copy(homeLayout = choice) }
 
+    /** The first-time setup, finished or skipped: it is not offered again. See [NoctoriumPreferences.setupDone]. */
+    fun finishSetup() = updatePreferences { copy(setupDone = true) }
+
     fun play(
         track: Track,
         origin: PlaybackOrigin = PlaybackOrigin.HOME,

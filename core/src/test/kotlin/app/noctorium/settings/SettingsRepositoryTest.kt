@@ -92,7 +92,8 @@ class SettingsRepositoryTest {
     fun `missing settings file uses safe defaults`() {
         val directory = Files.createTempDirectory("noctorium-settings-default-test")
         try {
-            assertEquals(NoctoriumPreferences(), SettingsRepository(directory.resolve("missing.json")).load())
+            // The defaults, but for the first-time setup, which a first start (no file at all) is the one time to offer.
+            assertEquals(NoctoriumPreferences(setupDone = false), SettingsRepository(directory.resolve("missing.json")).load())
         } finally {
             directory.toFile().deleteRecursively()
         }

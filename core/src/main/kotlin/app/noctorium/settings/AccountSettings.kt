@@ -738,6 +738,14 @@ data class NoctoriumPreferences(
     /** How Home is laid out: see [HomeLayout]. */
     val homeLayout: HomeLayout = HomeLayout.CLASSIC,
     /**
+     * Whether the first-time setup has been finished or skipped. True unless said otherwise, so that a settings file
+     * from before there was a setup -- somebody who has used Noctorium for months -- reads as done and never shows
+     * it after an update. Only a first start, with no settings file at all, begins with it false: see
+     * [SettingsRepository.load]. Being false, it is then written down, and stays until the setup is finished or
+     * skipped, however often Noctorium is closed in between.
+     */
+    val setupDone: Boolean = true,
+    /**
      * The services that answer a Hybrid search. Each still has to be signed in where it needs that. Read a service
      * at a time, so one from a later version is left out rather than costing every setting in the file.
      */
@@ -1443,7 +1451,8 @@ class SettingsRepository(
 
     fun load(): NoctoriumPreferences = runCatching {
         val path = settingsPath ?: return@runCatching NoctoriumPreferences()
-        if (!Files.isRegularFile(path)) NoctoriumPreferences()
+        // No settings file at all is a first start: the one time the setup is offered. See setupDone.
+        if (!Files.isRegularFile(path)) NoctoriumPreferences(setupDone = false)
         else json.decodeFromString<NoctoriumPreferences>(TextFiles.read(path).orEmpty()).migrated()
     }.getOrDefault(NoctoriumPreferences())
 
