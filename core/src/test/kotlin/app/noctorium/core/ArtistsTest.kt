@@ -98,21 +98,29 @@ class ArtistsTest {
     }
 
     @Test
-    fun `a pasted link plays at once only when the listener has said so`() {
+    fun `a pasted link plays at once unless the listener has said not to`() {
         val link = "https://soundcloud.com/flume/never-be-like-you-feat-kai"
-        AppStateHarness.state().use { state ->
+        AppStateHarness.state(preferences = NoctoriumPreferences(autoplay = false, playLinksFromSearch = false)).use { state ->
             state.search(link)
             waitFor("the search") { !state.ui.value.searchLoading }
-            assertEquals(LinkStatus.IDLE, state.linkState.value.status, "off by default: searched for, like anything typed")
+            assertEquals(LinkStatus.IDLE, state.linkState.value.status, "switched off: searched for, like anything typed")
+            // Enter is the listener asking, so it plays whatever the setting.
+            assertTrue(state.openSearchLink(link))
+            assertEquals(link, state.linkState.value.link?.url)
+            assertFalse(state.openSearchLink("daft punk"), "words are searched for")
         }
-        AppStateHarness.state(preferences = NoctoriumPreferences(autoplay = false, playLinksFromSearch = true)).use { state ->
+        AppStateHarness.state(preferences = NoctoriumPreferences(autoplay = false)).use { state ->
             state.search(link)
-            assertTrue(state.linkState.value.status != LinkStatus.IDLE, "taken as a link")
+            assertTrue(state.linkState.value.status != LinkStatus.IDLE, "on by default: taken as a link")
             assertEquals(link, state.ui.value.searchQuery)
             assertFalse(state.ui.value.searchLoading)
             // Being typed out, a link is not played half way: only what arrives at once is.
-            state.search("https://soundcloud.com/flume/never-be-like-you-feat-kai2")
-            assertEquals("https://soundcloud.com/flume/never-be-like-you-feat-kai2", state.ui.value.searchQuery)
+            state.search("$link-2")
+            assertEquals(link, state.linkState.value.link?.url)
+            // A second link pasted over the first replaces it, and plays.
+            val other = "https://soundcloud.com/flume/say-it-feat-tove-lo"
+            state.search(other)
+            assertEquals(other, state.linkState.value.link?.url)
         }
     }
 

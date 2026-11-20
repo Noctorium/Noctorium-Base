@@ -4831,7 +4831,8 @@ class AppState(
         val trimmed = text.trim()
         if (!(trimmed.startsWith("http://") || trimmed.startsWith("https://") || trimmed.startsWith("www."))) return false
         if (findMusicLink(trimmed) == null) return false
-        if (before.isNotEmpty() && trimmed.length - before.length < 8) return false
+        // Typing is the box's words growing a little; a link pasted over another link replaces them whole.
+        if (before.isNotEmpty() && trimmed.startsWith(before) && trimmed.length - before.length < 8) return false
         searchJob?.cancel()
         mutableUi.update { it.copy(searchQuery = text, searchBang = null, searchLoading = false, errorMessage = null, searchResults = SearchResults()) }
         openLink(trimmed, LinkAction.PLAY)
@@ -5202,6 +5203,22 @@ class AppState(
             searchProviders(mode).map { provider -> async { runCatching { artistPagesFor(provider, parsed.query) }.getOrDefault(emptyList()) } }.awaitAll()
         }
         return interleave(found).distinctBy { it.playlistKey }
+    }
+
+    /**
+     * Enter in a search box: a music link in it is opened and played, whatever the paste setting says, since Enter is
+     * the listener asking. True when it was a link; otherwise the box searches as usual.
+     */
+    fun openSearchLink(text: String): Boolean {
+        if (mutableUi.value.searchKind == SearchKind.RADIO || findMusicLink(text.trim()) == null) return false
+        searchJob?.cancel()
+        mutableUi.update { it.copy(searchLoading = false, errorMessage = null, searchResults = SearchResults()) }
+        openLink(text.trim(), LinkAction.PLAY)
+        searchJob = scope.launch {
+            val done = linkState.first { it.status == LinkStatus.DONE || it.status == LinkStatus.FAILED }
+            if (done.status == LinkStatus.FAILED) mutableUi.update { it.copy(errorMessage = done.message) }
+        }
+        return true
     }
 
     /** Whether a link typed into a search box plays at once: the listener's setting, for a car's or a TV's search. */

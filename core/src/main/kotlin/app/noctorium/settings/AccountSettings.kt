@@ -753,9 +753,9 @@ data class NoctoriumPreferences(
     val hybridSearch: Set<app.noctorium.domain.ProviderType> = DEFAULT_HYBRID_SEARCH,
     /**
      * Whether a link pasted into the search box plays at once, as it does on the Link page, instead of being searched
-     * for. Off unless switched on: a link is searched for, as anything else typed there is, until the listener says.
+     * for. On unless switched off: nobody pastes a link to search for its words.
      */
-    val playLinksFromSearch: Boolean = false,
+    val playLinksFromSearch: Boolean = true,
     /** The search mode last chosen, by name, so search opens where it was left. */
     val searchMode: String = "HYBRID",
     /** Seconds over which a sleep timer lowers the volume before it pauses. Zero stops it at once. */
