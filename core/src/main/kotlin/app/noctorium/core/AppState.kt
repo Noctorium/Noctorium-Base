@@ -4781,6 +4781,12 @@ class AppState(
             return
         }
         if (playsAsLink(text)) return
+        // A link still being typed out waits for Enter (see openSearchLink): searched as words it finds only junk.
+        if (playsLinksFromSearch(text)) {
+            searchJob?.cancel()
+            mutableUi.update { it.copy(searchQuery = text, searchBang = null, searchLoading = false, errorMessage = null, searchResults = SearchResults()) }
+            return
+        }
         if (mutableUi.value.searchKind == SearchKind.ARTISTS) {
             searchArtists(text)
             return
