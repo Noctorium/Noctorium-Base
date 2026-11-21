@@ -1178,6 +1178,7 @@ class AppState(
         observeNonMusicSegments()
         if (refreshAtLaunch) warmUpForTheLikeliestPlay()
         observeDiscordPresence()
+        observeRemotePresence()
         observeStreamWidgets()
         observeRemoteControl()
         observePlayingHereWhileDriving()
@@ -6384,6 +6385,45 @@ class AppState(
     val discordStatus: StateFlow<DiscordPresenceStatus> get() = discordPresence.status
 
 
+    /**
+     * Tells the Noctorium account what is playing, for the Discord status and Telegram bio its servers show with no
+     * desktop needed. A few seconds after the song changes or the music stops -- so skipping through a playlist is
+     * one message, the last -- and again every few minutes while it plays, which is what keeps Discord's 20-minute
+     * session alive and lets it lapse by itself if Noctorium is closed. Only when signed in to an account.
+     */
+    private fun observeRemotePresence() {
+        scope.launch {
+            playback
+                .map { state -> state.track.takeIf { state.status == PlaybackStatus.PLAYING || state.status == PlaybackStatus.RESOLVING } }
+                .distinctUntilChanged { a, b -> a?.queueKey == b?.queueKey }
+                .collectLatest { track ->
+                    kotlinx.coroutines.delay(NOW_PLAYING_SETTLE_MS)
+                    while (true) {
+                        if (mutableAccount.value.user != null) {
+                            val token = withContext(Dispatchers.IO) { storedNoctoriumToken() }
+                            if (!token.isNullOrBlank()) runCatching { accountClient.nowPlaying(token, track?.let(::nowPlayingReport)) }
+                        }
+                        if (track == null) break
+                        kotlinx.coroutines.delay(NOW_PLAYING_RENEW_MS)
+                    }
+                }
+        }
+    }
+
+    private fun nowPlayingReport(track: Track): app.noctorium.account.NowPlayingReport {
+        val now = playback.value
+        return app.noctorium.account.NowPlayingReport(
+            title = track.title,
+            artist = track.artistLine,
+            album = track.album?.title,
+            artworkUrl = track.artworkUrl?.takeIf { it.startsWith("https://") },
+            url = track.sourceUrl.takeIf { it.startsWith("https://") },
+            provider = track.provider.name,
+            durationMs = now.durationMs.takeIf { it > 0 } ?: track.durationMs ?: 0,
+            positionMs = if (now.track?.queueKey == track.queueKey) now.positionMs else 0,
+        )
+    }
+
     /** Publishes to Discord as playback moves; the manager itself decides what is worth sending. */
     private fun observeDiscordPresence() {
         scope.launch {
@@ -7158,6 +7198,12 @@ private const val PLAY_COUNTS_AFTER_FRACTION = 0.5
 
 /** Enough to cover a long stretch offline, bounded so an unreachable service cannot grow without end. */
 private const val MAX_UNREPORTED_PLAYS = 500
+
+/** How long the music must settle on a song before the account is told, so skipping sends only the last. */
+private const val NOW_PLAYING_SETTLE_MS = 3_000L
+
+/** How often the account hears the same song again while it plays: well inside Discord's 20-minute session. */
+private const val NOW_PLAYING_RENEW_MS = 5 * 60_000L
 
 /** Where Noctorium opens, chosen in Customization. */
 private fun StartPage.destination(): Destination = when (this) {

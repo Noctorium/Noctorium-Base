@@ -244,6 +244,21 @@ class NoctoriumAccountClientTest {
         msPlayed = 127_000,
         playedAt = Instant.parse("2026-08-31T12:00:00Z"),
     )
+    @Test
+    fun `now playing is sent with the account's token, and null when the music stops`() = runBlocking {
+        reply = 204 to ""
+        client().nowPlaying(
+            "tok",
+            NowPlayingReport("One More Time", "Daft Punk", "Discovery", "https://i.ytimg.com/a.jpg", "https://music.youtube.com/watch?v=1", "YOUTUBE_MUSIC", 320_000, 20_000),
+        )
+        client().nowPlaying("tok", null)
+        assertEquals(listOf("/api/now-playing", "/api/now-playing"), requests.map { it.path })
+        assertEquals("Bearer tok", requests[0].authorization)
+        assertContains(requests[0].body, "\"title\":\"One More Time\"")
+        assertContains(requests[0].body, "\"artworkUrl\":\"https://i.ytimg.com/a.jpg\"")
+        assertContains(requests[0].body, "\"positionMs\":20000")
+        assertEquals("{\"track\":null}", requests[1].body)
+    }
 }
 
 /** Where the player looks for the service, and how that is overridden. */
@@ -255,4 +270,5 @@ class ServiceUrlTest {
         assertTrue(url.startsWith("https://"), "the account service must not be reached over plain http")
         assertTrue(!url.endsWith("/"), "a trailing slash would double the separator in every path")
     }
+
 }

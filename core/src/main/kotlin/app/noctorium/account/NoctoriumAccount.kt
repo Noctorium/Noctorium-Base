@@ -39,6 +39,18 @@ data class ListeningStats(
 )
 
 /** One finished listen, waiting to be reported. */
+/** What is playing, for the Discord status and Telegram bio the account service shows. */
+data class NowPlayingReport(
+    val title: String,
+    val artist: String,
+    val album: String?,
+    val artworkUrl: String?,
+    val url: String?,
+    val provider: String,
+    val durationMs: Long,
+    val positionMs: Long,
+)
+
 data class PlayReport(
     /** The player's own id for this listen, so a retry cannot be counted as a second one. */
     val clientId: String,
@@ -159,6 +171,34 @@ class NoctoriumAccountClient(
         }
         val reply = send("POST", "/api/plays", token = token, body = body.toString()) ?: return false
         return reply.first in 200..299
+    }
+
+    /**
+     * Says what is playing now -- or, with null, that nothing is -- for the listener's Discord status and Telegram
+     * bio, which the account service passes to the servers that show them. Fire and forget: a missed one is
+     * corrected by the next.
+     */
+    suspend fun nowPlaying(token: String, track: NowPlayingReport?) {
+        val body = buildJsonObject {
+            if (track == null) {
+                put("track", kotlinx.serialization.json.JsonNull)
+            } else {
+                put(
+                    "track",
+                    buildJsonObject {
+                        put("title", track.title)
+                        put("artist", track.artist)
+                        track.album?.let { put("album", it) }
+                        track.artworkUrl?.let { put("artworkUrl", it) }
+                        track.url?.let { put("url", it) }
+                        put("provider", track.provider)
+                        if (track.durationMs > 0) put("durationMs", track.durationMs)
+                        put("positionMs", track.positionMs)
+                    },
+                )
+            }
+        }
+        send("POST", "/api/now-playing", token = token, body = body.toString())
     }
 
     private suspend fun authenticate(path: String, body: JsonObject): AccountResult {
