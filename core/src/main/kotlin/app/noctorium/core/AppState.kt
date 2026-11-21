@@ -134,6 +134,7 @@ import app.noctorium.spotify.spotifyPlaylistIdIn
 import app.noctorium.spotify.SPOTIFY_WITHOUT_SIGN_IN
 import app.noctorium.spotify.usesOwnSpotifyApp
 import app.noctorium.account.AccountResult
+import app.noctorium.account.DeviceSignInPoll
 import app.noctorium.account.ListeningStats
 import app.noctorium.account.PlayReport
 import app.noctorium.account.NoctoriumAccountClient
@@ -5988,19 +5989,66 @@ class AppState(
         scope.launch {
             mutableAccount.update { it.copy(busy = true, message = null) }
             when (val result = attempt()) {
-                is AccountResult.Success -> {
-                    withContext(Dispatchers.IO) { runCatching { credentials.put(NOCTORIUM_TOKEN, result.token) } }
-                    mutableAccount.update {
-                        it.copy(user = result.user, busy = false, message = "Signed in as ${result.user.displayName}.")
-                    }
-                    prepareConnect()
-                    reportPlays()
-                    refreshListeningStats()
-                }
+                is AccountResult.Success -> signedInToNoctorium(result)
                 is AccountResult.Refused -> mutableAccount.update { it.copy(busy = false, message = result.message) }
                 is AccountResult.Unreachable -> mutableAccount.update { it.copy(busy = false, message = result.message) }
             }
         }
+    }
+
+    private suspend fun signedInToNoctorium(result: AccountResult.Success) {
+        withContext(Dispatchers.IO) { runCatching { credentials.put(NOCTORIUM_TOKEN, result.token) } }
+        mutableAccount.update {
+            it.copy(user = result.user, busy = false, deviceSignIn = null, message = "Signed in as ${result.user.displayName}.")
+        }
+        prepareConnect()
+        reportPlays()
+        refreshListeningStats()
+    }
+
+    private var deviceSignInJob: Job? = null
+
+    /**
+     * Signs in from a browser -- with Discord, GitHub, Telegram or email, whichever the listener has -- for screens
+     * where typing a password is no fun or there is none to type. The service hands over a code; this opens its page
+     * where there is a browser (a TV or a terminal shows the code to use on a phone instead) and asks every few
+     * seconds until the listener has allowed it there, then signs in exactly as a password would.
+     */
+    fun startDeviceSignIn() {
+        if (mutableAccount.value.busy || deviceSignInJob?.isActive == true) return
+        deviceSignInJob = scope.launch {
+            mutableAccount.update { it.copy(busy = true, message = null) }
+            val start = accountClient.startDeviceSignIn()
+            if (start == null) {
+                mutableAccount.update { it.copy(busy = false, message = "Could not reach the Noctorium service.") }
+                return@launch
+            }
+            val expires = System.currentTimeMillis() + start.expiresInSeconds * 1000
+            mutableAccount.update { it.copy(busy = false, deviceSignIn = DeviceSignInWaiting(start.code, start.url, expires)) }
+            runCatching { system.openUrl(start.url) }
+            while (System.currentTimeMillis() < expires) {
+                kotlinx.coroutines.delay(start.intervalSeconds * 1000)
+                when (val poll = accountClient.pollDeviceSignIn(start.pollToken)) {
+                    is DeviceSignInPoll.SignedIn -> return@launch signedInToNoctorium(poll.result)
+                    is DeviceSignInPoll.Over -> {
+                        mutableAccount.update { it.copy(deviceSignIn = null, message = poll.message) }
+                        return@launch
+                    }
+                    DeviceSignInPoll.Waiting, DeviceSignInPoll.Unreachable -> Unit
+                }
+            }
+            mutableAccount.update { it.copy(deviceSignIn = null, message = "The code expired. Start again for a new one.") }
+        }
+    }
+
+    /** Opens the sign-in page again, for somebody who closed the tab. */
+    fun openDeviceSignInPage() {
+        mutableAccount.value.deviceSignIn?.let { runCatching { system.openUrl(it.url) } }
+    }
+
+    fun cancelDeviceSignIn() {
+        deviceSignInJob?.cancel()
+        mutableAccount.update { it.copy(deviceSignIn = null, busy = false) }
     }
 
     fun signOutOfNoctorium() {
@@ -7222,9 +7270,14 @@ data class NoctoriumAccountState(
     val stats: ListeningStats = ListeningStats(),
     val busy: Boolean = false,
     val message: String? = null,
+    /** Signing in from a browser, while it waits: the code to show and the page to open. */
+    val deviceSignIn: DeviceSignInWaiting? = null,
 ) {
     val signedIn: Boolean get() = user != null
 }
+
+/** A browser sign-in waiting to be allowed: the code the screen shows, the page it opens, and when it lapses. */
+data class DeviceSignInWaiting(val code: String, val url: String, val expiresAtMillis: Long)
 
 /** The two services whose songs are YouTube videos, and so have a YouTube history, artist and account. */
 private val YOUTUBE_PROVIDERS = setOf(ProviderType.YOUTUBE_MUSIC, ProviderType.YOUTUBE_VIDEO)

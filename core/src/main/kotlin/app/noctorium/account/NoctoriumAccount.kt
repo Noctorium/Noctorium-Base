@@ -12,6 +12,7 @@ import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import app.noctorium.net.Http
 import java.time.Instant
@@ -61,6 +62,28 @@ data class PlayReport(
     val msPlayed: Long,
     val playedAt: Instant,
 )
+
+/**
+ * Signing in from a browser: the code to show and the page to open, and the secret this app alone keeps to collect
+ * its token with once the listener has allowed it there -- with Discord, GitHub, Telegram or their email.
+ */
+data class DeviceSignInStart(
+    val code: String,
+    val pollToken: String,
+    val url: String,
+    val expiresInSeconds: Long,
+    val intervalSeconds: Long,
+)
+
+/** What waiting for a browser sign-in came to. */
+sealed interface DeviceSignInPoll {
+    data object Waiting : DeviceSignInPoll
+    data class SignedIn(val result: AccountResult.Success) : DeviceSignInPoll
+    /** Expired, already used, or refused: the message says which, and the wait is over. */
+    data class Over(val message: String) : DeviceSignInPoll
+    /** The service could not be reached this time; worth asking again. */
+    data object Unreachable : DeviceSignInPoll
+}
 
 sealed interface AccountResult {
     data class Success(val user: NoctoriumUser, val token: String) : AccountResult
@@ -199,6 +222,39 @@ class NoctoriumAccountClient(
             }
         }
         send("POST", "/api/now-playing", token = token, body = body.toString())
+    }
+
+    /** Starts signing in from a browser: null when the service could not be reached or said no. */
+    suspend fun startDeviceSignIn(): DeviceSignInStart? {
+        val reply = send("POST", "/api/auth/device", body = "{}") ?: return null
+        if (reply.first !in 200..299) return null
+        val body = parse(reply.second) ?: return null
+        return DeviceSignInStart(
+            code = body["code"]?.jsonPrimitive?.contentOrNull ?: return null,
+            pollToken = body["pollToken"]?.jsonPrimitive?.contentOrNull ?: return null,
+            url = body["url"]?.jsonPrimitive?.contentOrNull ?: return null,
+            expiresInSeconds = body["expiresIn"]?.jsonPrimitive?.longOrNull ?: 600,
+            intervalSeconds = (body["interval"]?.jsonPrimitive?.longOrNull ?: 3).coerceIn(1, 30),
+        )
+    }
+
+    suspend fun pollDeviceSignIn(pollToken: String): DeviceSignInPoll {
+        val reply = send("GET", "/api/auth/device/poll?token=${java.net.URLEncoder.encode(pollToken, Charsets.UTF_8)}")
+            ?: return DeviceSignInPoll.Unreachable
+        val parsed = parse(reply.second)
+        return when (reply.first) {
+            202 -> DeviceSignInPoll.Waiting
+            in 200..299 -> {
+                val token = parsed?.get("token")?.jsonPrimitive?.contentOrNull
+                val user = parsed?.get("user")?.jsonObject?.let(::userFrom)
+                if (token.isNullOrBlank() || user == null) DeviceSignInPoll.Over("The service replied with something unexpected.")
+                else DeviceSignInPoll.SignedIn(AccountResult.Success(user, token))
+            }
+            in 500..599 -> DeviceSignInPoll.Unreachable
+            else -> DeviceSignInPoll.Over(
+                parsed?.get("error")?.jsonPrimitive?.contentOrNull ?: "That sign-in did not go through. Start again.",
+            )
+        }
     }
 
     private suspend fun authenticate(path: String, body: JsonObject): AccountResult {

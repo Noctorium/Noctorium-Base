@@ -259,6 +259,35 @@ class NoctoriumAccountClientTest {
         assertContains(requests[0].body, "\"positionMs\":20000")
         assertEquals("{\"track\":null}", requests[1].body)
     }
+
+    @Test
+    fun `a browser sign-in starts with a code, a page and a poll secret`() = runBlocking {
+        reply = 200 to """{"code":"ABCD-EFGH","pollToken":"p-1","url":"https://service.noctorium.xyz/device?code=ABCD-EFGH","expiresIn":600,"interval":3}"""
+        val start = assertNotNull(client().startDeviceSignIn())
+        assertEquals("ABCD-EFGH", start.code)
+        assertEquals("p-1", start.pollToken)
+        assertEquals(600, start.expiresInSeconds)
+        assertEquals(3, start.intervalSeconds)
+        assertEquals("POST", requests.single().method)
+        assertNull(requests.single().authorization)
+    }
+
+    @Test
+    fun `waiting, allowed and expired browser sign-ins read as such`() = runBlocking {
+        reply = 202 to """{"pending":true}"""
+        assertEquals(DeviceSignInPoll.Waiting, client().pollDeviceSignIn("p-1"))
+        // An account made with Discord may have no email: it comes back empty, and still signs in.
+        reply = 200 to """{"token":"tok-9","user":{"id":9,"email":"","displayName":"Disco"}}"""
+        val signedIn = client().pollDeviceSignIn("p-1")
+        assertTrue(signedIn is DeviceSignInPoll.SignedIn)
+        assertEquals("tok-9", signedIn.result.token)
+        assertEquals("Disco", signedIn.result.user.displayName)
+        reply = 410 to """{"error":"That code expired."}"""
+        assertEquals(DeviceSignInPoll.Over("That code expired."), client().pollDeviceSignIn("p-1"))
+        reply = 503 to ""
+        assertEquals(DeviceSignInPoll.Unreachable, client().pollDeviceSignIn("p-1"))
+        assertEquals("/api/auth/device/poll", requests.first().path)
+    }
 }
 
 /** Where the player looks for the service, and how that is overridden. */
