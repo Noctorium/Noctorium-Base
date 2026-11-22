@@ -261,6 +261,28 @@ class NoctoriumAccountClientTest {
     }
 
     @Test
+    fun `Last_fm and ListenBrainz linked to the account are read, and a missing one reads as none`() = runBlocking {
+        reply = 200 to """{"lastfm":{"username":"ana","sessionKey":"sk"},"listenbrainz":null}"""
+        val linked = assertNotNull(client().scrobblers("tok"))
+        assertEquals("ana", linked.lastFmUsername)
+        assertEquals("sk", linked.lastFmSessionKey)
+        assertNull(linked.listenBrainzToken)
+        assertEquals("Bearer tok", requests.single().authorization)
+        reply = 401 to """{"error":"Not signed in."}"""
+        assertNull(client().scrobblers("old"))
+    }
+
+    @Test
+    fun `a connection made here is saved to the account`() = runBlocking {
+        reply = 204 to ""
+        assertTrue(client().saveLastFm("tok", "ana", "sk"))
+        assertTrue(client().saveListenBrainz("tok", "lb"))
+        assertEquals(listOf("PUT" to "/api/scrobblers/lastfm", "PUT" to "/api/scrobblers/listenbrainz"), requests.map { it.method to it.path })
+        assertContains(requests[0].body, "\"sessionKey\":\"sk\"")
+        assertContains(requests[1].body, "\"token\":\"lb\"")
+    }
+
+    @Test
     fun `a browser sign-in starts with a code, a page and a poll secret`() = runBlocking {
         reply = 200 to """{"code":"ABCD-EFGH","pollToken":"p-1","url":"https://service.noctorium.xyz/device?code=ABCD-EFGH","expiresIn":600,"interval":3}"""
         val start = assertNotNull(client().startDeviceSignIn())

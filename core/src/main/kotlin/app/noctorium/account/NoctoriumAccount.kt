@@ -85,6 +85,14 @@ sealed interface DeviceSignInPoll {
     data object Unreachable : DeviceSignInPoll
 }
 
+/** Last.fm and ListenBrainz as linked to the account: what an app connects itself with when it signs in. */
+data class LinkedScrobblers(
+    val lastFmUsername: String? = null,
+    val lastFmSessionKey: String? = null,
+    val listenBrainzUsername: String? = null,
+    val listenBrainzToken: String? = null,
+)
+
 sealed interface AccountResult {
     data class Success(val user: NoctoriumUser, val token: String) : AccountResult
     /** The service answered, and said no. The message is the service's own and is safe to show. */
@@ -223,6 +231,31 @@ class NoctoriumAccountClient(
         }
         send("POST", "/api/now-playing", token = token, body = body.toString())
     }
+
+    /** What the account has linked; null when the service could not be reached or refused the token. */
+    suspend fun scrobblers(token: String): LinkedScrobblers? {
+        val reply = send("GET", "/api/scrobblers", token = token) ?: return null
+        if (reply.first !in 200..299) return null
+        val body = parse(reply.second) ?: return null
+        fun part(name: String) = body[name] as? JsonObject
+        val lastFm = part("lastfm")
+        val listenBrainz = part("listenbrainz")
+        return LinkedScrobblers(
+            lastFmUsername = lastFm?.get("username")?.jsonPrimitive?.contentOrNull,
+            lastFmSessionKey = lastFm?.get("sessionKey")?.jsonPrimitive?.contentOrNull,
+            listenBrainzUsername = listenBrainz?.get("username")?.jsonPrimitive?.contentOrNull,
+            listenBrainzToken = listenBrainz?.get("token")?.jsonPrimitive?.contentOrNull,
+        )
+    }
+
+    /** Saves a connection made in this app to the account, for every other app to take. True when it was kept. */
+    suspend fun saveLastFm(token: String, username: String, sessionKey: String): Boolean =
+        send("PUT", "/api/scrobblers/lastfm", token, buildJsonObject { put("username", username); put("sessionKey", sessionKey) }.toString())
+            ?.first in 200..299
+
+    suspend fun saveListenBrainz(token: String, listenBrainzToken: String): Boolean =
+        send("PUT", "/api/scrobblers/listenbrainz", token, buildJsonObject { put("token", listenBrainzToken) }.toString())
+            ?.first in 200..299
 
     /** Starts signing in from a browser: null when the service could not be reached or said no. */
     suspend fun startDeviceSignIn(): DeviceSignInStart? {

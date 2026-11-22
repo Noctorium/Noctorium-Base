@@ -164,6 +164,40 @@ class ScrobbleManager internal constructor(
         }
     }
 
+    /**
+     * A Last.fm session another Noctorium made -- linked to the Noctorium account -- kept here as if signed in on this
+     * one. It belongs to Noctorium's own Last.fm application, so it is taken only while this one uses that same
+     * application; with one of the listener's own, false, and nothing changes.
+     */
+    suspend fun adoptLastFm(username: String, sessionKey: String): Boolean = withContext(Dispatchers.IO) {
+        val application = lastFm.apiKey ?: return@withContext false
+        if (application != LastFmApplication.apiKey) return@withContext false
+        credentials.put(LASTFM_SESSION, sessionKey)
+        credentials.put(LASTFM_SESSION_APPLICATION, application)
+        credentials.remove(LASTFM_PENDING)
+        lastFmAccount.sessionKey = sessionKey
+        lastFmAccount.pendingToken = null
+        show(lastFmAccount, ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, username, "Connected from your Noctorium account"))
+        ScrobbleLog.event("lastfm_adopted", mapOf("username" to username))
+        true
+    }
+
+    /** A ListenBrainz token linked to the Noctorium account, kept here as if pasted in. */
+    suspend fun adoptListenBrainz(username: String, token: String) = withContext(Dispatchers.IO) {
+        credentials.put(LISTENBRAINZ_TOKEN, token)
+        listenBrainzToken = token
+        mutableState.update { it.copy(
+            listenBrainz = ScrobbleServiceState(ScrobbleConnectionStatus.CONNECTED, username, "Connected from your Noctorium account"),
+        ) }
+        ScrobbleLog.event("listenbrainz_adopted", mapOf("username" to username))
+    }
+
+    /** This app's own Last.fm session, to save to the account: only one made through Noctorium's own application. */
+    fun lastFmSessionForAccount(): String? =
+        lastFmAccount.sessionKey?.takeIf { lastFm.apiKey == LastFmApplication.apiKey }
+
+    fun listenBrainzTokenForAccount(): String? = listenBrainzToken
+
     fun disconnectListenBrainz() {
         credentials.remove(LISTENBRAINZ_TOKEN)
         listenBrainzToken = null

@@ -4277,6 +4277,7 @@ class AppState(
                 .onSuccess { username ->
                     updatePreferences { copy(listenBrainzUsername = username) }
                     mutableSettings.update { it.copy(message = "ListenBrainz connected as $username.") }
+                    saveScrobblersToAccount(lastFm = false)
                 }
                 .onFailure { error -> mutableSettings.update { it.copy(message = error.message ?: "Could not connect ListenBrainz") } }
         }
@@ -4326,6 +4327,7 @@ class AppState(
             val username = runCatching { scrobbleManager.awaitApproval(site, token) }.getOrNull() ?: return@launch
             rememberScrobblerUsername(site, username)
             mutableSettings.update { it.copy(message = "${site.displayName} connected as $username.") }
+            if (site == AudioscrobblerSite.LAST_FM) saveScrobblersToAccount(listenBrainz = false)
         }
     }
 
@@ -6004,6 +6006,43 @@ class AppState(
         prepareConnect()
         reportPlays()
         refreshListeningStats()
+        scope.launch { syncScrobblersWithAccount(result.token) }
+    }
+
+    /**
+     * Last.fm and ListenBrainz, kept with the Noctorium account: on signing in, what the account has linked is connected
+     * here, unless this app is connected already; and what is connected here but not on the account is saved to it, so
+     * the next app signed in takes it too. Disconnecting here leaves the account's link alone.
+     */
+    private suspend fun syncScrobblersWithAccount(token: String) {
+        val linked = accountClient.scrobblers(token) ?: return
+        val here = scrobbleManager.state.value
+        val lastFmUser = linked.lastFmUsername
+        val lastFmKey = linked.lastFmSessionKey
+        if (lastFmUser != null && lastFmKey != null && here.lastFm.status != ScrobbleConnectionStatus.CONNECTED) {
+            if (runCatching { scrobbleManager.adoptLastFm(lastFmUser, lastFmKey) }.getOrDefault(false)) {
+                rememberScrobblerUsername(AudioscrobblerSite.LAST_FM, lastFmUser)
+            }
+        }
+        val listenBrainzUser = linked.listenBrainzUsername
+        val listenBrainzToken = linked.listenBrainzToken
+        if (listenBrainzUser != null && listenBrainzToken != null && here.listenBrainz.status != ScrobbleConnectionStatus.CONNECTED) {
+            runCatching { scrobbleManager.adoptListenBrainz(listenBrainzUser, listenBrainzToken) }
+                .onSuccess { updatePreferences { copy(listenBrainzUsername = listenBrainzUser) } }
+        }
+        if (lastFmKey == null || listenBrainzToken == null) saveScrobblersToAccount(token, lastFm = lastFmKey == null, listenBrainz = listenBrainzToken == null)
+    }
+
+    /** What this app is connected to, saved to the Noctorium account when signed in to one. */
+    private suspend fun saveScrobblersToAccount(token: String? = null, lastFm: Boolean = true, listenBrainz: Boolean = true) {
+        val signedIn = token ?: withContext(Dispatchers.IO) { storedNoctoriumToken() } ?: return
+        if (mutableAccount.value.user == null && token == null) return
+        if (lastFm) {
+            val user = mutableSettings.value.preferences.lastFmUsername.ifBlank { scrobbleManager.state.value.lastFm.username.orEmpty() }
+            val key = scrobbleManager.lastFmSessionForAccount()
+            if (key != null && user.isNotBlank()) accountClient.saveLastFm(signedIn, user, key)
+        }
+        if (listenBrainz) scrobbleManager.listenBrainzTokenForAccount()?.let { accountClient.saveListenBrainz(signedIn, it) }
     }
 
     private var deviceSignInJob: Job? = null
