@@ -24,6 +24,12 @@ interface UpdateInstaller {
     val currentVersion: Version?
 
     /**
+     * This is not the build this device should run -- a TV running the phone's APK -- so the latest release is offered
+     * even at the same version, through [channel], which names the device's own build.
+     */
+    val wrongBuild: Boolean get() = false
+
+    /**
      * Somewhere to put the download, best somewhere that lasts from one run to the next: a download stopped part
      * of the way is carried on from what it left here. Only a file that has matched its checksum is ever here
      * under an update's own name.

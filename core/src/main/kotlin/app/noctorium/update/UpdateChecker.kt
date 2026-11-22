@@ -32,7 +32,12 @@ enum class UpdateChannel {
      * Apple silicon, x64 for Intel. An update is the next disk image, and the app in it replaces this one.
      */
     MAC_DMG,
+    /** Noctorium for phones, with Android Auto: `Noctorium-<version>.apk`. */
     ANDROID_APK,
+    /** Noctorium for TV: `Noctorium-TV-<version>.apk`. */
+    ANDROID_TV_APK,
+    /** Noctorium for cars with Google built in (Android Automotive): `Noctorium-Car-<version>.apk`. */
+    ANDROID_CAR_APK,
     /**
      * The terminal player, unpacked from the release's archive into a folder its user owns: where the
      * installer puts it, or wherever somebody unpacked it by hand. There is one archive per system and
@@ -93,6 +98,11 @@ fun shouldPromptAbout(found: Version, quietly: Boolean, dismissedVersion: String
 class UpdateChecker(
     private val currentVersion: Version?,
     private val channel: UpdateChannel,
+    /**
+     * This is the wrong build for the device -- a TV running the phone's APK, as one updated from 0.37 does -- so the
+     * latest release is offered even at the same version: it brings the device's own build.
+     */
+    private val wrongBuild: Boolean = false,
     private val http: Http = Http(),
     private val repository: String = DEFAULT_REPOSITORY,
     /** Overridden only by tests, which need somewhere other than GitHub to answer. */
@@ -136,7 +146,7 @@ class UpdateChecker(
 
         val latest = Version.parse(release.tagName) ?: Version.parse(release.name)
             ?: return UpdateCheck.Failed("The latest release is not named after a version.")
-        if (latest <= currentVersion) return UpdateCheck.UpToDate
+        if (latest < currentVersion || (latest == currentVersion && !wrongBuild)) return UpdateCheck.UpToDate
 
         val files = release.assets.map { ReleaseFile(it.name, it.browserDownloadUrl, it.size) }
         return UpdateCheck.Available(
@@ -228,7 +238,11 @@ internal fun UpdateChannel.matches(
         // Only the desktop app comes as a disk image. The terminal player's Mac builds are archives and its
         // installer is a bare program, so neither can be mistaken for this however their names read.
         UpdateChannel.MAC_DMG -> name.endsWith(".dmg")
-        UpdateChannel.ANDROID_APK -> name.endsWith(".apk")
+        // By the whole shape: a release carries APKs for the phone, the TV, the car, Lite, Stats and Song Find, and a
+        // version starts with a digit, which is what keeps Noctorium-TV-... from answering for Noctorium-<version>.
+        UpdateChannel.ANDROID_APK -> ANDROID_PHONE.matches(name)
+        UpdateChannel.ANDROID_TV_APK -> ANDROID_TV.matches(name)
+        UpdateChannel.ANDROID_CAR_APK -> ANDROID_CAR.matches(name)
         // noctorium-cli-<version>-<system>-<architecture>, as a .zip on Windows and a .tar.gz elsewhere. The
         // system is checked by name because the extension alone cannot tell Linux from a Mac, and an archive
         // for the wrong one unpacks perfectly and then cannot run a single program inside it.
@@ -245,6 +259,10 @@ internal fun UpdateChannel.matches(
     val someoneElses = ARCHITECTURE_ALIASES.filterKeys { it != architecture }.values.flatten()
     return someoneElses.none { name.contains(it) }
 }
+
+private val ANDROID_PHONE = Regex("""^noctorium-\d[^/]*\.apk$""")
+private val ANDROID_TV = Regex("""^noctorium-tv-\d[^/]*\.apk$""")
+private val ANDROID_CAR = Regex("""^noctorium-car-\d[^/]*\.apk$""")
 
 /**
  * The names the same architecture goes by across the packaging worlds.

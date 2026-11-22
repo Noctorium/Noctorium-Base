@@ -31,10 +31,11 @@ class UpdateCheckerTest {
     @AfterTest
     fun stop() = github.shutdown()
 
-    private fun checker(current: String, channel: UpdateChannel = UpdateChannel.WINDOWS_INSTALLER) =
+    private fun checker(current: String, channel: UpdateChannel = UpdateChannel.WINDOWS_INSTALLER, wrongBuild: Boolean = false) =
         UpdateChecker(
             currentVersion = Version.parse(current),
             channel = channel,
+            wrongBuild = wrongBuild,
             repository = "Noctorium/Noctorium-Installer",
             apiBase = github.url("/").toString().trimEnd('/'),
             // The release below is built for x64, so this is an x64 machine whatever runs the test.
@@ -52,6 +53,9 @@ class UpdateCheckerTest {
             {"name": "Noctorium-1.2.3-windows-x64.msi", "browser_download_url": "https://example/app.msi", "size": 272379960},
             {"name": "noctorium_1.2.3_amd64.deb", "browser_download_url": "https://example/app.deb", "size": 250342630},
             {"name": "noctorium-1.2.3.x86_64.rpm", "browser_download_url": "https://example/app.rpm", "size": 262862433},
+            {"name": "Noctorium-Car-1.2.3.apk", "browser_download_url": "https://example/car.apk", "size": 17337169},
+            {"name": "Noctorium-Lite-1.2.3.apk", "browser_download_url": "https://example/lite.apk", "size": 131000},
+            {"name": "Noctorium-TV-1.2.3.apk", "browser_download_url": "https://example/tv.apk", "size": 17337169},
             {"name": "Noctorium-1.2.3.apk", "browser_download_url": "https://example/app.apk", "size": 17337169},
             {"name": "SHA256SUMS.txt", "browser_download_url": "${github.url("/sums")}", "size": 400}
           ]
@@ -85,7 +89,10 @@ class UpdateCheckerTest {
         val wanted = mapOf(
             UpdateChannel.DEBIAN_PACKAGE to "noctorium_1.2.3_amd64.deb",
             UpdateChannel.FEDORA_PACKAGE to "noctorium-1.2.3.x86_64.rpm",
+            // Listed after the TV's, the car's and Lite's on purpose: each is chosen by its name, not by coming first.
             UpdateChannel.ANDROID_APK to "Noctorium-1.2.3.apk",
+            UpdateChannel.ANDROID_TV_APK to "Noctorium-TV-1.2.3.apk",
+            UpdateChannel.ANDROID_CAR_APK to "Noctorium-Car-1.2.3.apk",
         )
         wanted.forEach { (channel, file) ->
             github.enqueue(MockResponse().setBody(release("v1.2.3")))
@@ -93,6 +100,19 @@ class UpdateCheckerTest {
             val result = checker("1.0.0", channel).check()
             assertEquals(file, (result as UpdateCheck.Available).update.file?.name, "wrong file for $channel")
         }
+    }
+
+    @Test
+    fun `a TV running the phone's build is offered its own build even at the same version`() = runBlocking {
+        github.enqueue(MockResponse().setBody(release("v1.2.3")))
+        github.enqueue(MockResponse().setBody(sums))
+        val result = checker("1.2.3", UpdateChannel.ANDROID_TV_APK, wrongBuild = true).check()
+        assertEquals("Noctorium-TV-1.2.3.apk", (result as UpdateCheck.Available).update.file?.name)
+
+        github.enqueue(MockResponse().setBody(release("v1.2.3")))
+        assertEquals(UpdateCheck.UpToDate, checker("1.2.3", UpdateChannel.ANDROID_TV_APK).check(), "the right build was offered itself again")
+        github.enqueue(MockResponse().setBody(release("v1.2.3")))
+        assertEquals(UpdateCheck.UpToDate, checker("1.3.0", UpdateChannel.ANDROID_TV_APK, wrongBuild = true).check(), "an older release was offered")
     }
 
     @Test

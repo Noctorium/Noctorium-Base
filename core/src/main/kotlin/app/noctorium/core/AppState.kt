@@ -1088,7 +1088,7 @@ class AppState(
         AppVersion.set(updateInstaller.currentVersion)
     }
 
-    private val updateChecker = UpdateChecker(updateInstaller.currentVersion, updateInstaller.channel)
+    private val updateChecker = UpdateChecker(updateInstaller.currentVersion, updateInstaller.channel, updateInstaller.wrongBuild)
     private val updateDownloader = UpdateDownloader()
     private var updateJob: Job? = null
     /**
