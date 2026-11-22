@@ -6009,7 +6009,7 @@ class AppState(
     private var deviceSignInJob: Job? = null
 
     /**
-     * Signs in from a browser -- with Discord, GitHub, Telegram or email, whichever the listener has -- for screens
+     * Signs in from a browser -- with Discord, Telegram or email, whichever the listener has -- for screens
      * where typing a password is no fun or there is none to type. The service hands over a code; this opens its page
      * where there is a browser (a TV or a terminal shows the code to use on a phone instead) and asks every few
      * seconds until the listener has allowed it there, then signs in exactly as a password would.

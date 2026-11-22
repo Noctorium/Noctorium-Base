@@ -65,7 +65,7 @@ data class PlayReport(
 
 /**
  * Signing in from a browser: the code to show and the page to open, and the secret this app alone keeps to collect
- * its token with once the listener has allowed it there -- with Discord, GitHub, Telegram or their email.
+ * its token with once the listener has allowed it there -- with Discord, Telegram or their email.
  */
 data class DeviceSignInStart(
     val code: String,
