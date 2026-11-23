@@ -5992,16 +5992,37 @@ class AppState(
             mutableAccount.update { it.copy(busy = true, message = null) }
             when (val result = attempt()) {
                 is AccountResult.Success -> signedInToNoctorium(result)
-                is AccountResult.Refused -> mutableAccount.update { it.copy(busy = false, message = result.message) }
+                is AccountResult.Refused -> mutableAccount.update { it.copy(busy = false, message = result.message, verification = null) }
                 is AccountResult.Unreachable -> mutableAccount.update { it.copy(busy = false, message = result.message) }
+                is AccountResult.Verify -> mutableAccount.update { it.copy(busy = false, verification = result.challenge, message = result.challenge.message) }
             }
         }
     }
 
+    /**
+     * The codes two-step verification asks for after the password: an authenticator app's, Telegram's, or a backup code.
+     * Whichever are given count; in strict mode both ways are needed, and they may come one at a time.
+     */
+    fun verifyNoctorium(totp: String? = null, telegram: String? = null, backup: String? = null) {
+        val waiting = mutableAccount.value.verification ?: return
+        authenticateNoctorium { accountClient.verify(waiting, totp, telegram, backup) }
+    }
+
+    /** Asks the login bot to send this sign-in's code on Telegram. */
+    fun sendNoctoriumTelegramCode() {
+        val waiting = mutableAccount.value.verification ?: return
+        scope.launch {
+            val problem = accountClient.sendTelegramCode(waiting)
+            mutableAccount.update { it.copy(message = problem ?: "Sent. Check Telegram for the code.") }
+        }
+    }
+
+    fun cancelNoctoriumVerification() = mutableAccount.update { it.copy(verification = null, message = null) }
+
     private suspend fun signedInToNoctorium(result: AccountResult.Success) {
         withContext(Dispatchers.IO) { runCatching { credentials.put(NOCTORIUM_TOKEN, result.token) } }
         mutableAccount.update {
-            it.copy(user = result.user, busy = false, deviceSignIn = null, message = "Signed in as ${result.user.displayName}.")
+            it.copy(user = result.user, busy = false, deviceSignIn = null, verification = null, message = "Signed in as ${result.user.displayName}.")
         }
         prepareConnect()
         reportPlays()
@@ -7311,6 +7332,8 @@ data class NoctoriumAccountState(
     val message: String? = null,
     /** Signing in from a browser, while it waits: the code to show and the page to open. */
     val deviceSignIn: DeviceSignInWaiting? = null,
+    /** After the password: the codes two-step verification asks for, while it waits for them. */
+    val verification: app.noctorium.account.VerificationChallenge? = null,
 ) {
     val signedIn: Boolean get() = user != null
 }

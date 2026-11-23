@@ -59,6 +59,7 @@ fun main(args: Array<String>): Unit = runBlocking {
         is AccountResult.Success -> result.also { say("Signed in to ${options.service} as ${it.user.displayName} (account ${it.user.id})") }
         is AccountResult.Refused -> error("The service refused the harness: ${result.message}")
         is AccountResult.Unreachable -> error("The service did not answer: ${result.message}")
+        is AccountResult.Verify -> error("The harness's test account has two-step verification on: use one without it.")
     }
 
     val player = SimulatedPlayer(log = { say("[player] $it") })

@@ -9,6 +9,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -283,6 +284,44 @@ class NoctoriumAccountClientTest {
     }
 
     @Test
+    fun `a right password on an account with two-step verification asks for a code, not a token`() = runBlocking {
+        reply = 401 to """{"error":"This account uses two-step verification. Update Noctorium...","challenge":"t1","methods":["totp","telegram"],"strict":false}"""
+        val result = client().logIn("listener@example.com", "a-long-enough-password")
+        val asked = assertIs<AccountResult.Verify>(result).challenge
+        assertEquals(listOf("totp", "telegram"), asked.methods)
+        assertEquals(false, asked.strict)
+        assertNull(asked.message, "the words meant for old apps were shown to a new one")
+    }
+
+    @Test
+    fun `codes go to the challenge, and a wrong one comes back with what is proved and what was wrong`() = runBlocking {
+        val asked = VerificationChallenge("t1", listOf("totp", "telegram"), strict = true)
+        reply = 401 to """{"error":"Strict mode is on: both codes are needed.","challenge":"t1","methods":["totp","telegram"],"strict":true,"done":["totp"]}"""
+        val half = assertIs<AccountResult.Verify>(client().verify(asked, totp = " 123 456 ")).challenge
+        assertEquals(listOf("totp"), half.done)
+        assertEquals(listOf("telegram"), half.stillNeeded)
+        assertEquals("Strict mode is on: both codes are needed.", half.message)
+        assertEquals("/api/auth/challenge/verify", requests.last().path)
+        assertContains(requests.last().body, "\"totp\":\"123 456\"")
+
+        reply = 200 to session
+        assertIs<AccountResult.Success>(client().verify(half, telegram = "654321"))
+
+        reply = 410 to """{"error":"This sign-in has expired or had too many tries. Sign in again."}"""
+        assertIs<AccountResult.Refused>(client().verify(half, backup = "abcd-efgh"))
+    }
+
+    @Test
+    fun `the Telegram code is asked for with the challenge, and a refusal is said`() = runBlocking {
+        val asked = VerificationChallenge("t1", listOf("telegram"), strict = false)
+        reply = 204 to ""
+        assertNull(client().sendTelegramCode(asked))
+        assertContains(requests.last().body, "\"challenge\":\"t1\"")
+        reply = 400 to """{"error":"The Telegram code could not be sent."}"""
+        assertEquals("The Telegram code could not be sent.", client().sendTelegramCode(asked))
+    }
+
+    @Test
     fun `a browser sign-in starts with a code, a page and a poll secret`() = runBlocking {
         reply = 200 to """{"code":"ABCD-EFGH","pollToken":"p-1","url":"https://service.noctorium.xyz/device?code=ABCD-EFGH","expiresIn":600,"interval":3}"""
         val start = assertNotNull(client().startDeviceSignIn())
@@ -320,6 +359,7 @@ class ServiceUrlTest {
 
         assertTrue(url.startsWith("https://"), "the account service must not be reached over plain http")
         assertTrue(!url.endsWith("/"), "a trailing slash would double the separator in every path")
+        assertTrue(defaultAccountUrl().startsWith("https://") && !defaultAccountUrl().endsWith("/"))
     }
 
 }

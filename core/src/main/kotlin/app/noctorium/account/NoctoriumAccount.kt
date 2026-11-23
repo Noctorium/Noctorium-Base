@@ -17,16 +17,17 @@ import kotlinx.serialization.json.put
 import app.noctorium.net.Http
 import java.time.Instant
 
+/** `NOCTORIUM_SERVICE_URL`: one server of one's own, or a preview, standing in for both of the addresses below. */
+private fun serviceOverride(): String? = System.getenv("NOCTORIUM_SERVICE_URL")?.trim()?.trimEnd('/')?.takeIf(String::isNotBlank)
+
+/** Listening statistics: listens reported, figures read, what is playing. The `noctorium-service` Vercel project. */
+fun defaultServiceUrl(): String = serviceOverride() ?: "https://stats.noctorium.xyz"
+
 /**
- * Where the account service lives.
- *
- * The `noctorium-service` Vercel project. The addresses it answered on under the application's earlier
- * names are kept alive on the same project, so an older build goes on working; a new one asks here.
- * `NOCTORIUM_SERVICE_URL` points a build somewhere else, for a preview deployment or a service of one's own.
+ * The Noctorium account: signing in, two-step verification, the Connect key, Last.fm and ListenBrainz. Since 0.39 its
+ * own server; an app from before still asks the stats address, which passes those requests on to it.
  */
-fun defaultServiceUrl(): String =
-    System.getenv("NOCTORIUM_SERVICE_URL")?.trim()?.trimEnd('/')?.takeIf(String::isNotBlank)
-        ?: "https://noctorium-service.vercel.app"
+fun defaultAccountUrl(): String = serviceOverride() ?: "https://account.noctorium.xyz"
 
 /** Someone signed in to the account service. */
 data class NoctoriumUser(val id: Long, val email: String, val displayName: String)
@@ -93,12 +94,30 @@ data class LinkedScrobblers(
     val listenBrainzToken: String? = null,
 )
 
+/**
+ * Two-step verification, asked for after the password: the ways the account can be verified ("totp" for an
+ * authenticator app, "telegram" for a code the login bot sends), whether strict mode needs every one of them, what is
+ * already proved, and the service's words about the last try, when there was one.
+ */
+data class VerificationChallenge(
+    val ticket: String,
+    val methods: List<String>,
+    val strict: Boolean,
+    val done: List<String> = emptyList(),
+    val message: String? = null,
+) {
+    /** What is still to be given: in strict mode every way not yet proved, otherwise any one of them. */
+    val stillNeeded: List<String> get() = if (strict) methods - done.toSet() else methods
+}
+
 sealed interface AccountResult {
     data class Success(val user: NoctoriumUser, val token: String) : AccountResult
     /** The service answered, and said no. The message is the service's own and is safe to show. */
     data class Refused(val message: String) : AccountResult
     /** The service could not be reached at all, which is a different problem from being refused. */
     data class Unreachable(val message: String) : AccountResult
+    /** The password was right, and the account's two-step verification asks for a code before the token. */
+    data class Verify(val challenge: VerificationChallenge) : AccountResult
 }
 
 /**
@@ -111,6 +130,8 @@ sealed interface AccountResult {
 class NoctoriumAccountClient(
     private val baseUrl: String = defaultServiceUrl(),
     private val http: Http = Http(),
+    /** Where sign-in and the account are asked: the account server, or [baseUrl] when a test or a server of one's own gives one. */
+    private val accountUrl: String = if (baseUrl == defaultServiceUrl()) defaultAccountUrl() else baseUrl,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -290,10 +311,49 @@ class NoctoriumAccountClient(
         }
     }
 
+    /** Sends the Telegram code for [challenge]'s sign-in: null once sent, or the service's words for why not. */
+    suspend fun sendTelegramCode(challenge: VerificationChallenge): String? {
+        val reply = send("POST", "/api/auth/challenge/telegram", body = buildJsonObject { put("challenge", challenge.ticket) }.toString())
+            ?: return "Could not reach the Noctorium service."
+        if (reply.first in 200..299) return null
+        return parse(reply.second)?.get("error")?.jsonPrimitive?.contentOrNull ?: "The code could not be sent (HTTP ${reply.first})."
+    }
+
+    /**
+     * The codes for [challenge]'s sign-in: whichever are given count. Success once enough is proved; [AccountResult.Verify]
+     * again with what is proved so far and what was wrong; [AccountResult.Refused] once the sign-in has expired.
+     */
+    suspend fun verify(challenge: VerificationChallenge, totp: String? = null, telegram: String? = null, backup: String? = null): AccountResult =
+        authenticate(
+            "/api/auth/challenge/verify",
+            buildJsonObject {
+                put("challenge", challenge.ticket)
+                totp?.takeIf(String::isNotBlank)?.let { put("totp", it.trim()) }
+                telegram?.takeIf(String::isNotBlank)?.let { put("telegram", it.trim()) }
+                backup?.takeIf(String::isNotBlank)?.let { put("backup", it.trim()) }
+            },
+        )
+
+    private fun challengeFrom(parsed: JsonObject, message: String?): VerificationChallenge? {
+        val ticket = parsed["challenge"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank) ?: return null
+        fun list(name: String) = (parsed[name] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+        return VerificationChallenge(
+            ticket = ticket,
+            methods = list("methods"),
+            strict = parsed["strict"]?.jsonPrimitive?.contentOrNull == "true",
+            done = list("done"),
+            message = message,
+        )
+    }
+
     private suspend fun authenticate(path: String, body: JsonObject): AccountResult {
         val reply = send("POST", path, body = body.toString())
             ?: return AccountResult.Unreachable("Could not reach the Noctorium service.")
         val parsed = parse(reply.second)
+        // Two-step verification: the password was right, and a code comes next. The first answer's `error` is worded for
+        // apps too old to ask for one; a later one's says what was wrong with the code, and is worth showing.
+        val asked = parsed?.let { challengeFrom(it, it["error"]?.jsonPrimitive?.contentOrNull?.takeIf { path.endsWith("/verify") }) }
+        if (asked != null) return AccountResult.Verify(asked)
         if (reply.first !in 200..299) {
             // The service words its own refusals, and they are written to be shown as they are.
             return AccountResult.Refused(
@@ -332,8 +392,10 @@ class NoctoriumAccountClient(
         token: String? = null,
         body: String? = null,
     ): Pair<Int, String>? {
+        // Listening goes to the stats server; signing in and everything else about the account, to the account server.
+        val stats = listOf("/api/stats", "/api/plays", "/api/now-playing", "/api/scrobble").any { path == it || path.startsWith("$it?") }
         val reply = http.send(
-            url = "$baseUrl$path",
+            url = "${if (stats) baseUrl else accountUrl}$path",
             method = method,
             headers = buildMap {
                 put("Accept", "application/json")
