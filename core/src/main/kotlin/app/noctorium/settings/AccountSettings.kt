@@ -1028,6 +1028,8 @@ data class DesktopPreferences(
     val shownPlayerButtons: Set<PlayerButton> = emptySet(),
     /** Items left off the sidebar. Home and Settings are always there whatever is here. */
     val hiddenDestinations: Set<Destination> = emptySet(),
+    /** The library's playlists listed in the sidebar too, scrolling under its pages. Off unless asked for. */
+    val sidebarPlaylists: Boolean = false,
     /** A note from the tray, or the system's notifications, each time a new track starts. Off unless asked for. */
     val announceTracks: Boolean = false,
     /** The listener's keyboard shortcuts: the in-app ones changed, and the global ones. See [ShortcutPreferences]. */
