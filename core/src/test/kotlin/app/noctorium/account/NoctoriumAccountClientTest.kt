@@ -73,6 +73,28 @@ class NoctoriumAccountClientTest {
     }
 
     @Test
+    fun `the account screen's fields are read from me, and a password change hands back the new token`() = runBlocking {
+        reply = 200 to """{"user":{"id":7,"email":"a@b.c","displayName":"A","avatarUrl":"https://x/a.jpg","hasPassword":false,
+            "twoStep":{"totp":true,"telegram":false},"linked":{"discord":true,"telegram":true}}}"""
+        val user = assertNotNull(client().whoAmI("tok"))
+        assertEquals("https://x/a.jpg", user.avatarUrl)
+        assertEquals(false, user.hasPassword)
+        assertEquals(NoctoriumUser.TwoStep(totp = true, telegram = false), user.twoStep)
+        assertEquals(NoctoriumUser.LinkedServices(discord = true, telegram = true), user.linked)
+
+        reply = 200 to """{"ok":true,"token":"fresh"}"""
+        val change = client().changeProfile("tok", "password", mapOf("current" to "old", "password" to "new"))
+        assertEquals(ProfileChange(token = "fresh"), change)
+        val sent = requests.last()
+        assertEquals("/api/account/profile", sent.path)
+        assertEquals("Bearer tok", sent.authorization)
+        assertContains(sent.body, """"action":"password"""")
+
+        reply = 400 to """{"error":"That password is not right."}"""
+        assertEquals("That password is not right.", client().changeProfile("tok", "delete", emptyMap()).error)
+    }
+
+    @Test
     fun `signing in posts only the address and the password`() = runBlocking {
         reply = 200 to session
 

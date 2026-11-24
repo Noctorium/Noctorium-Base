@@ -59,8 +59,11 @@ class Http(private val client: OkHttpClient = shared) {
         body: String? = null,
         contentType: String = "application/json; charset=utf-8",
         timeoutSeconds: Long = 20,
+        /** A binary body, such as a picture, in place of [body]. */
+        bytes: ByteArray? = null,
     ): HttpReply = withContext(Dispatchers.IO) {
         val payload = when {
+            bytes != null -> bytes.toRequestBody(contentType.toMediaType())
             body != null -> body.toRequestBody(contentType.toMediaType())
             // POST, PUT and PATCH need a body even when there is nothing to say, or OkHttp refuses them.
             method.uppercase() in METHODS_NEEDING_A_BODY -> ByteArray(0).toRequestBody()

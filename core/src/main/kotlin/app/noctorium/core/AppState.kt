@@ -134,6 +134,7 @@ import app.noctorium.spotify.spotifyPlaylistIdIn
 import app.noctorium.spotify.SPOTIFY_WITHOUT_SIGN_IN
 import app.noctorium.spotify.usesOwnSpotifyApp
 import app.noctorium.account.AccountResult
+import app.noctorium.account.ProfileChange
 import app.noctorium.account.DeviceSignInPoll
 import app.noctorium.account.ListeningStats
 import app.noctorium.account.PlayReport
@@ -208,7 +209,7 @@ import kotlin.math.min
  * playing, and moving the music between them. Everything it shows is in [AppState.connect] and
  * [AppState.musicPlace]; everything it does is [AppState.playOn], [AppState.playHere] and [AppState.moveMusic].
  */
-enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS, CONNECT }
+enum class Destination { HOME, SEARCH, LINK, LIBRARY, DOWNLOADS, NOW_PLAYING, QUEUE, SETTINGS, CONNECT, ACCOUNT }
 
 /** What to do with a pasted link. Playing it is what pasting means; the rest are one tap away. */
 enum class LinkAction { PLAY, QUEUE, DOWNLOAD, SAVE }
@@ -1640,6 +1641,8 @@ class AppState(
     fun setAmbientBackdrop(enabled: Boolean) = updatePreferences { copy(ambientBackdrop = enabled) }
     fun setAnimations(enabled: Boolean) = updatePreferences { copy(animations = enabled) }
     fun setStartPage(page: StartPage) = updatePreferences { copy(startPage = page) }
+
+    fun setSettingsButton(placement: SettingsButton) = updatePreferences { copy(settingsButton = placement) }
     fun setVisualiser(style: VisualiserStyle) = updatePreferences { copy(visualiser = style) }
 
     /** The queue table's columns, in this order; the title is kept whatever is asked. See [QueueColumn.normalised]. */
@@ -6127,6 +6130,42 @@ class AppState(
 
     fun clearNoctoriumMessage() = mutableAccount.update { it.copy(message = null) }
 
+    /**
+     * One change on the account screen, as the service's `/api/account/profile` takes it: [action] is `name`, `email`,
+     * `password`, `delete`, `avatar-discord`, `avatar-telegram` or `avatar-remove`, and [fields] its `name`, `email`,
+     * `password`, `current`, `code` and `confirm`. An email or password change signs the other devices out and hands
+     * this one a new token, which is kept; deleting signs out here too.
+     */
+    fun changeNoctoriumProfile(action: String, fields: Map<String, String> = emptyMap()) =
+        profileChange { token -> accountClient.changeProfile(token, action, fields) }
+
+    /** A new profile picture: a JPEG the app has already cropped and shrunk to 256 pixels. */
+    fun uploadNoctoriumAvatar(jpeg: ByteArray) = profileChange { token -> accountClient.uploadAvatar(token, jpeg) }
+
+    /** Asks the login bot for a code to prove a change with, when the account's two-step verification uses Telegram. */
+    fun sendNoctoriumProfileTelegramCode() = profileChange { token ->
+        accountClient.sendProfileTelegramCode(token)?.let { ProfileChange(error = it) } ?: ProfileChange(error = "Sent. Check Telegram for the code.")
+    }
+
+    fun clearNoctoriumProfileError() = mutableAccount.update { it.copy(profileError = null) }
+
+    private fun profileChange(send: suspend (token: String) -> ProfileChange) {
+        if (mutableAccount.value.profileBusy || mutableAccount.value.user == null) return
+        scope.launch {
+            mutableAccount.update { it.copy(profileBusy = true, profileError = null) }
+            val token = withContext(Dispatchers.IO) { storedNoctoriumToken() }
+            val change = if (token.isNullOrBlank()) ProfileChange(error = "Sign in again first.") else send(token)
+            if (change.deleted) {
+                signOutOfNoctorium()
+                mutableAccount.update { it.copy(message = "Your Noctorium account is deleted.") }
+                return@launch
+            }
+            val kept = change.token?.also { fresh -> withContext(Dispatchers.IO) { runCatching { credentials.put(NOCTORIUM_TOKEN, fresh) } } } ?: token
+            val user = if (change.error == null && kept != null) accountClient.whoAmI(kept) else null
+            mutableAccount.update { it.copy(user = user ?: it.user, profileBusy = false, profileError = change.error) }
+        }
+    }
+
     // --- Updating ---
 
     /**
@@ -7332,6 +7371,9 @@ data class NoctoriumAccountState(
     val message: String? = null,
     /** Signing in from a browser, while it waits: the code to show and the page to open. */
     val deviceSignIn: DeviceSignInWaiting? = null,
+    /** A change on the account screen (name, email, password, picture, deleting) while it is sent, and what the service said no with. */
+    val profileBusy: Boolean = false,
+    val profileError: String? = null,
     /** After the password: the codes two-step verification asks for, while it waits for them. */
     val verification: app.noctorium.account.VerificationChallenge? = null,
 ) {

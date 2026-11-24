@@ -140,6 +140,13 @@ enum class TimeDisplay(val displayName: String) {
     REMAINING("Time remaining"),
 }
 
+/** Where the Settings button lives: on the home screen beside the profile picture, or in the sidebar or bottom bar. */
+@Serializable
+enum class SettingsButton(val displayName: String) {
+    HOME("Home screen"),
+    TOOLBAR("Toolbar"),
+}
+
 @Serializable
 enum class StartPage(val displayName: String) {
     HOME("Home"),
@@ -568,6 +575,7 @@ data class NoctoriumPreferences(
      */
     val skipNonMusic: Boolean = true,
     val startPage: StartPage = StartPage.HOME,
+    val settingsButton: SettingsButton = SettingsButton.HOME,
     /**
      * The lyrics source to read first, whenever it has an answer for the song.
      *

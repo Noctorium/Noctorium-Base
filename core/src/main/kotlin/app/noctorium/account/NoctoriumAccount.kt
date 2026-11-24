@@ -29,8 +29,22 @@ fun defaultServiceUrl(): String = serviceOverride() ?: "https://stats.noctorium.
  */
 fun defaultAccountUrl(): String = serviceOverride() ?: "https://account.noctorium.xyz"
 
-/** Someone signed in to the account service. */
-data class NoctoriumUser(val id: Long, val email: String, val displayName: String)
+/** Someone signed in to the account service, with what the account screen needs: their picture, and which proofs a change asks for. */
+data class NoctoriumUser(
+    val id: Long,
+    val email: String,
+    val displayName: String,
+    val avatarUrl: String? = null,
+    val hasPassword: Boolean = true,
+    val twoStep: TwoStep = TwoStep(),
+    val linked: LinkedServices = LinkedServices(),
+) {
+    data class TwoStep(val totp: Boolean = false, val telegram: Boolean = false)
+    data class LinkedServices(val discord: Boolean = false, val telegram: Boolean = false)
+}
+
+/** What a change on the account screen came to: the service's words when it said no, and the new token after an email or password change. */
+data class ProfileChange(val error: String? = null, val token: String? = null, val deleted: Boolean = false)
 
 /** What the listener has listened to, as the service counts it. */
 data class ListeningStats(
@@ -278,6 +292,31 @@ class NoctoriumAccountClient(
         send("PUT", "/api/scrobblers/listenbrainz", token, buildJsonObject { put("token", listenBrainzToken) }.toString())
             ?.first in 200..299
 
+    /** One action of the account screen (see `/api/account/profile`): [fields] are sent as they are. */
+    suspend fun changeProfile(token: String, action: String, fields: Map<String, String>): ProfileChange {
+        val body = buildJsonObject { put("action", action); fields.forEach { (name, value) -> put(name, value) } }
+        val reply = send("POST", "/api/account/profile", token, body.toString()) ?: return ProfileChange(error = UNREACHABLE)
+        val parsed = parse(reply.second)
+        if (reply.first !in 200..299) return ProfileChange(error = refusal(reply, parsed))
+        return ProfileChange(token = parsed?.get("token")?.jsonPrimitive?.contentOrNull, deleted = action == "delete")
+    }
+
+    /** A new profile picture, sent as the JPEG itself. */
+    suspend fun uploadAvatar(token: String, jpeg: ByteArray): ProfileChange {
+        val reply = send("POST", "/api/account/avatar", token, bytes = jpeg) ?: return ProfileChange(error = UNREACHABLE)
+        return ProfileChange(error = refusal(reply, parse(reply.second)).takeIf { reply.first !in 200..299 })
+    }
+
+    /** Sends a Telegram code to prove a change with: null once sent, or the service's words for why not. */
+    suspend fun sendProfileTelegramCode(token: String): String? {
+        val reply = send("POST", "/api/account/security", token, buildJsonObject { put("action", "telegram-send") }.toString())
+            ?: return UNREACHABLE
+        return if (reply.first in 200..299) null else refusal(reply, parse(reply.second))
+    }
+
+    private fun refusal(reply: Pair<Int, String>, parsed: JsonObject?): String =
+        parsed?.get("error")?.jsonPrimitive?.contentOrNull ?: "The service refused that (HTTP ${reply.first})."
+
     /** Starts signing in from a browser: null when the service could not be reached or said no. */
     suspend fun startDeviceSignIn(): DeviceSignInStart? {
         val reply = send("POST", "/api/auth/device", body = "{}") ?: return null
@@ -373,7 +412,19 @@ class NoctoriumAccountClient(
         val id = node["id"]?.jsonPrimitive?.contentOrNull?.toLongOrNull() ?: return null
         val email = node["email"]?.jsonPrimitive?.contentOrNull ?: return null
         val name = node["displayName"]?.jsonPrimitive?.contentOrNull ?: email.substringBefore('@')
-        return NoctoriumUser(id, email, name)
+        fun flag(part: String, name: String) = (node[part] as? JsonObject)?.get(name)?.jsonPrimitive?.contentOrNull == "true"
+        return NoctoriumUser(
+            id, email, name,
+            avatarUrl = node["avatarUrl"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+            // An older service does not say; a password is then the likelier answer, and the field is only offered.
+            hasPassword = node["hasPassword"]?.jsonPrimitive?.contentOrNull != "false",
+            twoStep = NoctoriumUser.TwoStep(flag("twoStep", "totp"), flag("twoStep", "telegram")),
+            linked = NoctoriumUser.LinkedServices(flag("linked", "discord"), flag("linked", "telegram")),
+        )
+    }
+
+    private companion object {
+        const val UNREACHABLE = "Could not reach the Noctorium service."
     }
 
     private fun parse(body: String): JsonObject? =
@@ -391,6 +442,7 @@ class NoctoriumAccountClient(
         path: String,
         token: String? = null,
         body: String? = null,
+        bytes: ByteArray? = null,
     ): Pair<Int, String>? {
         // Listening goes to the stats server; signing in and everything else about the account, to the account server.
         val stats = listOf("/api/stats", "/api/plays", "/api/now-playing", "/api/scrobble").any { path == it || path.startsWith("$it?") }
@@ -402,6 +454,8 @@ class NoctoriumAccountClient(
                 token?.takeIf(String::isNotBlank)?.let { put("Authorization", "Bearer $it") }
             },
             body = body,
+            bytes = bytes,
+            contentType = if (bytes != null) "image/jpeg" else "application/json; charset=utf-8",
         )
         return if (reply.status == Http.UNREACHABLE) null else reply.status to reply.body
     }
