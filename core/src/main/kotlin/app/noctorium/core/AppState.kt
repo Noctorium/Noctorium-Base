@@ -1606,6 +1606,9 @@ class AppState(
         copy(theme = ThemePreset.CUSTOM, customTheme = colours, accent = if (accent == AccentPreset.ARTWORK) accent else AccentPreset.THEME)
     }
     fun setSurfaceStyle(style: SurfaceStyle) = updatePreferences { copy(surfaceStyle = style) }
+
+    /** The page behind the content as solid or as the wash glass bends, apart from the buttons' surface. */
+    fun setBackgroundSurface(style: SurfaceStyle) = updatePreferences { copy(backgroundSurface = style) }
     fun setCornerStyle(style: CornerStyle) = updatePreferences { copy(cornerStyle = style) }
     fun setTextSize(size: TextSize) = updatePreferences { copy(textSize = size) }
 

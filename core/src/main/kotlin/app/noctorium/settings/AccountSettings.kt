@@ -552,6 +552,11 @@ data class NoctoriumPreferences(
     val backgroundDepth: BackgroundDepth = BackgroundDepth.AMOLED,
     /** Panels as solid colour, or as glass over a blurred wash of the cover. See [SurfaceStyle]. */
     val surfaceStyle: SurfaceStyle = SurfaceStyle.SOLID,
+    /**
+     * The page behind the content, apart from the buttons: solid, or the cover's wash that glass bends. Null follows
+     * [surfaceStyle], which is how everyone who chose glass before the two came apart keeps what they had.
+     */
+    val backgroundSurface: SurfaceStyle? = null,
     /** How round every corner is. Soft is what the players drew before this was a choice. */
     val cornerStyle: CornerStyle = CornerStyle.SOFT,
     /** Every text size at once, scaled. Separate from the system's own setting, which covers everything. */
@@ -883,9 +888,17 @@ data class UpdatePreferences(
  */
 @Serializable
 enum class PhoneNowPlayingLayout(val displayName: String, val description: String) {
+    /**
+     * The default. Kept under the old default's stored name, so everyone on the old default moves to this one with the
+     * update; the old one is [OLD_CLASSIC], still there for anyone who wants it back.
+     */
     CLASSIC(
-        "Classic",
-        "The cover, then the track, the seek bar and the controls, as it has always been.",
+        "Noctorium",
+        "The cover, the track and the controls, with the speed, sleep timer and lyrics up top and the queue a swipe up.",
+    ),
+    OLD_CLASSIC(
+        "Old default",
+        "The cover, then the track, the seek bar and the controls, as it was before 0.42.",
     ),
     FULL_COVER(
         "Full cover",
@@ -912,6 +925,13 @@ enum class PhoneNowPlayingLayout(val displayName: String, val description: Strin
         "Playlist",
         "A small cover and the title over the queue as a list with columns, and a visualiser beside the title.",
     ),
+}
+
+/** How a song's menu opens on the phone. A new setting, so everyone gets the sheet with the update. */
+@Serializable
+enum class TrackMenuStyle(val displayName: String, val description: String) {
+    SHEET("Sheet", "Up from the bottom, with the song at the top and its main actions as big buttons."),
+    MENU("Old menu", "A small drop-down list beside the button, as before 0.42."),
 }
 
 /** The shape of the cover on the now playing screen. */
@@ -965,6 +985,8 @@ data class PhonePreferences(
     val playerBarStyle: PhonePlayerBarStyle = PhonePlayerBarStyle.CLASSIC,
     /** How the now playing screen is arranged. */
     val nowPlayingLayout: PhoneNowPlayingLayout = PhoneNowPlayingLayout.CLASSIC,
+    /** How a song's menu opens: the sheet up from the bottom, or the old drop-down. */
+    val trackMenuStyle: TrackMenuStyle = TrackMenuStyle.SHEET,
     /**
      * How far a double tap on the cover jumps, in seconds.
      *
