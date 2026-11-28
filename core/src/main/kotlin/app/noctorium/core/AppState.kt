@@ -6486,6 +6486,16 @@ class AppState(
         }
     }
 
+    /**
+     * The account's full statistics over [range], counted from every device's listens, on this device's clock; null
+     * when signed out or the service could not be reached.
+     */
+    suspend fun accountStats(range: app.noctorium.account.StatsRange): app.noctorium.account.AccountStats? {
+        val token = withContext(Dispatchers.IO) { storedNoctoriumToken() } ?: return null
+        val tz = java.time.ZoneId.systemDefault().rules.getOffset(java.time.Instant.now()).totalSeconds / 60
+        return accountClient.fullStats(token, range, tz)
+    }
+
     fun refreshListeningStats() {
         scope.launch {
             val token = withContext(Dispatchers.IO) { storedNoctoriumToken() }

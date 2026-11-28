@@ -195,6 +195,13 @@ class NoctoriumAccountClient(
         return parse(reply.second)?.get("key")?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
     }
 
+    /** The full statistics over [range], with days and hours [tzMinutes] east of UTC. */
+    suspend fun fullStats(token: String, range: StatsRange, tzMinutes: Int, limit: Int = 10): AccountStats? {
+        val reply = send("GET", "/api/stats?range=${range.code}&tz=$tzMinutes&limit=$limit", token = token) ?: return null
+        if (reply.first !in 200..299) return null
+        return AccountStats.parse(reply.second)
+    }
+
     suspend fun stats(token: String): ListeningStats? {
         val reply = send("GET", "/api/stats", token = token) ?: return null
         if (reply.first !in 200..299) return null
